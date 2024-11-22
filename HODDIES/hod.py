@@ -45,7 +45,7 @@ class HOD:
                     d[k] = v
             return d
             
-        new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else args if args is not None else None
+        new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else args if args is not None else self.args
         update_dic(self.args, new_args)
         
         #if args is not None:
@@ -85,11 +85,6 @@ class HOD:
             else: 
                 self.hcat = Catalog.read(args['hcat'][['path_to_sim']])            
         self.H_0 = 100
-        try:
-            self.NFW_draw = np.load(self.args['precompute_NFW'])
-        except FileNotFoundError:
-            print("Generate random point in a NFW for satellite drawing")
-            self.NFW_draw = rd_draw_NFW(15000000, self.args['precompute_NFW'])
 
         if 'c' not in self.hcat.columns():
             print('Concentration column "c" is not provided. The concentration is computed from mass-concentration relation of {} using {} as mass definition'.format(self.args['cm_relation'], self.args['mass_def']))
@@ -312,16 +307,12 @@ class HOD:
                         if verbose: print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
                     else:
                         print('No particles found continue with NFW', flush=True)
+                        mask_nfw = np.ones(Nb_sat, dtype=bool)
                 else:
                     mask_nfw = np.ones(Nb_sat, dtype=bool)
                 
                 if mask_nfw.sum() > 0:
-                    NFW = self.NFW_draw[self.NFW_draw < sat_cat['c'][mask_nfw].max()]
-                    if len(NFW) > Nb_sat:
-                        rng.shuffle(NFW)
-                    else:
-                        NFW = NFW[rng.randint(0, len(NFW), Nb_sat)]
-
+                    
                     if fix_seed is not None:
                         seed1 = rng.randint(0, 4294967295, self.args['nthreads'])
                     else:
@@ -338,7 +329,7 @@ class HOD:
                     vrms_h = sat_cat['Vrms'][mask_nfw] if 'Vrms' in sat_cat.columns() else np.zeros_like(sat_cat['vx'][mask_nfw])
 
                     sat_cat['x'][mask_nfw], sat_cat['y'][mask_nfw], sat_cat['z'][mask_nfw], \
-                    sat_cat['vx'][mask_nfw], sat_cat['vy'][mask_nfw], sat_cat['vz'][mask_nfw] = compute_fast_NFW(NFW, sat_cat['x'][mask_nfw], sat_cat['y'][mask_nfw], sat_cat['z'][mask_nfw],
+                    sat_cat['vx'][mask_nfw], sat_cat['vy'][mask_nfw], sat_cat['vz'][mask_nfw] = compute_fast_NFW(sat_cat['x'][mask_nfw], sat_cat['y'][mask_nfw], sat_cat['z'][mask_nfw],
                                                                                                                             sat_cat['vx'][mask_nfw], sat_cat['vy'][mask_nfw], sat_cat['vz'][mask_nfw],
                                                                                                                             sat_cat['c'][mask_nfw], sat_cat['Mh'][mask_nfw], sat_cat['Rh'][mask_nfw], 
                                                                                                                             rd_pos, rd_vel, exp_frac=self.args[tracer]['exp_frac'], 
@@ -396,12 +387,7 @@ class HOD:
             seed = None
 
         Nb_sat = sat_cat.size
-        NFW = self.NFW_draw[self.NFW_draw < sat_cat['c'].max()]
-        if len(NFW) > Nb_sat:
-            rng.shuffle(NFW)
-        else:
-            NFW = NFW[rng.randint(0, len(NFW), Nb_sat)]
-
+       
         if fix_seed is not None:
             seed1 = rng.randint(0, 4294967295, self.args['nthreads'])
         else:
@@ -416,7 +402,7 @@ class HOD:
             rd_vel = np.ones_like(rd_pos)
         vrms_h = sat_cat['Vrms'] if 'Vrms' in sat_cat.columns() else np.zeros_like(sat_cat['vx'])
 
-        sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'] = compute_fast_NFW(NFW, sat_cat['x'], sat_cat['y'], sat_cat['z'],
+        sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'] = compute_fast_NFW(sat_cat['x'], sat_cat['y'], sat_cat['z'],
                                                                                                                     sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
                                                                                                                     sat_cat['c'], sat_cat['Mh'], sat_cat['Rh'], 
                                                                                                                     rd_pos, rd_vel, exp_frac=0, 
@@ -439,7 +425,7 @@ class HOD:
         tracers = tracers if isinstance(tracers, list) else [tracers]
         
 
-        if self.args['2PCF_settings']['edges_smu'] is None:
+        if self.args['2PCFthread_settings']['edges_smu'] is None:
             if self.args['2PCF_settings']['bin_logscale']:
                 r_bins = np.geomspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
             else:
