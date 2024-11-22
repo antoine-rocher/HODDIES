@@ -583,7 +583,7 @@ class HOD:
         plt.show()
 
 
-    def plot_HMF(self, cats, show_sat=False, range=(10.8,15), tracer=None):
+    def plot_HMF(self, cats, show_sat=False, range=(10.8,15), tracer=None, inital_HMF=None):
 
         colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red'}
         handles=[]
@@ -604,6 +604,9 @@ class HOD:
         if show_sat:
             handles +=[mlines.Line2D([], [], color='k', label='Centrals', ls='--')]
             handles +=[mlines.Line2D([], [], color='k', label='Satellites', ls=':')]
+        if inital_HMF:
+            plt.hist(self.hcat['log10_Mh'], histtype='step', bins=100, color='gray')
+            handles +=[mlines.Line2D([], [], color='gray', label='inital HMF', ls='-')]
 
         plt.yscale('log')
         plt.ylabel('$N_{gal}$')
@@ -617,139 +620,6 @@ class HOD:
         if mask is None:
             mask = np.random.uniform(size=len(cat['x'])) < ds_fac
         return cat[mask]
-    
-
-
-
-#### MPI FUNCTIONS
-
-    def get_ds_fac_mpi(self, tracer, verbose=False):
-        if isinstance(self.args[tracer]['density'], float):
-            if verbose:
-                print('Set density to {} gal/Mpc/h'.format(self.args[tracer]['density']))
-            return self.args[tracer]['density']*self.boxsize**3 /self.ngal_mpi(tracer)[0]
-        else:
-            print('No density set')
-            return 1 
-        
-
-    def ngal_mpi(self, tracer, verbose=False):
-        '''
-        --- Return the number of galaxy and the satelitte fraction form HOD parameters
-        '''
-        start = time.time()
-        hod_list_param_cen, hod_list_param_sat, _ = self.__init_hod_param(tracer)
-        n_cen, n_sat = compute_ngal_mpi(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], hod_list_param_cen, hod_list_param_sat)
-        n_cen, n_sat = self.mpicomm.gather(n_cen, root=0), self.mpicomm.gather(n_sat, root=0)
-
-        self.mpicomm.Barrier()
-        #print(f'--- {rank} test ngal', ngal, flush=True)
-        ncen_tot, nsat_tot = self.mpicomm.bcast(np.sum(n_cen)), self.mpicomm.bcast(np.sum(n_sat))
-        self.mpicomm.Barrier()
-        n_tot = ncen_tot + nsat_tot
-        if verbose:
-            print(time.time()-start)
-        
-        return n_tot, nsat_tot/n_tot
-
-
-
-
-    def make_mpi_mock_cat(self, tracers=None, fix_seed=None, verbose=False):
-        
-        if tracers is None: 
-            tracers = self.args['tracers']
-        else:
-            tracers = tracers if isinstance(tracers, list) else [tracers]
-        if verbose & (self.mpicomm.rank == 0):
-            print('Create mock catalog for {}'.format(tracers), flush=True)         
-        
-        if self.args['assembly_bias']:
-            self._compute_assembly_bias_columns()
-
-        final_cat = {}
-        timeall = MPI.Wtime()
-        for tracer in tracers:
-            start_ini = MPI.Wtime()
-            self._fun_cHOD[tracer] = globals()['_'+self.args[tracer]['HOD_model']]
-            self._fun_sHOD[tracer] = globals()['_'+self.args[tracer]['sat_HOD_model']]
-            if verbose & (self.mpicomm.rank == 0):
-                print('Run HOD for {}'.format(tracer), flush=True)         
-            hod_list_param_cen, hod_list_param_sat, hod_list_ab_param = self.__init_hod_param(tracer)
-
-            if self.args[tracer]['satellites']:
-                ds = self.get_ds_fac_mpi(tracer, verbose=verbose)
-                if (hod_list_param_cen[0]*ds > 1) or (hod_list_param_cen[0]*ds > 1):
-                    import warnings
-                    warnings.warn(f'Ac={hod_list_param_cen[0]} or As={hod_list_param_cen[0]} is > 1, the density is not fixed to {self.args[tracer]["density"]}')
-                else : 
-                    hod_list_param_cen[0] *= ds
-                    hod_list_param_sat[0] *= ds
-        #print(Ac, Mc, sig_M, gamma, Q, pmax, As, M_0, M_1, alpha)
-
-            if self.args['assembly_bias'] & (hod_list_ab_param is not None):
-                cols_ab =  ['ab_'+col for col in self.args[tracer]['assembly_bias'].keys()]
-                if np.all([col in self.hcat.columns() for col in cols_ab]):
-                    ab_arr =  np.vstack([self.hcat[col] for col in cols_ab]).T
-                else:
-                    import warnings
-                    warnings.warn('Precomputed columns for assembly bias have not been found {}. Continue without assembly bias.'.format(cols_ab))
-                    hod_list_ab_param=None
-            else:
-                hod_list_ab_param, ab_arr = None, None
-        
-            Ncent, N_sat = compute_N_mpi(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], hod_list_param_cen, hod_list_param_sat, hod_list_ab_param, ab_arr)
-
-            rng = mpy.random.MPIRandomState(self.hcat.size, seed=fix_seed, mpicomm=self.mpicomm)    
-            cond_cent = (Ncent - rng.uniform(low=0, high=1, dtype=float)) > 0 
-
-            if self.args[tracer]['conformity_bias']:
-                proba_sat = rng.poisson(N_sat*cond_cent, dtype='int')
-            else:
-                proba_sat = rng.poisson(N_sat, dtype='int')
-
-            Nb_sat = proba_sat.sum()
-
-            if (not self.args[tracer]['satellites']) | (Nb_sat == 0):
-                Nb_sat=0
-                final_cat[tracer] = self.hcat[cond_cent]
-            else:
-                if verbose & (self.mpicomm.rank == 0):
-                    print("Start satellite assignement", flush=True)
-                mask_sat = proba_sat > 0    
-                sat_cat = Catalog.from_array(np.repeat(self.hcat[mask_sat].to_array(), proba_sat[mask_sat]), mpicomm=self.mpicomm)
-                NFW = self.NFW_draw[self.NFW_draw < sat_cat['c'].max()]
-                
-                rng = mpy.random.MPIRandomState(Nb_sat, seed=fix_seed, mpicomm=self.mpicomm)
-                nfw = NFW_mpi(sat_cat, Nb_sat, NFW, rng)
-                for i, v in enumerate('xyz'):
-                    sat_cat[v] += (nfw[0].T[i]/1000)
-
-                if self.args[tracer]['vel_sat'] == 'rd_normal':
-                    sig = sat_cat["Vrms"]*0.577*self.args[tracer]['f_sigv']
-                    rng = mpy.random.MPIRandomState(size=1, seed=fix_seed, chunksize=sat_cat.size*3)
-                    sat_cat['vx'],sat_cat['vy'],sat_cat['vz'] = rng.normal(np.hstack((sat_cat['vx'],sat_cat['vy'],sat_cat['vz'])),
-                                                scale=np.array([sig]*3).T.flatten()).reshape(3,sat_cat.size) 
-                else:
-                    for i, v in enumerate('xyz'):
-                        sat_cat[f'v{v}'] += (nfw[1].T[i]/1000)
-
-                        
-                final_cat[tracer] = Catalog.concatenate((self.hcat[cond_cent], sat_cat))
-
-                final_cat[tracer]['Central'] = final_cat[tracer].zeros()
-                final_cat[tracer]['Central'][:cond_cent.sum()] += 1
-
-                self.mpicomm.Barrier()
-                if verbose & (self.mpicomm.rank == 0):
-                    Nc, Ns= final_cat[tracer]['Central'].csum(), final_cat[tracer]['Central'][final_cat[tracer]['Central']==0].size
-                    print('{} mock catalogue done'.format(tracer), MPI.Wtime()-start_ini, flush=True)
-                    print("{} central galaxies, {} satellites, fraction of satellite {:.2f} ".format(Nc, Ns, Ns/(Nc+Ns)), flush=True)
-
-        if verbose & (self.mpicomm.rank == 0):
-            print("Done overall time ", MPI.Wtime() - timeall, flush=True)
-
-        return final_cat
     
 
     def compute_training(self, tracers, nreal=20, training_points=None, start_point=0, verbose=False):
