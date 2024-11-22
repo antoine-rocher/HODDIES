@@ -1,0 +1,121 @@
+tracers:
+  - ELG
+  - LRG
+  
+LRG:
+  Ac: 0.05
+  As: 0.11
+  HOD_model: SHOD
+  sat_HOD_model: Nsat_pow_law
+  M_0: 11.63
+  M_1: 11.7
+  Q: 100
+  alpha: 0.6
+  assembly_bias:
+    c:
+    - 0
+    - 0
+  conformity_bias: false
+  density: 0.001
+  f_sigv: 1
+  gamma: 1
+  log_Mcent: 11.63
+  pmax: 0.1
+  satellites: true
+  shift_M_0: 0
+  shift_M_1: 0.3
+  sigma_M: 0.12
+  use_shift: N
+  vel_sat: rd_normal
+  exp_frac: 0
+  exp_scale: 1 
+  nfw_rescale: 1 
+  v_infall: 0 
+  vsmear: 0
+
+ELG:
+  Ac: 0.05
+  As: 0.11
+  HOD_model: GHOD
+  sat_HOD_model: Nsat_pow_law
+  M_0: 11.63
+  M_1: 11.7
+  Q: 100
+  alpha: 0.6
+  assembly_bias:
+    c:
+    - 0
+    - 0
+  conformity_bias: false
+  density: 0.001
+  f_sigv: 1
+  gamma: 1
+  log_Mcent: 11.63
+  pmax: 0.1
+  satellites: true
+  shift_M_0: 0
+  shift_M_1: 0.3
+  sigma_M: 0.12
+  use_shift: N
+  vel_sat: rd_normal
+  exp_frac: 0
+  exp_scale: 1 
+  nfw_rescale: 1 
+  v_infall: 0 
+  vsmear: null
+
+
+hcat:
+  boxsize: null
+  path_to_sim: /global/cscratch1/sd/arocher/data_cat/
+  sim_name: AbacusSummit_highbase_c000_ph100
+  z_simu: 1.1
+  load_particles: false
+  particle_filename: null
+  mass_cut: null
+
+2PCF_settings: 
+  rsd: True
+  bin_logscale: true
+  mu_max: 1
+  n_mu_bins: 101
+  multipole_index:
+    - 0
+    - 2
+  n_r_bins: 25
+  n_rp_bins: 25
+  rmax: 30
+  rmin: 0.01
+  rp_max: 30
+  rp_min: 0.01
+  rsd: true
+  seed: null
+  edges_rppi: null
+  edges_smu: null
+  los: z
+  pimax: 40 
+  
+fitting_setting:
+  nb_real: 20
+
+# Any parameter from cosmoprimo.fiducial.cosmology see https://cosmoprimo.readthedocs.io/en/latest/api/api.html#cosmoprimo.cosmology.Cosmology
+cosmo:
+  engine: class
+  H_0: 100
+  h: null
+  Omega_m: null
+  Omega_cdm: null 
+  Omega_L: null
+  Omega_b: null
+  sigma_8: null
+  n_s: null
+  w0_fdl: null
+  wa_fdl: null
+
+seed: 42
+nthreads: 64
+precompute_NFW: data/nfw.npy
+cm_relation: diemer19
+mass_def: 200c
+assembly_bias: False
+use_particles: false
