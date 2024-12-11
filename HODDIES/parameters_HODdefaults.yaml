@@ -22,10 +22,7 @@ LRG:
   log_Mcent: 11.63
   pmax: 0.1
   satellites: true
-  shift_M_0: 0
-  shift_M_1: 0.3
   sigma_M: 0.12
-  use_shift: N
   vel_sat: rd_normal
   exp_frac: 0
   exp_scale: 1 
@@ -53,10 +50,7 @@ ELG:
   log_Mcent: 11.63
   pmax: 0.1
   satellites: true
-  shift_M_0: 0
-  shift_M_1: 0.3
   sigma_M: 0.12
-  use_shift: N
   vel_sat: rd_normal
   exp_frac: 0
   exp_scale: 1 
