@@ -9,11 +9,11 @@ import sys
 from mpytools import Catalog
 
 
-def read_Abacus_hcat(args, use_L2=True, halo_lc=False):
-    if os.getenv('NERSC_HOST') == 'perlmutter':
-        dir_sim = '/global/cfs/cdirs/desi/cosmosim/Abacus' 
-    elif socket.gethostname() == 'antoine-ThinkPad-P1-Gen-6':
-        dir_sim = '/home/antoine/Bureau/Transfert/postdoc/Abacus_sims'
+def read_Abacus_hcat(args, dir_sim, use_L2=True, halo_lc=False):
+    # if os.getenv('NERSC_HOST') == 'perlmutter':
+    #     dir_sim = '/global/cfs/cdirs/desi/cosmosim/Abacus' 
+    # elif socket.gethostname() == 'antoine-ThinkPad-P1-Gen-6':
+    #     dir_sim = '/home/antoine/Bureau/Transfert/postdoc/Abacus_sims'
     if use_L2:
         Lsuff = 'L2'
     else : 
