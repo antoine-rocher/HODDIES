@@ -67,7 +67,7 @@ class HOD:
             
         else:
             if path_to_abacus_sim:
-                self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, halo_lc=self.args['hcat']['halo_lc'])
+                self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim, halo_lc=self.args['hcat']['halo_lc'])
                 self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'])               
 
             elif read_Abacus_mpi:
