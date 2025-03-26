@@ -30,7 +30,7 @@ class HOD:
     --- HOD code 
     """
 
-    def __init__(self, param_file=None, args=None, hcat=None, usecols=None, read_Abacus=False, read_pinnochio=False, read_Abacus_mpi=False):
+    def __init__(self, param_file=None, args=None, hcat=None, usecols=None, path_to_abacus_sim=False, read_pinnochio=False, read_Abacus_mpi=False):
         """
         ---
         """
@@ -66,7 +66,7 @@ class HOD:
             self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
             
         else:
-            if read_Abacus:
+            if path_to_abacus_sim:
                 self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, halo_lc=self.args['hcat']['halo_lc'])
                 self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'])               
 
