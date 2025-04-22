@@ -5,7 +5,7 @@ import time
 import fitsio
 import os
 import sys
-from cosmoprimo.fiducial import AbacusSummit, Planck2018FullFlatLCDM, Cosmology
+from cosmoprimo.fiducial import Cosmology, AbacusSummit
 from utils import *
 from HOD_models import _SHOD, _GHOD, _SFHOD, _SHOD, _LNHOD, _HMQ, _mHMQ, _Nsat_pow_law
 from abacus_func import *
@@ -13,29 +13,56 @@ import yaml
 import socket
 from pinnochio_io import *
 from pypower import CatalogMesh
-from mpi4py import MPI
 import glob
 from fits_functions import *
 import pandas as pd
 import emcee 
-#import zeus
+import zeus
 import sklearn.gaussian_process as skg
-from scipy.stats import norm
-from multiprocessing import Pool
 from mpytools import Catalog
 import collections.abc
 
 class HOD:
-    """
-    --- HOD code 
-    """
 
-    def __init__(self, param_file=None, args=None, hcat=None, usecols=None, path_to_abacus_sim=False, read_pinnochio=False, read_Abacus_mpi=False):
+    """Class with tools to generate HOD mock catalogs and plotting functions"""
+
+    def __init__(self, param_file='default_HOD_parameters.yaml', args=None, hcat=None, 
+                 subsample=None, path_to_abacus_sim=False, read_pinnochio=False):
+        
         """
-        ---
+        Initialize :class:`HOD`. 
+
+        Parameters
+        ----------
+        param_file : str, default='default_HOD_parameters.yaml'
+            Input parameter file to initialize the HOD class
+
+        args : dict, default=None
+            Optional
+            Input dictonary to initialize  the HOD class. Carefull ``args`` is prefered against ``param_file``. 
+        hcat : dict, ndarray, Catalog, default=None
+            Optional
+            Input halo catalog. The halo catalog must have at least these columns names: ['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'Rs', 'c', 'Vrms', 'halo_id']. 
+            'x', 'y', 'z', and 'vx', 'vy', 'vz' are halo positions and velocities. 
+            Mh and Rh are halo mass and radius (most of the time consider as Mvir and Rvir). 
+            'c' is the halo concentration, 'Vrms' is the velocity dispersion of the halo particles (used for NFW satellites). 
+            'halo_id' is a unique integer to identify each halo.
+
+        subsample : dict, ndarray, Catalog, default=None
+            Optional, Not yet ready!
+            Input of particles or subhalo catalog. The subsample catalog must have at least these columns names: ['x', 'y', 'z', 'vx', 'vy', 'vz', 'halo_id']. 
+
+        path_to_abacus_sim : str, default=None
+            Optional,
+            Path to Abacus simulation directory. In this case, it automatically load the Abacus box/LC at the corresponding redshift snapshots and initialze boxsize and cosmology.
+
+        read_pinnochio : bool, default=False
+            Optional, load Pinnochio simulation catalog. Need to provide the path in the input parameter file.
+
         """
-        self.mpicomm = MPI.COMM_WORLD
-        self.args = yaml.load(open('parameters_HODdefaults.yaml'), Loader=yaml.FullLoader)      
+        
+
+        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), param_file)), Loader=yaml.FullLoader)
 
         def update_dic(d, u):
             for k, v in u.items():
@@ -47,14 +74,9 @@ class HOD:
             
         new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else args if args is not None else self.args
         update_dic(self.args, new_args)
-        
-        #if args is not None:
-        #    self.args.update(args)
-        self.args['nthreads'] = min(numba.get_num_threads(), self.args['nthreads'])
-        print('Set number of threads to {}'.format(self.args['nthreads']))
 
-        if 'halo_lc' not in self.args['hcat'].keys():      
-            self.args['hcat']['halo_lc'] = False
+        self.args['nthreads'] = min(numba.get_num_threads(), self.args['nthreads'])
+        print('Set number of threads to {}'.format(self.args['nthreads']), flush=True)
 
         if hcat is not None:
             if isinstance(hcat, Catalog):
@@ -62,20 +84,15 @@ class HOD:
             elif isinstance(hcat, dict):
                 self.hcat = Catalog.from_dict(hcat)
             else:
-                raise ValueError ('halo catalog is not a dictionary')
+                raise ValueError ('Halo catalog is not a dictionary')
             self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
             
         else:
             if path_to_abacus_sim:
+                self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
                 self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim, halo_lc=self.args['hcat']['halo_lc'])
-                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'])               
-
-            elif read_Abacus_mpi:
-                print('Attention MODIF')
-                #self.hcat, self.boxsize = read_Abacus_hcat(self.args)
-                self.hcat = Catalog.load('/pscratch/sd/a/arocher/test_abacus_cat_mpi.fits', mpicomm=self.mpicomm)
-                self.boxsize=1000
-                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine']) 
+                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'])   
+                            
                 
             elif read_pinnochio:
                 print('Read Pinnochio', flush=True)
@@ -83,7 +100,12 @@ class HOD:
                 self.hcat, self.boxsize, self.cosmo = read_pinnochio_hcat(self.args)
                 print('Done {:.2f}'.format(time.time()-start), flush=True)
             else: 
-                self.hcat = Catalog.read(args['hcat'][['path_to_sim']])            
+                if not os.path.exists(self.args['hcat']['path_to_sim']): 
+                    raise FileNotFoundError('{} not found'.format(self.args['hcat']['path_to_sim']))
+                self.hcat = Catalog.read(self.args['hcat'][['path_to_sim']]) 
+
+        if 'log10_Mh' not in self.hcat.columns(): 
+            self.hcat['log10_Mh'] = np.log10(self.hcat['Mh'])
         self.H_0 = 100
 
         if 'c' not in self.hcat.columns():
@@ -99,16 +121,14 @@ class HOD:
             import HOD_models 
             help(HOD_models)
             raise ValueError('{} not implemented in HOD models'.format(self.args['HOD_param']['HOD_model']))
-        
-        self.rng = np.random.RandomState(seed=self.args['seed'])
-        
+                
         if self.args['assembly_bias']:
             self._compute_assembly_bias_columns()
     
     
     def __init_hod_param(self, tracer):
             '''
-            --- Init hod list parameters
+            --- Create a list of hod parameters for mock creation
             '''
 
             hod_list_param_sat, hod_param_ab = None, None
@@ -128,8 +148,18 @@ class HOD:
                 hod_param_ab = np.array(list(self.args[tracer]['assembly_bias'].values()), dtype='float64').T
 
             return np.float64(hod_list_param_cen), hod_list_param_sat, hod_param_ab
-       
+
+
     def get_ds_fac(self, tracer, verbose=False):
+        """_summary_
+
+        Args:
+            tracer (str): Tracer name. Need to be in self.tracers
+            verbose (bool, optional): Defaults to False.
+
+        Returns:
+            downsampling_factor: Rescaling factor for As and Ac to generate the mock at the density given in the parameter file  
+        """
         if isinstance(self.args[tracer]['density'], float):
             if verbose:
                 print('Set density to {} gal/Mpc/h'.format(self.args[tracer]['density']))
@@ -139,9 +169,23 @@ class HOD:
             return 1 
     
     def ngal(self, tracer, verbose=False):
-        '''
-        --- Return the number of galaxy and the satelitte fraction form HOD parameters
-        '''
+        """
+        Return the number of galaxy and the satelitte fraction 
+        
+        Parameters
+        ----------
+            tracer: str
+                Name of the galaxy tracer in self.tracers 
+            verbose (bool, optional): Defaults to False.
+
+        Returns
+        -------
+        ngal: float
+            Total number of galaxies expected
+        
+        fsat: float
+            Expected fraction of satellite galaxy (n_sat/ngal)
+        """
         start = time.time()
         hod_list_param_cen, hod_list_param_sat, _ = self.__init_hod_param(tracer)
         ngal, fsat = compute_ngal(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], self.args['nthreads'], 
@@ -153,6 +197,23 @@ class HOD:
 
     def calc_env_factor(self, cellsize=5, resampler='cic'):
 
+        """
+        Compute density around each halos on a mesh. Based on pypower CatalogMesh https://pypower.readthedocs.io/en/latest/api/api.html#pypower.mesh.CatalogMesh
+
+        Parameters
+        ----------
+        cellsize : array, float, default=5
+            Physical size of mesh cells.
+        
+        resampler : string, ResampleWindow, default='tsc'
+            Resampler used to assign particles to the mesh.
+            Choices are ['ngp', 'cic', 'tcs', 'pcs'].
+
+        Returns
+        -------
+        None
+            Add column named ``env`` in the halo catalog self.hcat 
+        """
         print(f'Compute environment in cellsize {cellsize}...', flush=True)
         import warnings
         warnings.warn('Enviroment factor computed on halo not particles, need to be updated. Assume boxcenter to 0')
@@ -166,14 +227,17 @@ class HOD:
 
 
     def _compute_assembly_bias_columns(self):
+
+        """ Initialize assembly boas columns """
+
         ab_proxy = np.unique([[l for l in ll] for ll in [list(self.args[tr]['assembly_bias'].keys()) for tr in self.args['tracers']]])
         for ab in ab_proxy:
             self.set_assembly_bias_values(ab)
 
     def set_assembly_bias_values(self, col, bins=50):
-        """
-        --- Set by mass bin a linear fonction (-0.5, 0.5) according to col value
-        """
+
+        """ Assign a ranked valued linearly between -0.5 and 0.5 for assembly bias computation """
+
         if f'ab_{col}' in self.hcat.columns():
             return 0
         
@@ -202,18 +266,17 @@ class HOD:
 
     def make_mock_cat(self, tracers=None, fix_seed=None, verbose=True):
         """
-        Generate mock catalogs from HOD model.
+        Generate HOD mock catalogs.
 
-        Parameters
+       Parameters
         ----------
-        self
-
-        fix_seed : Fix the seed for reproductibility. Caveat : Only works for a same number of threads in args['nthreads']
+            tracers (list, str, optional): Name of the galaxy tracers in self.tracers to put in the mock. If None consuder all tracers. Defaults to None.
+            fix_seed (int, optional): Fix the seed for reproductibility. Caveat : Only works for a same number of threads in args ``nthreads``. Defaults to None.
+            verbose (bool, optional): Defaults to True.
 
         Output
         ------
-        mock_cat : dict
-            dict of mock galaxies properties
+            mock_cat (Catalog): output mock catalog
         """
 
         rng = np.random.RandomState(seed=fix_seed)
@@ -300,7 +363,7 @@ class HOD:
                 if self.args['use_particles']:
                     if verbose: print('Using particles', flush=True)
                     if self.part_subsamples is not None:
-                        mask_nfw = compute_sat_from_part(self.part_subsamples['pos'].T[0],self.part_subsamples['pos'].T[1],self.part_subsamples['pos'].T[2],
+                        mask_nfw = compute_sat_from_abacus_part(self.part_subsamples['pos'].T[0],self.part_subsamples['pos'].T[1],self.part_subsamples['pos'].T[2],
                             self.part_subsamples['vel'].T[0], self.part_subsamples['vel'].T[1],self.part_subsamples['vel'].T[2],
                             sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
                             self.hcat['npoutA'][mask_sat], self.hcat['npstartA'][mask_sat], list_nsat, np.insert(np.cumsum(list_nsat), 0, 0), self.args['nthreads'], seed=seed)
@@ -356,8 +419,8 @@ class HOD:
 
         # When LRG and ELG are in the same halo, put 1 LRG at the center and all other galaxies are position following NFW profile
         if ((tracers == ['ELG', 'LRG']) | (tracers == ['LRG', 'ELG'])) & (mask_id.sum() >0) & ~self.args['hcat']['halo_lc']:
-            mask_elg = np.in1d(final_cat['ELG']['row_id'], final_cat['LRG']['row_id'])
-            mask_lrg = np.in1d(final_cat['LRG']['row_id'], final_cat['ELG']['row_id'])
+            mask_elg = np.in1d(final_cat['ELG']['halo_id'], final_cat['LRG']['halo_id'])
+            mask_lrg = np.in1d(final_cat['LRG']['halo_id'], final_cat['ELG']['halo_id'])
             
             cen_LRG = self.hcat[mask_id]
             cen_LRG['Central'] = cen_LRG.ones()
@@ -378,6 +441,8 @@ class HOD:
 
 
     def init_elg_sat_for_lrg(self, tracer, sat_cat, fix_seed=None):
+
+        """ Draft function to put ELGs around LRG in a NFW profile if there are in the same halo """
 
         rng = np.random.RandomState(seed=fix_seed)
 
@@ -414,7 +479,6 @@ class HOD:
         return sat_cat
 
 
-                                         
     def get_2PCF(self, cats, tracers=None, R1R2=None, verbose=True):
         """
         --- Return the 2PCF for a given mock catalog in a cubic box

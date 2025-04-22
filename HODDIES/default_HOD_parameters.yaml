@@ -61,12 +61,17 @@ ELG:
 
 hcat:
   boxsize: null
-  path_to_sim: /global/cscratch1/sd/arocher/data_cat/
-  sim_name: AbacusSummit_highbase_c000_ph100
-  z_simu: 1.1
-  load_particles: false
-  particle_filename: null
+  path_to_sim: null
+  path_to_part: null
   mass_cut: null
+  z_simu: 1.1
+  Abacus:
+    sim_name: AbacusSummit_highbase_c000_ph100
+    load_particles: false
+    halo_lc: False
+    z_simu_lc: null # provide a single redshift or a list of redshift shells
+  Pinnochio: 
+    dir_sim: null
 
 2PCF_settings: 
   rsd: True
@@ -93,9 +98,10 @@ fitting_setting:
   nb_real: 20
 
 # Any parameter from cosmoprimo.fiducial.cosmology see https://cosmoprimo.readthedocs.io/en/latest/api/api.html#cosmoprimo.cosmology.Cosmology
+# H_0 is always assume to be 100
 cosmo:
+  fiducial_cosmo: null # Use any fiducial cosmology from cosmoprimo, i.e. Planck2018FullFlatLCDM, BOSS (see https://github.com/cosmodesi/cosmoprimo/blob/main/cosmoprimo/fiducial.py)
   engine: class
-  H_0: 100
   h: null
   Omega_m: null
   Omega_cdm: null 
@@ -106,7 +112,7 @@ cosmo:
   w0_fdl: null
   wa_fdl: null
 
-seed: 42
+seed: null
 nthreads: 128
 cm_relation: diemer19
 mass_def: 200c

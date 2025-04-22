@@ -25,7 +25,7 @@ def read_Abacus_hcat(args, dir_sim, use_L2=True, halo_lc=False):
         path_to_sim = os.path.join(dir_sim, 'small',
                                     args['hcat']['sim_name'], "halos", "z{:.3f}".format(args['hcat']["z_simu"]))
     elif halo_lc:
-        if 'z_simu_lc' not in args['hcat'].keys():
+        if args['hcat']["z_simu_lc"] is None:
             args['hcat']["z_simu_lc"] = [args['hcat']["z_simu"]]
         if not isinstance(args['hcat']["z_simu_lc"], list):
             args['hcat']["z_simu_lc"] = [args['hcat']["z_simu_lc"]]
@@ -129,7 +129,7 @@ def load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, halo_lc=False, Nthread=64
                             dic['Rs'], dic['Rh'], dic['c'],
                             hcat[f'r25_{Lsuff}com'], hcat[f'r98_{Lsuff}com'], Nthread)
     
-    dic['row_id'] = np.array(hcat[index], dtype=np.int64)
+    dic['halo_id'] = np.array(hcat[index], dtype=np.int64)
     if halo_lc: 
         dic['redshift_interp'] = np.array(hcat['redshift_interp'], dtype=np.float32)
     if verbose : 
@@ -138,3 +138,41 @@ def load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, halo_lc=False, Nthread=64
     
     return Catalog.from_dict(dic), part_subsamples, header["BoxSizeHMpc"], origin
 
+
+@njit(parallel=True, fastmath=True)
+def compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, 
+                          x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, 
+                          npout, npstart, nb_sat, cum_sum_sat, Nthread, seed=None):
+    
+    """
+    --- Compute positions and velocities for satelitte galaxies from Abacus particle catalog.
+    """
+    numba.set_num_threads(Nthread)
+    mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
+    hstart = np.rint(np.linspace(0, npout.size, Nthread + 1))
+    for tid in numba.prange(Nthread):
+        if seed is not None:
+            np.random.seed(seed[tid])
+
+        for i in range(int(hstart[tid]), int(hstart[tid + 1])):
+            if nb_sat[i] < npout[i]:
+                tt = np.random.choice(npout[i], nb_sat[i], replace=False) + npstart[i]
+                x_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = xp[tt]
+                y_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = yp[tt]
+                z_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = zp[tt]
+                vx_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vxp[tt]
+                vy_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vyp[tt]
+                vz_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vzp[tt]
+                #id_parts[cum_sum_sat[i]: cum_sum_sat[i+1]] = tt + npstart[i]            
+            else:
+                if npout[i] > 0:
+                    tt = np.arange(npout[i]) + npstart[i]
+                    x_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = xp[tt]
+                    y_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = yp[tt]
+                    z_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = zp[tt]
+                    vx_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vxp[tt]
+                    vy_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vyp[tt]
+                    vz_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vzp[tt]
+                
+                mask_nfw[cum_sum_sat[i]+npout[i]: cum_sum_sat[i+1]] = True
+    return mask_nfw

@@ -295,45 +295,6 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
     return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat
 
 
-@njit(parallel=True, fastmath=True)
-def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp, 
-                          x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, 
-                          npout, npstart, nb_sat, cum_sum_sat, Nthread, seed=None):
-    
-    """
-    --- Compute  positions and velocities for satelitte galaxies
-    """
-    numba.set_num_threads(Nthread)
-    mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
-    hstart = np.rint(np.linspace(0, npout.size, Nthread + 1))
-    for tid in numba.prange(Nthread):
-        if seed is not None:
-            np.random.seed(seed[tid])
-
-        for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-            if nb_sat[i] < npout[i]:
-                tt = np.random.choice(npout[i], nb_sat[i], replace=False) + npstart[i]
-                x_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = xp[tt]
-                y_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = yp[tt]
-                z_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = zp[tt]
-                vx_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vxp[tt]
-                vy_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vyp[tt]
-                vz_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vzp[tt]
-                #id_parts[cum_sum_sat[i]: cum_sum_sat[i+1]] = tt + npstart[i]            
-            else:
-                if npout[i] > 0:
-                    tt = np.arange(npout[i]) + npstart[i]
-                    x_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = xp[tt]
-                    y_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = yp[tt]
-                    z_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = zp[tt]
-                    vx_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vxp[tt]
-                    vy_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vyp[tt]
-                    vz_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vzp[tt]
-                
-                mask_nfw[cum_sum_sat[i]+npout[i]: cum_sum_sat[i+1]] = True
-    return mask_nfw
-
-
 
 def plot_HOD(p_cen, p_sat, fun_cHOD, fun_sHOD, logM = np.linspace(10.8,15,100), fig=None, color=None, label=None, figsize=(5,4), show=True):
     
