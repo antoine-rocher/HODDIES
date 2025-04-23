@@ -3,17 +3,37 @@ from abacusnbody.data.compaso_halo_catalog import CompaSOHaloCatalog
 import time 
 from numba import njit, numba
 import os 
-import socket
-import fitsio
 import sys
 from mpytools import Catalog
 
 
 def read_Abacus_hcat(args, dir_sim, use_L2=True, halo_lc=False):
-    # if os.getenv('NERSC_HOST') == 'perlmutter':
-    #     dir_sim = '/global/cfs/cdirs/desi/cosmosim/Abacus' 
-    # elif socket.gethostname() == 'antoine-ThinkPad-P1-Gen-6':
-    #     dir_sim = '/home/antoine/Bureau/Transfert/postdoc/Abacus_sims'
+    """
+    Load an Abacus halo catalog using provided configuration parameters.
+
+    Parameters
+    ----------
+    args : dict
+        Dictionary from the parameter file including simulation name, redshift, etc.
+    dir_sim : str
+        Path to the root simulation directory.
+    use_L2 : bool, optional
+        Whether to use L2com statistic from Abacus simulation or not. Default is True.
+    halo_lc : bool, optional
+        Whether to load the halo light cone catalog. Default is False.
+
+    Returns
+    -------
+    hcat : Catalog
+        Halo catalog with derived physical quantities.
+    part_subsamples : dict or None
+        Dictionary of particle subsamples if particles are loaded, otherwise None.
+    boxsize : float
+        Size of the simulation box in Mpc/h.
+    origin : ndarray or None
+        Origin(s) of light cone if halo_lc is True, otherwise None.
+    """
+
     if use_L2:
         Lsuff = 'L2'
     else : 
@@ -36,17 +56,39 @@ def read_Abacus_hcat(args, dir_sim, use_L2=True, halo_lc=False):
                                     args['hcat']['sim_name'], "halos",  "z{:.3f}".format(args['hcat']["z_simu"]))
     tt = time.time()
 
-    hcat, part_subsamples, boxsize, origin = load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, halo_lc,
-                                                  Nthread=args['nthreads'],  mass_cut=args['hcat']['mass_cut'], use_particles=args['hcat']['load_particles'])
+    hcat, part_subsamples, boxsize, origin = load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, halo_lc, Nthread=args['nthreads'],  mass_cut=args['hcat']['mass_cut'], use_particles=args['hcat']['load_particles'])
     print(f'{args["hcat"]["sim_name"]} at {args["hcat"]["z_simu"]} loaded, took {time.strftime("%H:%M:%S",time.gmtime(time.time() - tt))}', flush=True)
     return hcat, part_subsamples, boxsize, origin
 
 
 
-def load_CompaSO(path_to_sim, usecols, mass_cut = None, halo_lc=False, use_particles=None):
+def load_CompaSO(path_to_sim, usecols, mass_cut=None, halo_lc=False, use_particles=None):
     """
-    --- Function to load AbacusSummit halo catalogs
+    Load the CompaSO halo catalog from AbacusSummit simulations.
+
+    Parameters
+    ----------
+    path_to_sim : str or list
+        Path(s) to the simulation directory.
+    usecols : list of str
+        Fields to load from the catalog.
+    mass_cut : float, optional
+        Minimum halo mass threshold (in Msun/h). Halos with smaller mass are excluded.
+    halo_lc : bool, optional
+        If True, load halo light cone catalogs from multiple redshifts.
+    use_particles : bool, optional
+        Whether to load particle data or not.
+
+    Returns
+    -------
+    hcat_i : np.ndarray
+        Halo catalog array after applying mass cut.
+    header : dict
+        Metadata and simulation header.
+    part_subsamples : dict or None
+        Dictionary of particle subsamples if applicable.
     """
+
 
     if use_particles:
         load_part = True
@@ -77,8 +119,32 @@ def compute_col_from_Abacus(N, pos, vel, ParticleMassHMsun,
                             Mvir, log10_Mh, Rs, Rvir, c,
                             r25, r98, Nthread):
     """
-    --- Function to prepare colunms for the halo catalog 
+    Compute derived physical columns for halos (mass, positions, velocities, radii, concentration).
+
+    Parameters
+    ----------
+    N : array
+        Number of particles per halo.
+    pos, vel : arrays
+        Position and velocity vectors.
+    ParticleMassHMsun : float
+        Mass of one simulation particle in Msun/h.
+    x, y, z : arrays
+        Output arrays for halo positions.
+    vx, vy, vz : arrays
+        Output arrays for halo velocities.
+    Mvir, log10_Mh : arrays
+        Output arrays for virial mass and log10(Mvir).
+    Rs, Rvir : arrays
+        Output arrays for scale radius and virial radius in kpc/h.
+    c : array
+        Output array for halo concentration.
+    r25, r98 : arrays
+        Input radius including 25 and 98 % of the halo particles 
+    Nthread : int
+        Number of threads for parallel execution.
     """
+
     
     numba.set_num_threads(Nthread)
     # starting index of each thread
@@ -95,11 +161,43 @@ def compute_col_from_Abacus(N, pos, vel, ParticleMassHMsun,
             Rvir[i] = r98[i]*1000
             c[i] = r98[i]/r25[i]        
 
-       
+
 def load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, halo_lc=False, Nthread=64, mass_cut=None, verbose=True, use_particles=None):
+
     """
-    --- Function which returns Abacus halo catalog for HOD studies
+    Wrapper to load and process Abacus halo catalogs, used for HOD modeling.
+
+    Parameters
+    ----------
+    path_to_sim : str or list
+        Path(s) to the halo catalog directory.
+    usecols : list
+        Fields to read from the catalog.
+    Lsuff : str
+        Suffix (e.g., 'L2') used to determine which position/velocity columns to load.
+    halo_lc : bool, optional
+        Whether to load from halo light cone catalogs. Default is False.
+    Nthread : int, optional
+        Number of threads for computation. Default is 64.
+    mass_cut : float, optional
+        Minimum mass threshold to include halos. Default is None.
+    verbose : bool, optional
+        Whether to print progress messages. Default is True.
+    use_particles : bool, optional
+        Whether to include particle-level data in the returned catalog.
+
+    Returns
+    -------
+    Catalog
+        Processed catalog of halo data with derived fields.
+    part_subsamples : dict or None
+        Particle subsamples if available.
+    boxsize : float
+        Simulation box size in comoving Mpc/h.
+    origin : ndarray or None
+        Light cone origin(s) if applicable.
     """
+
     if verbose :
         start = time.time()
         ld_part = 'with particles' if use_particles else ''
@@ -113,8 +211,7 @@ def load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, halo_lc=False, Nthread=64
     
     n_p, pos, vel, index = ('N', f'x_{Lsuff}com', f'v_{Lsuff}com', 'id') if not halo_lc else ('N_interp', 'pos_interp', 'vel_interp', 'index_halo')
     
-    dic = dict((col, np.empty(hcat[n_p].size, dtype='float32')) 
-                   for col in ['x', 'y','z','vx','vy','vz', 'Rs','Rh', 'c', 'Mh', 'log10_Mh'])
+    dic = dict((col, np.empty(hcat[n_p].size, dtype='float32')) for col in ['x', 'y','z','vx','vy','vz', 'Rs','Rh', 'c', 'Mh', 'log10_Mh'])
     dic['Vrms'] = np.array(hcat[f'sigmav3d_{Lsuff}com'])
     if use_particles:
         dic['npstartA'] = np.array(hcat['npstartA'], dtype='int64')
@@ -140,13 +237,42 @@ def load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, halo_lc=False, Nthread=64
 
 
 @njit(parallel=True, fastmath=True)
-def compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, 
-                          x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, 
-                          npout, npstart, nb_sat, cum_sum_sat, Nthread, seed=None):
+def compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, x_sat, y_sat, z_sat, 
+                                 vx_sat, vy_sat, vz_sat, npout, npstart, nb_sat, 
+                                 cum_sum_sat, Nthread, seed=None):
     
     """
-    --- Compute positions and velocities for satelitte galaxies from Abacus particle catalog.
+    Sample satellite galaxy positions and velocities from Abacus particle subsamples.
+
+    Parameters
+    ----------
+    xp, yp, zp : arrays
+        Particle positions in each axis.
+    vxp, vyp, vzp : arrays
+        Particle velocities in each axis.
+    x_sat, y_sat, z_sat : arrays
+        Host halo positions in each axis.
+    vx_sat, vy_sat, vz_sat : arrays
+        Host halo velocities in each axis.
+    npout : array
+        Number of available particles for each halo.
+    npstart : array
+        Starting index in the global particle array for each halo.
+    nb_sat : array
+        Number of satellites to assign per halo.
+    cum_sum_sat : array
+        Cumulative sum array to locate output indices.
+    Nthread : int
+        Number of threads to use in parallel loop.
+    seed : array, optional
+        Array of seeds for reproducible random sampling across threads.
+
+    Returns
+    -------
+    mask_nfw : array
+        Boolean mask identifying entries with no enough particles (to be filled using NFW).
     """
+
     numba.set_num_threads(Nthread)
     mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
     hstart = np.rint(np.linspace(0, npout.size, Nthread + 1))

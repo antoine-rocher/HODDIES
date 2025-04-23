@@ -4,11 +4,39 @@ from numba import njit, numba
 import os
 import HOD_models
 import matplotlib.pyplot as plt
-import mpytools as mpy
+# import mpytools as mpy
 import scipy
+from pypower import CatalogFFTPower
 
 
 def apply_rsd(cat, z, boxsize, H_0=100, los='z', vsmear=0, cosmo=None):
+
+    """
+    Apply redshift-space distortions (RSD) to a galaxy catalog.
+
+    Parameters
+    ----------
+    cat : dict
+        Dictionary containing particle positions and velocities. Keys should include 'x', 'y', 'z', 'vx', 'vy', 'vz'.
+    z : float
+        Redshift at which to apply the distortions.
+    boxsize : float
+        Size of the simulation box in Mpc/h.
+    H_0 : float, optional
+        Hubble constant in km/s/Mpc. Default is 100.
+    los : {'x', 'y', 'z'}, optional
+        Line-of-sight axis. Default is 'z'.
+    vsmear : float, optional
+        Add redshift error using gaussian distribution in km/s. Default is 0.
+    cosmo : object, optional
+        Cosmology object from cosmoprimo. If None, uses DESI fiducial cosmology. 
+
+    Returns
+    -------
+    pos_rsd : list of ndarray
+        List of arrays containing RSD-applied positions for x, y, and z.
+    """
+
     if cosmo is None :
         from cosmoprimo.fiducial import DESI
         cosmo = DESI(engine='class')
@@ -17,10 +45,37 @@ def apply_rsd(cat, z, boxsize, H_0=100, los='z', vsmear=0, cosmo=None):
     return pos_rsd
     
     
-def compute_2PCF(pos1, edges, ells=(0, 2), boxsize=None, los='z', nthreads=8, R1R2=None, pos2=None, mpicomm=None):
+def compute_2PCF(pos1, edges, boxsize, ells=(0, 2), los='z', nthreads=32, R1R2=None, pos2=None, mpicomm=None):
+
     """
-    --- Compute 2D correlation function and return multipoles for a galaxy/halo catalog in a cubic box.
-    """       
+    Compute the 2-point correlation function multipoles for a periodic box.
+
+    Parameters
+    ----------
+    pos1 : array-like
+        Positions of sample 1 (e.g., galaxies or halos).
+    edges : list of arrays
+        Bin edges in separation (s, mu).
+    boxsize : float
+        Size of the simulation box.
+    ells : tuple of int, optional
+        Multipoles to project onto. Default is (0, 2).
+    los : {'x', 'y', 'z'}, optional
+        Line-of-sight direction. Default is 'z'.
+    nthreads : int, optional
+        Number of threads for parallel computation. Default is 32.
+    R1R2 : array-like, optional
+        Precomputed RR counts for normalization. Default is None.
+    pos2 : array-like, optional
+        Positions of sample 2 (for cross-correlations). Default is None.
+    mpicomm : object, optional
+        MPI communicator. Default is None.
+
+    Returns
+    -------
+    s, (multipoles) : tuple(array, ndarray)
+        Average separation for each s bin and computed multipoles of the 2PCF.
+    """    
         
     result = TwoPointCorrelationFunction('smu', edges, 
                                          data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
@@ -29,10 +84,37 @@ def compute_2PCF(pos1, edges, ells=(0, 2), boxsize=None, los='z', nthreads=8, R1
     return project_to_multipoles(result, ells=ells)
 
     
-def compute_wp(pos1, edges, pimax=40, boxsize=None, los='z', nthreads=8, R1R2=None, pos2=None, mpicomm=None):
+def compute_wp(pos1, edges, boxsize, pimax=40, los='z', nthreads=32, R1R2=None, pos2=None, mpicomm=None):
     """
-    --- Compute 2D correlation function and return multipoles for a galaxy/halo catalog in a cubic box.
-    """       
+    Compute the projected correlation function w_p(r_p).
+
+    Parameters
+    ----------
+    pos1 : array-like
+        Positions of sample 1 (e.g., galaxies or halos).
+    edges : list of arrays
+        Bin edges for projected separation (r_p, pi).
+    boxsize : float
+        Size of the simulation box.
+    pimax : float, optional
+        Maximum line-of-sight separation for integration.
+    los : {'x', 'y', 'z'}, optional
+        Line-of-sight direction. Default is 'z'.
+    nthreads : int, optional
+        Number of threads for parallel computation. Default is 32.
+    R1R2 : array-like, optional
+        Precomputed RR counts for normalization. Default is None.
+    pos2 : array-like, optional
+        Positions of sample 2 for cross-correlations. Default is None.
+    mpicomm : object, optional
+        MPI communicator. Default is None.
+
+    Returns
+    -------
+    rp, wp : tuple(array, array)
+        Seperation and projected correlation function.
+    """
+
         
     result = TwoPointCorrelationFunction('rppi', edges, 
                                          data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
@@ -42,10 +124,43 @@ def compute_wp(pos1, edges, pimax=40, boxsize=None, los='z', nthreads=8, R1R2=No
 
 
 @njit(parallel=True, fastmath=True)
-def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab, Nthread, ab_arr=None, conformity=False, seed=None):
+def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32, ab_arr=None, conformity=False, seed=None):
     """
-    --- Compute the probability N for central galaxies given a HOD model
+    Compute the number of central and satellite galaxies in a halo using a HOD (Halo Occupation Distribution) model.
+
+    Parameters:
+        log10_Mh : ndarray
+            Logarithmic mass of halos.
+        fun_cHOD : callable
+            Function to compute central occupation based on halo mass.
+        fun_sHOD : callable
+            Function to compute satellite occupation based on halo mass.
+        p_cen : ndarray
+            Parameters for the central HOD function.
+        p_sat : ndarray
+            Parameters for the satellite HOD function.
+        p_ab : ndarray or None, optional
+            Assembly bias parameters (central and satellite). Default is None.
+        Nthread : int, optional
+            Number of threads to use in parallel computation. Default is 32.
+        ab_arr : ndarray or None, optional
+            Assembly bias array per halo. Default is None.
+        conformity : bool, optional
+            Whether satellite number is correlated with central galaxy presence. Default is False.
+        seed : ndarray or None, optional
+            Seed array for RNG per thread. Default is None.
+
+    Returns:
+        Ncent : ndarray
+            Expected number of central galaxies.
+        N_sat : ndarray
+            Expected number of satellite galaxies.
+        cond_cent : ndarray
+            Boolean array indicating presence of a central galaxy.
+        proba_sat : ndarray
+            Sampled number of satellites per halo.
     """
+
     
     numba.set_num_threads(Nthread)
     # starting index of each thread
@@ -88,24 +203,57 @@ def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab, Nthread, ab_arr=
 
 @njit(fastmath=True)
 def _f_nfw(x):
-    '''
-    --- Aiding function for NFW computation
-    '''
+    """
+    NFW profile helper function.
+
+    Parameters:
+        x : float
+            Input variable to compute NFW integral.
+
+    Returns:
+        float
+            NFW integral value.
+    """
+
     return np.log(1.+x)-x/(1.+x)
 
 
 @njit(fastmath=True)
 def _rescale(a, b):
-    '''
-    --- Aiding function for NFW computation
-    '''
+    """
+    Rescale vectors by another vector using broadcasting.
+
+    Parameters:
+        a : ndarray
+            Input array to be scaled.
+        b : ndarray
+            Scaling array.
+
+    Returns:
+        ndarray
+            Scaled array.
+    """
+
     return np.transpose(np.multiply(np.transpose(a), np.transpose(b)))
 
 @njit(parallel=True, fastmath=True)
-def getPointsOnSphere_jit(nPoints, Nthread, seed=None):
-    '''
-    --- Aiding function for NFW computation, generate random points in a sphere
-    '''
+def getPointsOnSphere_jit(nPoints, Nthread=32, seed=None):
+    """
+    Generate random points on a sphere surface using numba jit.
+
+    Parameters:
+        nPoints : int
+            Number of points to generate.
+        Nthread : int, optional
+            Number of parallel threads to use. Default is 32.
+        seed : ndarray or None
+            Seed for RNG per thread. Default is None.
+
+    Returns:
+        ur : ndarray
+            Array of shape (nPoints, 3) with unit vectors uniformly distributed on a sphere.
+    """
+
     numba.set_num_threads(Nthread)
     ind = min(Nthread, nPoints)
     # starting index of each thread
@@ -129,13 +277,24 @@ def getPointsOnSphere_jit(nPoints, Nthread, seed=None):
 
 
 
-def rd_draw_NFW(nPoints):
+def rd_draw_NFW(nPoints, burn_in=100000):
     """
-    --- Function to generate random points in a NFW profile using Metropolis-Hastings algorithm 
+    Draw random samples from a 3D NFW profile using the Metropolis-Hastings algorithm.
+
+    Parameters:
+        nPoints : int
+            Total number of samples to generate.
+        nPoints : int, optional
+            Number of point to remove from the Metropolis-Hastings algorithm. Default is 100000.
+
+    Returns:
+        ndarray
+            Random samples from the NFW profile.
     """
+
     
-    if nPoints <= 100000:
-        raise ValueError ('Error : NPoints must be above 10000')
+    if nPoints <= burn_in:
+        raise ValueError (f'Error : NPoints must be above {burn_in}')
     epsilon = 0.3
     previousX = 0.3
 
@@ -175,7 +334,7 @@ def rd_draw_NFW(nPoints):
         #     plt.xscale('log')
         #     plt.yscale('log')
         #     plt.show()
-    dataPruned = data[100000:]
+    dataPruned = data[burn_in:]
     np.random.shuffle(dataPruned)
     os.makedirs('data', exist_ok=True)
     np.save('data/nfw.npy', dataPruned)
@@ -186,8 +345,29 @@ def rd_draw_NFW(nPoints):
 @njit(parallel=True, fastmath=True)
 def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, conformity=False):
     """
-    --- Compute the number of galaxy and the satelitte fraction form HOD parameters 
+    Compute total number of galaxies and satellite fraction from a given HOD parameter set.
+
+    Parameters:
+        log10_Mh : ndarray
+            Logarithmic halo mass.
+        fun_cHOD : callable
+            Function to compute central occupation.
+        fun_sHOD : callable
+            Function to compute satellite occupation.
+        Nthread : int
+            Number of threads for parallel computation.
+        p_cen : ndarray
+            Parameters for central occupation.
+        p_sat : ndarray or None, optionnal
+            Parameters for satellite occupation. Default is None.
+        conformity : bool, optionnal
+            Use conformity when calculating satellites. Default is False.
+
+    Returns:
+        tuple(float, float)
+            Total number of galaxies, and satellite fraction.
     """
+
     nbinsM, logbinM = np.histogram(log10_Mh, bins=100)[:2]
     LogM = np.zeros(len(logbinM)-1)
     dM = np.diff(logbinM)[0]
@@ -222,25 +402,71 @@ def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, confo
         
         return ngal_c, 0
     
-
+"""Interpolation of lambertw function for NFW computation"""
 xt = np.linspace(-1,0,1000000)
 ft = np.real(scipy.special.lambertw(xt, k=0))
 interp_lambertw= njit(parallel=True, fastmath=True)(lambda x: np.interp(x, xt, ft))
 
 @njit(fastmath=True)
 def get_etavir_nfw(c): 
-    '''
-        Adaptation of approxiamte 3D NFW random sampling from 1805.09550  
-    '''
+    """
+    Draw a normalized NFW radius using inversion sampling of the cumulative mass profile.
+
+    Parameters:
+        c : float
+            Concentration parameter of the NFW profile.
+
+    Returns:
+        float
+            Normalized radius (r/Rvir).
+    """
+
     rd_u = np.random.uniform() * (np.log(1.0 + c)-c/(1.0 + c))
     return (-(1.0/interp_lambertw(-np.exp(-rd_u-1)))-1)/c
 
 @njit(parallel=True, fastmath=True)
-def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel, exp_frac=0, exp_scale=1, nfw_rescale=1, vrms_h=None, f_sigv=None, v_infall=None, vel_sat='NFW', Nthread=64, seed=None):
+def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel, exp_frac=0, exp_scale=1, nfw_rescale=1, vrms_h=None, f_sigv=None, v_infall=None, vel_sat='NFW', Nthread=32, seed=None):
     
     """
-    --- Compute NFW positions and velocities for satelitte galaxies
+    Compute satellite galaxy positions and velocities using the NFW profile.
+
+    Parameters:
+        x_h, y_h, z_h : ndarray
+            Host halo positions.
+        vx_h, vy_h, vz_h : ndarray
+            Host halo velocities.
+        c : ndarray
+            Host halo concentration parameters.
+        M : ndarray
+            Host halo masses.
+        Rvir : ndarray
+            Host halo radii.
+        rd_pos, rd_vel : ndarray
+            Random vectors for position and velocity.
+        exp_frac : float, optional
+            Fraction of satellites to sample using an exponential halo profile. Default is 0.
+        exp_scale : float, optional
+            Scale of exponential halo profile. Default is 1.
+        nfw_rescale : float, optional
+            Rescaling factor of the concentration parameter.  Default is 1.
+        vrms_h : ndarray, optional
+            RMS velocity of hots halo particles.  Need to be definied if ``vel_sat`` is 'rd_normal' or 'infall'. Default is None.
+        f_sigv : float, optional
+            Velocity dispersion factor. Default is 1.
+        v_infall : float, optional
+            Additional infall velocity toward the host halo center in km/s. Need to be definied if ``vel_sat`` is 'infall'. Default is None.
+        vel_sat : str, optional
+            Velocity model: 'NFW', 'rd_normal', or 'infall'.
+        Nthread : int, optional
+            Number of threads for computation. Default is 32.
+        seed : ndarray or None, optional
+            RNG seeds per thread. Default is None.
+
+    Returns:
+        tuple of ndarrays
+            Satellite positions and velocities (x, y, z, vx, vy, vz).
     """
+
     
     numba.set_num_threads(Nthread)
     G = 4.302e-6  # in kpc/Msol (km.s)^2
@@ -298,6 +524,37 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
 
 def plot_HOD(p_cen, p_sat, fun_cHOD, fun_sHOD, logM = np.linspace(10.8,15,100), fig=None, color=None, label=None, figsize=(5,4), show=True):
     
+    """
+    Plot HOD curves for central and satellite galaxies.
+
+    Parameters:
+        p_cen : ndarray
+            Central HOD parameters.
+        p_sat : ndarray
+            Satellite HOD parameters.
+        fun_cHOD : callable
+            Central HOD function.
+        fun_sHOD : callable
+            Satellite HOD function.
+        logM : ndarray, optional
+            Mass bins for evaluation. Default is numpy.linspace(10.8,15,100).
+        fig : matplotlib.figure.Figure or None, optional
+            Existing figure to plot into. Default is None.
+        color : str or None, optional
+            Line color. Default is None.
+        label : str or None, optional
+            Legend label. Default is None.
+        figsize : tuple, optional
+            Figure size. Default is (5,4).
+        show : bool
+            Whether to show the plot immediately. Default is True.
+
+    Returns:
+        matplotlib.figure.Figure
+            The plotted figure.
+    """
+
+
     if fig is None:
         fig, ax = plt.subplots(1,1, figsize=figsize)
         ax.set_yscale('log')
@@ -324,115 +581,157 @@ def plot_HOD(p_cen, p_sat, fun_cHOD, fun_sHOD, logM = np.linspace(10.8,15,100), 
     return fig
 
 
-
-
-#### MPI FUNCTIONS
-
-
-def compute_ngal_mpi(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None):
+def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256, resampler='tsc', interlacing=2, ells=(0, 2), mpicomm=None):
     """
-    --- Compute the number of galaxy and the satelitte fraction form HOD parameters
+    Compute the power spectrum multipoles from a catalog using FFT-based methods.
+
+    Parameters
+    ----------
+    pos1 : array-like
+        Positions of catalog 1.
+    boxsize : float
+        Size of the simulation box.
+    kedges : tuple
+        k-bin edges for the power spectrum.
+    pos2 : array-like, optional
+        Positions of catalog 2 (for cross-spectrum).
+    los : array-like, optional
+        Line-of-sight direction.
+    nmesh : int, optional
+        Number of mesh cells per dimension. Default is 256.
+    resampler : str, optional
+        Mass assignment scheme. Default is 'tsc'.
+    interlacing : int, optional
+        Interlacing order for FFT. Default is 2.
+    ells : tuple of int, optional
+        Multipoles to compute. Default is (0, 2, 4).
+    mpicomm : object, optional
+        MPI communicator.
+
+    Returns
+    -------
+    array
+        Power spectrum multipoles.
     """
+
+    result = CatalogFFTPower(
+        data_positions1=pos1, data_positions2=pos2,
+        boxsize=boxsize, nmesh=nmesh, kedges=kedges,
+        los=los, resampler=resampler,
+        interlacing=interlacing,
+        position_type='pos', ells=ells,
+        mpicomm=mpicomm
+    )
+    return result.poles
+
+# #### MPI FUNCTIONS
+# Need to be tested
+
+# def compute_ngal_mpi(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None):
+#     """
+#     --- Compute the number of galaxy and the satelitte fraction form HOD parameters
+#     """
     
-    nbinsM, logbinM = np.histogram(log10_Mh, bins=100, range=(10, 16))[:2]
-    dM = np.diff(logbinM)[0]
-    LogM = 0.5*(logbinM[:-1]+logbinM[1:])
+#     nbinsM, logbinM = np.histogram(log10_Mh, bins=100, range=(10, 16))[:2]
+#     dM = np.diff(logbinM)[0]
+#     LogM = 0.5*(logbinM[:-1]+logbinM[1:])
 
-    Ncent = fun_cHOD(LogM, p_cen)
-    Ncent[Ncent < 0] = 0
-    ngal_c = (nbinsM/dM * Ncent*dM).sum()
+#     Ncent = fun_cHOD(LogM, p_cen)
+#     Ncent[Ncent < 0] = 0
+#     ngal_c = (nbinsM/dM * Ncent*dM).sum()
 
-    if p_sat is not None:
-        M_0 = p_sat[1]
-        Nsat = np.zeros(100)
-        Nsat[LogM > M_0] = fun_sHOD(LogM[LogM > M_0], p_sat)
-        ngal_sat = (nbinsM/dM * Nsat*dM).sum()
-    else:
-        ngal_sat = 0
-    return ngal_c, ngal_sat
+#     if p_sat is not None:
+#         M_0 = p_sat[1]
+#         Nsat = np.zeros(100)
+#         Nsat[LogM > M_0] = fun_sHOD(LogM[LogM > M_0], p_sat)
+#         ngal_sat = (nbinsM/dM * Nsat*dM).sum()
+#     else:
+#         ngal_sat = 0
+#     return ngal_c, ngal_sat
 
 
-def compute_N_mpi(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None, p_ab=None, ab_arr=None):
+# def compute_N_mpi(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None, p_ab=None, ab_arr=None):
 
-    """
-    --- Compute the probability N for central galaxies given a HOD model
-    """
+#     """
+#     --- Compute the probability N for central galaxies given a HOD model
+#     """
     
-    Ncent = fun_cHOD(log10_Mh, p_cen)
-    if p_ab is not None:
-        Ncent *= (1 + np.sum(p_ab[0] * ab_arr)*(1-Ncent))
-    if p_sat is None:
-        return Ncent, 0
-    M_0 = p_sat[1]
-    N_sat = np.zeros_like(log10_Mh)
-    N_sat[log10_Mh > M_0] = fun_sHOD(log10_Mh[log10_Mh > M_0], p_sat)
-    if p_ab is not None:
-        N_sat *= (1 + np.sum(p_ab[1] * ab_arr)*(1-N_sat))
-    return Ncent, N_sat
+#     Ncent = fun_cHOD(log10_Mh, p_cen)
+#     if p_ab is not None:
+#         Ncent *= (1 + np.sum(p_ab[0] * ab_arr)*(1-Ncent))
+#     if p_sat is None:
+#         return Ncent, 0
+#     M_0 = p_sat[1]
+#     N_sat = np.zeros_like(log10_Mh)
+#     N_sat[log10_Mh > M_0] = fun_sHOD(log10_Mh[log10_Mh > M_0], p_sat)
+#     if p_ab is not None:
+#         N_sat *= (1 + np.sum(p_ab[1] * ab_arr)*(1-N_sat))
+#     return Ncent, N_sat
 
 
 
 
-def getPointsOnSphere_mpi(nPoints, rng):
-        u1, u2 = rng.uniform(low=0, high=1), rng.uniform(low=0, high=1)
-        cmin = -1
-        cmax = +1
-        ra = 0 + u1*(2*np.pi-0)
-        dec = np.pi - (np.arccos(cmin+u2*(cmax-cmin)))
-        ur = np.zeros((nPoints, 3))
-        ur[:, 0] = np.sin(dec) * np.cos(ra)
-        ur[:, 1] = np.sin(dec) * np.sin(ra)
-        ur[:, 2] = np.cos(dec)
-        return ur
+# def getPointsOnSphere_mpi(nPoints, rng):
+#         u1, u2 = rng.uniform(low=0, high=1), rng.uniform(low=0, high=1)
+#         cmin = -1
+#         cmax = +1
+#         ra = 0 + u1*(2*np.pi-0)
+#         dec = np.pi - (np.arccos(cmin+u2*(cmax-cmin)))
+#         ur = np.zeros((nPoints, 3))
+#         ur[:, 0] = np.sin(dec) * np.cos(ra)
+#         ur[:, 1] = np.sin(dec) * np.sin(ra)
+#         ur[:, 2] = np.cos(dec)
+#         return ur
 
 
-def shuffle(array, seed=None):
-    '''MARCHE PAS'''
-    rng_= mpy.random.MPIRandomState(array.size, seed=seed)
-    idx = rng_.choice(np.arange(0,array.size,1))
+# def shuffle(array, seed=None):
+#     '''MARCHE PAS'''
+#     rng_= mpy.random.MPIRandomState(array.size, seed=seed)
+#     idx = rng_.choice(np.arange(0,array.size,1))
 
-    return array[idx]
+#     return array[idx]
 
 
-def NFW_mpi(sat_cat, Nb_sat, NFW, rng, seed=None):
+# def NFW_mpi(sat_cat, Nb_sat, NFW, rng, seed=None):
 
-    """
-        --- Compute NFW postion and velocity shifts for satelittes galaxies non multithread method (used for fitting)
-    """
+#     """
+#         --- Compute NFW postion and velocity shifts for satelittes galaxies non multithread method (used for fitting)
+#     """
 
-    if len(NFW) > Nb_sat:
-        np.random.shuffle(NFW)
-        eta = NFW[:Nb_sat]
-    else:
-        eta = NFW[rng.randint(0, len(NFW))]
+#     if len(NFW) > Nb_sat:
+#         np.random.shuffle(NFW)
+#         eta = NFW[:Nb_sat]
+#     else:
+#         eta = NFW[rng.randint(0, len(NFW))]
 
-    a = 0
-    while len(eta[eta > sat_cat['c']]) > 1:
-        temp = len(eta[eta > sat_cat['c']])
-        if a == temp:
-            break
-        a = temp
-        rng_= mpy.random.MPIRandomState(a, seed=seed)
-        eta[eta > sat_cat['c']] = NFW[rng_.randint(
-            0, high=len(NFW))]
+#     a = 0
+#     while len(eta[eta > sat_cat['c']]) > 1:
+#         temp = len(eta[eta > sat_cat['c']])
+#         if a == temp:
+#             break
+#         a = temp
+#         rng_= mpy.random.MPIRandomState(a, seed=seed)
+#         eta[eta > sat_cat['c']] = NFW[rng_.randint(
+#             0, high=len(NFW))]
     
-    tet = np.zeros(len(eta[eta > sat_cat['c']]))
-    for i in range(len(eta[eta > sat_cat['c']])):
-        a = eta[sat_cat['c'][eta > sat_cat['c']][i] > eta]
-        tet[i] = a[np.random.randint(len(a))]
-    eta[eta > sat_cat['c']] = tet
-    del tet
+#     tet = np.zeros(len(eta[eta > sat_cat['c']]))
+#     for i in range(len(eta[eta > sat_cat['c']])):
+#         a = eta[sat_cat['c'][eta > sat_cat['c']][i] > eta]
+#         tet[i] = a[np.random.randint(len(a))]
+#     eta[eta > sat_cat['c']] = tet
+#     del tet
 
-    etaVir = eta/sat_cat['c']  # =r/rvir
+#     etaVir = eta/sat_cat['c']  # =r/rvir
 
-    def f(x):
-        return np.log(1.+x)-x/(1.+x)
-    G = 4.302e-6  # in kpc/Msol (km.s)^2
-    vVir = np.sqrt(G*sat_cat["Mh"]/sat_cat["Rh"])
-    v = vVir * np.sqrt(f(sat_cat['c'] * etaVir)
-                       / (etaVir * f(sat_cat['c'])))
+#     def f(x):
+#         return np.log(1.+x)-x/(1.+x)
+#     G = 4.302e-6  # in kpc/Msol (km.s)^2
+#     vVir = np.sqrt(G*sat_cat["Mh"]/sat_cat["Rh"])
+#     v = vVir * np.sqrt(f(sat_cat['c'] * etaVir)
+#                        / (etaVir * f(sat_cat['c'])))
 
     
-    ur = getPointsOnSphere_mpi(sat_cat.size, rng)
-    uv = getPointsOnSphere_mpi(sat_cat.size, rng)
-    return _rescale(ur, (etaVir*sat_cat["Rh"])), _rescale(uv, v)
+#     ur = getPointsOnSphere_mpi(sat_cat.size, rng)
+#     uv = getPointsOnSphere_mpi(sat_cat.size, rng)
+#     return _rescale(ur, (etaVir*sat_cat["Rh"])), _rescale(uv, v)
+
