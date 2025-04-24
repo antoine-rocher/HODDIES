@@ -48,10 +48,6 @@ A typical generation of a HOD-based mock is as simple as:
 Example notebooks are provided in :root:`nb`.
 
 
-Changelog
-=========
-
-* :doc:`developer/changes`
 
 Indices and tables
 ==================
