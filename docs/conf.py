@@ -25,7 +25,6 @@ extensions = [
     'sphinx.ext.intersphinx',
     'sphinx.ext.napoleon',
     'sphinx.ext.autosectionlabel',
-    'myst_nb'
 ]
 
 intersphinx_mapping = {
@@ -55,7 +54,6 @@ html_theme_options = {
     'path_to_docs': 'docs/',
 }
 
-myst_enable_extensions = ['dollarmath']
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
 napoleon_include_init_with_doc = True
@@ -63,7 +61,6 @@ napoleon_include_init_with_doc = True
 root_doc = 'index'
 source_suffix = {
     '.rst': 'restructuredtext',
-    '.ipynb': 'myst-nb',
 }
 
 html_theme = 'sphinx_rtd_theme'
