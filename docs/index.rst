@@ -4,15 +4,12 @@
 Welcome to HODDIES's documentation!
 **********************************
 .. toctree::
-  :maxdepth: 1
-  :caption: User documentation
+   :maxdepth: 2
+   :caption: Introduction
 
-installation
-api
+   installation
+   API
 
-
-.. toctree::
-  :hidden:
 ************
 Introduction
 ************
