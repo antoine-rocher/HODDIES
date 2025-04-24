@@ -3,10 +3,6 @@
 **********************************
 Welcome to HODDIES's documentation!
 **********************************
-
-.. toctree::
-  :hidden:
-
 .. toctree::
   :maxdepth: 1
   installation
