@@ -1,5 +1,7 @@
 matplotlib
 numpy
 mpytools
-cosmoprimo
 pycorr
+numba
+idaes-pse
+scikit-learn

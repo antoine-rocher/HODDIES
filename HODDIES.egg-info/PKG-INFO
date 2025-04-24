@@ -1,13 +1,15 @@
 Metadata-Version: 2.1
 Name: HODDIES
-Version: 0.0.1
+Version: 0.1.1
 Summary: Fast HOD code for small scale clustering analysis
-Home-page: 
+Home-page: https://github.com/antoine-rocher/HODDIES
 Author: Rocher Antoine
 Author-email: antoine.rocher@epfl.ch
 License: GPLv3
 Requires-Dist: matplotlib
 Requires-Dist: numpy
 Requires-Dist: mpytools
-Requires-Dist: cosmoprimo
 Requires-Dist: pycorr
+Requires-Dist: numba
+Requires-Dist: idaes-pse
+Requires-Dist: scikit-learn

@@ -1,7 +1,6 @@
 import os
 import sys
-from setuptools import setup
-
+from setuptools import setup, find_packages
 
 package_basename = 'HODDIES'
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), package_basename))
@@ -15,8 +14,8 @@ setup(name=package_basename,
       author_email='antoine.rocher@epfl.ch',
       description='Fast HOD code for small scale clustering analysis',
       license='GPLv3',
-      url='',
-      install_requires=['matplotlib', 'numpy', 'mpytools', 'cosmoprimo', 'pycorr'],
+      url='https://github.com/antoine-rocher/HODDIES',
+      install_requires=['matplotlib', 'numpy', 'mpytools', 'pycorr', 'numba', 'idaes-pse', 'scikit-learn'],
       #package_data={package_basename: ['*.mplstyle', 'data/*']},
-      packages=[package_basename]
-)
+      packages=find_packages()
+)     

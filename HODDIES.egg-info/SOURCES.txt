@@ -7,6 +7,7 @@ HODDIES/abacus_func.py
 HODDIES/fits_functions.py
 HODDIES/hod.py
 HODDIES/pinnochio_io.py
+HODDIES/read_uchuu.py
 HODDIES/utils.py
 HODDIES.egg-info/PKG-INFO
 HODDIES.egg-info/SOURCES.txt
