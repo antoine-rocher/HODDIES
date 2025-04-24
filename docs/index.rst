@@ -8,17 +8,10 @@ Welcome to HODDIES's documentation!
   :maxdepth: 1
   :caption: User documentation
 
-  user/building
-  api/api
+  installation
+  api
 
-.. toctree::
-  :maxdepth: 1
-  :caption: Developer documentation
 
-  developer/documentation
-  developer/tests
-  developer/contributing
-  developer/changes
 
 .. toctree::
   :hidden:
