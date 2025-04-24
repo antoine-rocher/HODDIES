@@ -4,6 +4,7 @@ HODDIES/HOD_models.py
 HODDIES/__init__.py
 HODDIES/_version.py
 HODDIES/abacus_func.py
+HODDIES/default_HOD_parameters.yaml
 HODDIES/fits_functions.py
 HODDIES/hod.py
 HODDIES/pinnochio_io.py

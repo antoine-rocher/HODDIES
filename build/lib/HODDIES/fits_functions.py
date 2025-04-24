@@ -49,11 +49,36 @@ def genereate_training_points(nPoints, priors, sampling_type='lhs', path_to_save
 
 def compute_chi2(model, data, inv_Cov2=None, sig=None):
     """
-    --- Compute chi2
+    Compute the chi-squared (χ²) statistic between a model and observed data.
+
+    The function calculates χ² based on either the standard deviation of errors 
+    (`sig`) or the inverse covariance matrix (`inv_Cov2`), depending on which is provided.
+
+    Parameters:
+    -----------
+    model : array_like
+        The predicted/model values.
+    data : array_like
+        The observed data values.
+    inv_Cov2 : array_like, optional
+        The inverse of the covariance matrix of the data. Used if `sig` is not provided.
+    sig : array_like, optional
+        The standard deviation (1σ errors) of the data. If provided, 
+        chi-squared is computed as the sum of squared residuals normalized by the variance.
+
+    Returns:
+    --------
+    chi2 : float
+        The computed chi-squared value.
+
+    Raises:
+    -------
+    ValueError
+        If neither `sig` nor `inv_Cov2` is provided.
     """
     arr_diff = data - model
     if sig is not None:
-        chi2 = np.sum(arr_diff**2/sig**2)
+        chi2 = np.sum(arr_diff**2 / sig**2)
     elif inv_Cov2 is not None:
         chi2 = np.matmul(arr_diff, np.matmul(inv_Cov2, arr_diff.T))
     else:
@@ -63,26 +88,51 @@ def compute_chi2(model, data, inv_Cov2=None, sig=None):
 
 def multivariate_gelman_rubin(chains):
     """
-    Arnaud de Mattia code's
+    Compute the multivariate Gelman-Rubin convergence diagnostic (R̂) for MCMC chains.
+
+    This diagnostic checks for convergence across multiple Markov Chain Monte Carlo (MCMC)
+    simulations by comparing the between-chain and within-chain variances. Values close to 1
+    indicate convergence.
+
+    This is based on the method described in:
+    Brooks, S. P., & Gelman, A. (1998). "General methods for monitoring convergence of iterative simulations."
     http://www.stat.columbia.edu/~gelman/research/published/brooksgelman2.pdf
-    dim 0: nchains
-    dim 1: nsteps
-    dim 2: ndim
+
+    Parameters:
+    -----------
+    chains : array_like
+        A list or array of MCMC chains with shape (nchains, nsteps, ndim), where:
+            - nchains is the number of parallel chains,
+            - nsteps is the number of samples per chain,
+            - ndim is the number of parameters per sample.
+
+    Returns:
+    --------
+    float
+        The maximum eigenvalue of the matrix used in the multivariate R̂ computation.
+        A value significantly greater than 1 indicates lack of convergence.
+
+    Raises:
+    -------
+    AssertionError
+        If the inversion of Wn1 does not yield an identity matrix within numerical precision.
     """
     nchains = len(chains)
     mean = np.asarray([np.mean(chain, axis=0) for chain in chains])
-    variance = np.asarray([np.cov(chain.T, ddof=1)
-                            for chain in chains])
+    variance = np.asarray([np.cov(chain.T, ddof=1) for chain in chains])
     nsteps = np.asarray([len(chain) for chain in chains])
+
     Wn1 = np.mean(variance, axis=0)
-    Wn = np.mean(((nsteps-1.)/nsteps)[:, None, None]*variance, axis=0)
+    Wn = np.mean(((nsteps - 1.) / nsteps)[:, None, None] * variance, axis=0)
     B = np.cov(mean.T, ddof=1)
-    V = Wn + (nchains+1.)/nchains*B
+    V = Wn + (nchains + 1.) / nchains * B
+
     invWn1 = np.linalg.inv(Wn1)
-    assert np.absolute(
-        Wn1.dot(invWn1)-np.eye(Wn1.shape[0])).max() < 1e-5
+    assert np.absolute(Wn1.dot(invWn1) - np.eye(Wn1.shape[0])).max() < 1e-5
+
     eigen = np.linalg.eigvalsh(invWn1.dot(V))
     return eigen.max()
+
 
 
 

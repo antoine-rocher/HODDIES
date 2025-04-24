@@ -4,15 +4,15 @@ from numba import njit, jit, numba
 import time 
 import os
 from cosmoprimo.fiducial import Cosmology, AbacusSummit
-from utils import *
-from HOD_models import _SHOD, _GHOD, _SFHOD, _SHOD, _LNHOD, _HMQ, _mHMQ, _Nsat_pow_law
-from abacus_func import *
+from .utils import *
+from .HOD_models import _SHOD, _GHOD, _SFHOD, _SHOD, _LNHOD, _HMQ, _mHMQ, _Nsat_pow_law
+from .abacus_func import *
 import yaml 
 import socket
-from pinnochio_io import *
+from .pinnochio_io import *
 from pypower import CatalogMesh
 import glob
-from fits_functions import *
+from .fits_functions import *
 import emcee 
 import zeus
 import sklearn.gaussian_process as skg
@@ -23,16 +23,16 @@ class HOD:
 
     """Class with tools to generate HOD mock catalogs and plotting functions"""
 
-    def __init__(self, param_file='default_HOD_parameters.yaml', args=None, hcat=None, boxsize=None,
-                 subsample=None, path_to_abacus_sim=False, read_pinnochio=False):
+    def __init__(self, param_file=None, args=None, hcat_file=None, boxsize=None,
+                 subsample=None, path_to_abacus_sim=None, read_pinnochio=None):
         
         """
         Initialize :class:`HOD`. 
 
         Parameters
         ----------
-        param_file : str, default='default_HOD_parameters.yaml'
-            Input parameter file to initialize the HOD class
+        param_file : str, default=None
+            Input parameter file to initialize the HOD class. If None, the default parameter file 'default_HOD_parameters.yaml' is used.
 
         args : dict, default=None
             Optional
@@ -55,13 +55,13 @@ class HOD:
             Optional,
             Path to Abacus simulation directory. In this case, it automatically load the Abacus box/LC at the corresponding redshift snapshots and initialze boxsize and cosmology.
 
-        read_pinnochio : bool, default=False
+        read_pinnochio : bool, default=None
             Optional, load Pinnochio simulation catalog. Need to provide the path in the input parameter file.
 
         """
         
-
-        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), param_file)), Loader=yaml.FullLoader)
+        
+        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)
 
         def update_dic(d, u):
             for k, v in u.items():
@@ -70,20 +70,41 @@ class HOD:
                 else:
                     d[k] = v
             return d
-        
         new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else args if args is not None else self.args
         update_dic(self.args, new_args)
 
         self.args['nthreads'] = min(numba.get_num_threads(), self.args['nthreads'])
         print('Set number of threads to {}'.format(self.args['nthreads']), flush=True)
 
-        if hcat is not None:
-            if isinstance(hcat, Catalog):
-                self.hcat = hcat
-            elif isinstance(hcat, dict):
-                self.hcat = Catalog.from_dict(hcat)
-            else:
-                raise ValueError ('Halo catalog is not a dictionary')
+        if path_to_abacus_sim  is not None:
+                self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
+                self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim, halo_lc=self.args['hcat']['halo_lc'])
+                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'])   
+                            
+                
+        elif read_pinnochio  is not None:
+                print('Read Pinnochio', flush=True)
+                start = time.time()
+                self.hcat, self.boxsize, self.cosmo = read_pinnochio_hcat(self.args)
+                print('Done {:.2f}'.format(time.time()-start), flush=True)  
+        
+        elif hcat_file is not None:
+            init_cols = ['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'Rs', 'c', 'Vrms', 'halo_id']
+
+            if isinstance(hcat_file, str):
+                self.hcat = Catalog.read(hcat_file)
+
+            elif isinstance(hcat_file, Catalog):
+                self.hcat = hcat_file
+
+            elif isinstance(hcat_file, dict):
+                self.hcat = Catalog.from_dict(hcat_file)
+
+            elif isinstance(hcat_file, np.ndarray):
+                if hcat_file.dtype.names is None:
+                    raise TypeError(f'Halo catalog must be a structured ndarray with field {init_cols}')
+                self.hcat = Catalog.from_array(hcat_file)
+                
             self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
             if boxsize is not None:
                 self.boxsize = boxsize
@@ -92,23 +113,18 @@ class HOD:
             else:
                 raise ValueError('Boxsize not provided')
             print(f'Halo catalog initialized with boxsize of lenght {self.boxsize}', flush=True)
-            
-        else:
-            if path_to_abacus_sim:
-                self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
-                self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim, halo_lc=self.args['hcat']['halo_lc'])
-                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'])   
-                            
-                
-            elif read_pinnochio:
-                print('Read Pinnochio', flush=True)
-                start = time.time()
-                self.hcat, self.boxsize, self.cosmo = read_pinnochio_hcat(self.args)
-                print('Done {:.2f}'.format(time.time()-start), flush=True)
-            else: 
-                if not os.path.exists(self.args['hcat']['path_to_sim']): 
-                    raise FileNotFoundError('{} not found'.format(self.args['hcat']['path_to_sim']))
-                self.hcat = Catalog.read(self.args['hcat'][['path_to_sim']]) 
+
+        else: 
+            if self.args['hcat']['path_to_sim'] is None:
+                raise FileNotFoundError('Provide a halo catalog or a filename to read it')
+            if not os.path.exists(self.args['hcat']['path_to_sim']): 
+                raise FileNotFoundError('{} not found'.format(self.args['hcat']['path_to_sim']))
+            self.hcat = Catalog.read(self.args['hcat'][['path_to_sim']]) 
+            self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
+            if boxsize is not None:
+                self.boxsize = boxsize
+            elif self.args['hcat']['boxsize'] is not None:
+                self.boxsize = self.args['hcat']['boxsize']
 
         if 'log10_Mh' not in self.hcat.columns(): 
             self.hcat['log10_Mh'] = np.log10(self.hcat['Mh'])
@@ -124,7 +140,7 @@ class HOD:
                 self._fun_cHOD[tr] = globals()['_'+self.args[tr]['HOD_model']]
                 self._fun_sHOD[tr] = globals()['_'+self.args[tr]['sat_HOD_model']]
         except :
-            import HOD_models 
+            from . import HOD_models 
             help(HOD_models)
             raise ValueError('{} not implemented in HOD models'.format(self.args['HOD_param']['HOD_model']))
                 

@@ -16,6 +16,6 @@ setup(name=package_basename,
       license='GPLv3',
       url='https://github.com/antoine-rocher/HODDIES',
       install_requires=['matplotlib', 'numpy', 'mpytools', 'pycorr', 'numba', 'idaes-pse', 'scikit-learn'],
-      #package_data={package_basename: ['*.mplstyle', 'data/*']},
+      package_data={package_basename: ['default_HOD_parameters.yaml']},
       packages=find_packages()
 )     

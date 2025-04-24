@@ -2,7 +2,7 @@ import numpy as np
 from pycorr import TwoPointCorrelationFunction, project_to_multipoles, project_to_wp
 from numba import njit, numba
 import os
-import HOD_models
+from . import HOD_models
 import matplotlib.pyplot as plt
 # import mpytools as mpy
 import scipy
