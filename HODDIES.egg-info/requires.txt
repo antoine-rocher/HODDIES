@@ -1,7 +1,0 @@
-matplotlib
-numpy
-mpytools
-pycorr
-numba
-idaes-pse
-scikit-learn
