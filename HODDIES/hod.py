@@ -26,7 +26,7 @@ class HOD:
 
     """Class with tools to generate HOD mock catalogs and plotting functions"""
 
-    def __init__(self, param_file='default_HOD_parameters.yaml', args=None, hcat=None, 
+    def __init__(self, param_file='default_HOD_parameters.yaml', args=None, hcat=None, boxsize=None,
                  subsample=None, path_to_abacus_sim=False, read_pinnochio=False):
         
         """
@@ -47,6 +47,8 @@ class HOD:
             Mh and Rh are halo mass and radius (most of the time consider as Mvir and Rvir). 
             'c' is the halo concentration, 'Vrms' is the velocity dispersion of the halo particles (used for NFW satellites). 
             'halo_id' is a unique integer to identify each halo.
+        boxsize : int, default = None
+            Simulation box size, to be set if hcat is provide. Prefered if boxsize value is also provided in the parameter file.
 
         subsample : dict, ndarray, Catalog, default=None
             Optional, Not yet ready!
@@ -86,7 +88,9 @@ class HOD:
             else:
                 raise ValueError ('Halo catalog is not a dictionary')
             self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
-            if self.args['hcat']['boxsize'] is not None:
+            if boxsize is not None:
+                self.boxsize = boxsize
+            elif self.args['hcat']['boxsize'] is not None:
                 self.boxsize = self.args['hcat']['boxsize']
             else:
                 raise ValueError('Boxsize not provided')
