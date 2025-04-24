@@ -245,7 +245,7 @@ class HOD:
                 print('Set density to {} gal/Mpc/h'.format(self.args[tracer]['density']))
             return self.args[tracer]['density']*self.boxsize**3 /self.ngal(tracer)[0]
         else:
-            print('No density set')
+            if verbose: print('No density set')
             return 1 
     
     def ngal(self, tracer, verbose=False):
