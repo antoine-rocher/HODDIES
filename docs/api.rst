@@ -1,3 +1,4 @@
+.. _user-building:
 API
 ===
 

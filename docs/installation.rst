@@ -1,8 +1,6 @@
 Installation
 ============
 
-.. highlight:: console
-
 Requirements
 ------------
 
