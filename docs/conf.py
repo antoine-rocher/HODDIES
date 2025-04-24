@@ -23,6 +23,9 @@ extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
     'sphinx.ext.intersphinx',
+    'sphinx.ext.napoleon',
+    'sphinx.ext.autosectionlabel',
+    'myst_nb'
 ]
 
 intersphinx_mapping = {
@@ -35,6 +38,34 @@ templates_path = ['_templates']
 
 # -- Options for HTML output
 html_static_path = []
+html_title = 'HODDIES'
+html_theme_options = {
+    'repository_url': 'https://github.com/abacusorg/abacusutils',
+    'repository_branch': 'main',
+    # "launch_buttons": {
+    #     "binderhub_url": "https://mybinder.org",
+    #     "notebook_interface": "jupyterlab",
+    #     "colab_url": "https://colab.research.google.com/",
+    # },
+    'use_edit_page_button': True,
+    'use_issues_button': True,
+    'use_repository_button': True,
+    'use_download_button': True,
+    'use_fullscreen_button': False,
+    'path_to_docs': 'docs/',
+}
+
+myst_enable_extensions = ['dollarmath']
+napoleon_google_docstring = False
+napoleon_numpy_docstring = True
+napoleon_include_init_with_doc = True
+
+root_doc = 'index'
+source_suffix = {
+    '.rst': 'restructuredtext',
+    '.ipynb': 'myst-nb',
+}
+
 html_theme = 'sphinx_rtd_theme'
 exclude_patterns = ['build', '**.ipynb_checkpoints']
 autodoc_mock_imports = ['pycorr', 'mpytools']
@@ -64,3 +95,5 @@ def setup(app):
 
 
 autoclass_content = 'both'
+
+
