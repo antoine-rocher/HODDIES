@@ -7,8 +7,8 @@ Welcome to HODDIES's documentation!
   :maxdepth: 1
   :caption: User documentation
 
-   installation
-   api
+  installation
+  api
 
 .. toctree::
   :hidden:
