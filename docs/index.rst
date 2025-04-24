@@ -5,8 +5,14 @@ Welcome to HODDIES's documentation!
 **********************************
 .. toctree::
   :maxdepth: 1
-  installation
-  api
+  :caption: User documentation
+
+installation
+api
+
+
+.. toctree::
+  :hidden:
 ************
 Introduction
 ************
@@ -29,7 +35,7 @@ A typical generation of a HOD-based mock is as simple as:
     rp, wp = HOD_obj.get_wp(cats, tracers='ELG')
     s, xi = HOD_obj.get_2PCF(cats, tracers='ELG')
 
-Example notebooks are provided in :root:`nb`.
+Example notebooks are provided in :root:`nb`. 
 
 
 
