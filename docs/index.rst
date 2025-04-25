@@ -41,9 +41,14 @@ Example notebooks are provided in :root:`nb`.
 
 .. toctree::
   :maxdepth: 1
-  :caption: User documentations
+  :caption: User Documentation
 
   user/installation
+  
+.. toctree::
+  :maxdepth: 2
+  :caption: API Documentation
+
   api/api
 
 .. toctree::

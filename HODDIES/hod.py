@@ -1556,58 +1556,61 @@ class HOD:
                 resume_fit=False, verbose=True):
         
         """
-        Run the iterative Gaussian Process MCMC fitting procedure for Halo Occupation Distribution (HOD) models.
-        Detail of the method in arxiv:2302.07056. 
-        
-        This method uses Gaussian Process surrogate modeling to efficiently explore
-        the HOD parameter space and fit the model to the provided observational data.
+        Execute the Gaussian Process MCMC fitting routine for HOD parameter inference.
+
+        This method performs iterative Gaussian Process-driven MCMC sampling to explore the
+        Halo Occupation Distribution (HOD) parameter space, fitting mock catalog outputs to observed
+        clustering statistics such as the 2-point correlation function.
+
+        For methodological details, see: https://arxiv.org/abs/2302.07056
 
         Parameters
         ----------
         data_arr : array_like
-            Observational data vector (e.g., two-point correlation functions) used to compute chi².
+            Observed data vector used in chi-squared comparisons (e.g., wp, xi).
 
         inv_Cov2 : ndarray
-            Inverse covariance matrix used in chi² calculation. Must match the structure of `data_arr`.
+            Inverse of the covariance matrix used in the chi-squared computation.
+            Must match the dimensionality of `data_arr`.
 
         training_point : structured ndarray
-            Initial training dataset, including HOD parameters and chi² values, typically generated from simulations.
+            Existing training sample including HOD parameters and chi-squared values,
+            used to condition the GP model.
 
         resume_fit : bool, optional
-            If True, resumes a previous fitting run by reading saved results from disk. Default is False.
+            If True, resumes from a previously saved fit by loading logs and chains.
+            Default is False.
 
         verbose : bool, optional
-            If True, prints detailed logs and status updates during execution. Default is True.
+            If True, displays detailed iteration-level logs. Default is True.
 
         Returns
         -------
         None
-            Results are saved directly to disk as:
-            - A text log of each iteration and sampled parameters
-            - MCMC chains for each iteration under `chains/`
-            - Updated training data with new chi² evaluations
+            All fitting results are saved to disk. No return value.
 
-            
         Side Effects
         ------------
-        - Reads and writes files in `dir_output_fit`, including: chain parameters, updated training set, convergence diagnostics (e.g., KL divergence)
-        - Runs galaxy mock generation and two-point correlation function (2PCF) measurements.
+        - Creates and updates files under `dir_output_fit`, including:
+            - `*.txt` logs of sampled parameter values and chi² results
+            - Chains of samples in `chains/` directory
+            - Diagnostic metrics such as KL divergence
+        - Calls the following key internal methods:
+            - `make_mock_cat()`: to generate mock catalogs
+            - `get_crosswp()`, `get_cross2PCF()`: for 2PCF computation
+            - `compute_chi2()`: to evaluate model-data fit
+            - `run_gp_mcmc()`: for parameter sampling via GP-MCMC
 
         Notes
         -----
-        - Uses a convergence criterion based on Kullback–Leibler (KL) divergence, though final stopping
-        condition is currently commented out.
-        - Handles both wp and xi measurements depending on `fit_type`.
-        - Resumes from previous iterations if `resume_fit=True` and log file is found.
-        - Assumes external methods are defined:
-            - `run_gp_mcmc()`: Suggests new HOD parameters using Gaussian Processes.
-            - `make_mock_cat()`: Generates mock galaxy catalogs.
-            - `get_crosswp()` / `get_cross2PCF()`: Computes 2PCFs.
-            - `compute_chi2()`: Calculates chi² between model and data.
+        - Convergence is optionally monitored via KL divergence, but the stopping criterion is commented out.
+        - Handles both projected (wp) and full-space (xi) correlation functions depending on `fit_type`.
+        - Assumes the availability of `emcee` or `zeus` samplers for MCMC.
+        - Results are appended to an evolving training set across iterations.
 
         Example
         -------
-        >>> model.run_fit(data, inv_cov, training_set, resume_fit=True)
+        >>> model.run_fit(data_arr, inv_cov2, training_set, resume_fit=True)
         """
         import pandas as pd
         from .fits_functions import compute_chi2

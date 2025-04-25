@@ -4,24 +4,24 @@ import os
 
 def genereate_training_points(nPoints, priors, sampling_type='lhs', path_to_save_training_point=None, rand_seed=None):
     """
-        --- Generate points in a LHS or Hammersley sample for a given priors
+    Generate points in a LHS or Hammersley sample for a given priors
 
-            Parameters
-            ----------
-            nPoints : float
-                Number of points for the training sample
-            priors: dict
-                Dictionary of the priors range (min, max) for each parameter
-            sampling_type: str, default: lhs
-                Sampling type: 'lhs' or 'Hammersley' only
-            path_to_save_training_point: bool, default: False
-                Directory to save the sample of points. If path_to_save_training_point is provided the sample will be save with name file points_{sampling_type}.txt as npz file with keys 'sample' and 'header'. 
-            rand_seed: int, default: None
-                Random seed for lhs sampling
-            Returns
-            -------
-            sample_points : float array of shape (nPoints, len(priors))
-                Sample of points according to the sampling type. 
+    Parameters
+    ----------
+    nPoints : float
+        Number of points for the training sample
+    priors: dict
+        Dictionary of the priors range (min, max) for each parameter
+    sampling_type: str, default: lhs
+        Sampling type: 'lhs' or 'Hammersley' only
+    path_to_save_training_point: bool, default: False
+        Directory to save the sample of points. If path_to_save_training_point is provided the sample will be save with name file points_{sampling_type}.txt as npz file with keys 'sample' and 'header'. 
+    rand_seed: int, default: None
+        Random seed for lhs sampling
+    Returns
+    -------
+    sample_points : float array of shape (nPoints, len(priors))
+        Sample of points according to the sampling type. 
     """
     from idaes.core.surrogate.pysmo.sampling import HammersleySampling, LatinHypercubeSampling
 
