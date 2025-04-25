@@ -1,5 +1,5 @@
 .. _user-building:
-API HODDIES package
+API 
 ===================
 
 You may find more practical guidance in example notebooks: :root:`nb`.
@@ -13,7 +13,7 @@ HODDIES.hod based class
   :members:
   :undoc-members:
   :show-inheritance:
-   
+
 HODDIES.HOD\_models module
 --------------------------
 

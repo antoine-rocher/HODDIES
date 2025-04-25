@@ -49,7 +49,7 @@ Example notebooks are provided in :root:`nb`.
   :maxdepth: 2
   :caption: API Documentation
 
-  api/api
+  HODDIES
 
 .. toctree::
   :hidden:
