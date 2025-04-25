@@ -19,7 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: BSD 3-Clause License",
 ]
-dynamic = ["version"]
+version = "0.1.2"
 
 [project.optional-dependencies]
 all = [
@@ -44,6 +44,10 @@ packages = ["HODDIES"]
 
 [tool.setuptools.package-data]
 HODDIES = ["default_HOD_parameters.yaml"]
+
+
+[tool.setuptools.dynamic]
+version = {attr = "HODDIES.__version__"}
 
 [tool.ruff.format]
 quote-style = "single"
