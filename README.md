@@ -50,6 +50,10 @@ HOD_obj.plot_HMF(mock_cat, show_sat=True)
 
 Example notebooks are provided in directory [nb/](https://github.com/antoine-rocher/HODDIES/tree/main/nb).
 
+## Documentation
+
+Documentation is hosted on Read the Docs, [HODDIES docs](https://hoddies.readthedocs.io).
+
 ## Requirements
 
 Strict requirements are:
