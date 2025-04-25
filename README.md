@@ -13,11 +13,11 @@ from HODDIES import HOD
 
 # Using path to catalog
 path_to_halo_catalog = '/path/to/halo_catalog' # catalog type can be fits, h5, asdf
-HOD_obj= HOD(hcat='path_to_halo_catalog')
+HOD_obj= HOD(hcat_file='path_to_halo_catalog')
 
 # Using a preloaded catalog. 
 # This catalog need to be a dictonary / structured array or mpy Catalog with colunms names ['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'Rs', 'c', 'Vrms', 'halo_id']  
-HOD_obj= HOD(hcat=mycatalog) 
+HOD_obj= HOD(hcat_file=mycatalog) 
 
 # Using root AbacusSummit simulation path, example at NERSC
 HOD_obj= HOD(path_to_abacus_sim='/global/cfs/cdirs/desi/cosmosim/Abacus')
@@ -48,6 +48,7 @@ Example notebooks are provided in directory nb/.
 Strict requirements are:
 
   - numpy
+  - scipy
   - yaml
   - [numba](https://numba.pydata.org/)
   - [mpytools](https://github.com/cosmodesi/mpytools)
