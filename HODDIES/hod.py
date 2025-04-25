@@ -731,7 +731,7 @@ class HOD:
 
         Notes
         -----
-        - The function uses `apply_rsd` to account for redshift space distortions (RSD) if enabled.
+        - The function uses `apply_rsd` to account for redshift space distortions (RSD) if enabled and Cosmology set.
         - The separation distances `s` and the correlation values `xi` are calculated using the 
         `compute_2PCF` function, and the results are stored for each tracer.
         - The results are returned as lists (`s_all` and `xi_all`) when multiple tracers are provided.
@@ -763,9 +763,13 @@ class HOD:
             if verbose:
                 print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
                 time1 = time.time()
-            if self.args['2PCF_settings']['rsd']:
-                pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'], self.cosmo)
+
+            if self.cosmo is not None:
+                if self.args['2PCF_settings']['rsd']:
+                    pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'])
             else:
+                if self.args['2PCF_settings']['rsd']:
+                    print('Cosmology not set, does not apply rsd', flush=True)
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
             
             s, xi = compute_2PCF(pos, self.args['2PCF_settings']['edges_smu'], self.boxsize, ells, self.args['2PCF_settings']['los'], self.args['nthreads'], R1R2=R1R2)
@@ -808,7 +812,7 @@ class HOD:
 
         Notes
         -----
-        - The function uses `apply_rsd` to account for redshift space distortions (RSD) if enabled.
+        - The function uses `apply_rsd` to account for redshift space distortions (RSD) if enabled and Cosmology set.
         - The projected separation distances `rp` and the correlation values `wp` are calculated using the 
         `compute_wp` function, and the results are stored for each tracer.
         - The results are returned as lists (`rp_all` and `wp_all`) when multiple tracers are provided.
@@ -838,10 +842,15 @@ class HOD:
             if verbose:
                 print('#Compute wp for {}...'.format(tr), flush=True)
                 time1 = time.time()
-            if self.args['2PCF_settings']['rsd']:
-                pos = apply_rsd(mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'], self.cosmo)
+
+            if self.cosmo is not None:
+                if self.args['2PCF_settings']['rsd']:
+                    pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'])
             else:
+                if self.args['2PCF_settings']['rsd']:
+                    print('Cosmology not set, does not apply rsd', flush=True)
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
+
             rp, wp = compute_wp(pos, self.args['2PCF_settings']['edges_rppi'], self.boxsize, self.args['2PCF_settings']['pimax'], self.args['2PCF_settings']['los'],  self.args['nthreads'], R1R2=R1R2)
             if verbose:
                 print('Done in {:.3f} s'.format(time.time()-time1), flush=True)
@@ -909,12 +918,17 @@ class HOD:
             if verbose:
                 print('#Compute wp for {}...'.format(tr), flush=True)
                 time1 = time.time()
-            if self.args['2PCF_settings']['rsd']:
-                pos1 = apply_rsd(cats[mask_tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'], self.cosmo)
-                pos2 = apply_rsd(cats[mask_tr[1]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'], self.cosmo)
+
+            if self.cosmo is not None:
+                if self.args['2PCF_settings']['rsd']:
+                    pos1 = apply_rsd(cats[mask_tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'])
+                    pos2 = apply_rsd(cats[mask_tr[1]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'])
             else:
+                if self.args['2PCF_settings']['rsd']:
+                    print('Cosmology not set, does not apply rsd', flush=True)
                 pos1 = cats[mask_tr[0]]['x']%self.boxsize, cats[mask_tr[0]]['y']%self.boxsize, cats[mask_tr[0]]['z']%self.boxsize
                 pos2 = cats[mask_tr[1]]['x']%self.boxsize, cats[mask_tr[1]]['y']%self.boxsize, cats[mask_tr[1]]['z']%self.boxsize
+            
 
             res_dict[f'{tr[0]}_{tr[1]}'] = compute_wp(pos1, self.args['2PCF_settings']['edges_rppi'], self.boxsize, self.args['2PCF_settings']['pimax'], self.args['2PCF_settings']['los'],  self.args['nthreads'], R1R2=R1R2, pos2=pos2)
             if verbose:
@@ -982,10 +996,14 @@ class HOD:
             if verbose:
                 print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
                 time1 = time.time()
-            if self.args['2PCF_settings']['rsd']:
-                pos1 = apply_rsd(cats[mask_tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'], self.cosmo)
-                pos2 = apply_rsd(cats[mask_tr[1]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'], self.cosmo)
+
+            if self.cosmo is not None:
+                if self.args['2PCF_settings']['rsd']:
+                    pos1 = apply_rsd(cats[mask_tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'])
+                    pos2 = apply_rsd(cats[mask_tr[1]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'])
             else:
+                if self.args['2PCF_settings']['rsd']:
+                    print('Cosmology not set, does not apply rsd', flush=True)
                 pos1 = cats[mask_tr[0]]['x']%self.boxsize, cats[mask_tr[0]]['y']%self.boxsize, cats[mask_tr[0]]['z']%self.boxsize
                 pos2 = cats[mask_tr[1]]['x']%self.boxsize, cats[mask_tr[1]]['y']%self.boxsize, cats[mask_tr[1]]['z']%self.boxsize
 
