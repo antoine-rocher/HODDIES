@@ -12,8 +12,7 @@ class HOD:
 
     """Class with tools to generate HOD mock catalogs and plotting functions"""
 
-    def __init__(self, param_file=None, args=None, hcat_file=None, boxsize=None,
-                 subsample=None, path_to_abacus_sim=None, read_pinnochio=None):
+    def __init__(self, param_file=None, args=None, hcat_file=None, path_to_abacus_sim=None, read_pinnochio=None, subsample=None, **kwargs):
         
         """
         Initialize :class:`HOD`. 
@@ -36,10 +35,6 @@ class HOD:
         boxsize : int, default = None
             Simulation box size, to be set if hcat is provide. Prefered if boxsize value is also provided in the parameter file.
 
-        subsample : dict, ndarray, Catalog, default=None
-            Optional, Not yet ready!
-            Input of particles or subhalo catalog. The subsample catalog must have at least these columns names: ['x', 'y', 'z', 'vx', 'vy', 'vz', 'halo_id']. 
-
         path_to_abacus_sim : str, default=None
             Optional,
             Path to Abacus simulation directory. In this case, it automatically load the Abacus box/LC at the corresponding redshift snapshots and initialze boxsize and cosmology.
@@ -47,10 +42,16 @@ class HOD:
         read_pinnochio : bool, default=None
             Optional, load Pinnochio simulation catalog. Need to provide the path in the input parameter file.
 
+        subsample : dict, ndarray, Catalog, default=None
+            Optional, Not yet ready!
+            Input of particles or subhalo catalog. The subsample catalog must have at least these columns names: ['x', 'y', 'z', 'vx', 'vy', 'vz', 'halo_id']. 
+        kwargs : dict
+            Optional arguments that can be added that will replace the one provided in the parameter file.
+
         """
         
         
-        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)
+        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
         self.cosmo = None
         self.H_0 = 100 # H_0 is always set to 100 km/s/Mpc
 
@@ -61,8 +62,11 @@ class HOD:
                 else:
                     d[k] = v
             return d
+        
         new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else args if args is not None else self.args
         update_dic(self.args, new_args)
+        update_dic(self.args, kwargs)
+        self.boxsize = self.args['hcat']['boxsize']
 
         self.args['nthreads'] = min(numba.get_num_threads(), self.args['nthreads'])
         print('Set number of threads to {}'.format(self.args['nthreads']), flush=True)
@@ -95,14 +99,6 @@ class HOD:
                 if hcat_file.dtype.names is None:
                     raise TypeError(f'Halo catalog must be a structured ndarray with field {init_cols}')
                 self.hcat = Catalog.from_array(hcat_file)
-                
-            if boxsize is not None:
-                self.boxsize = boxsize
-            elif self.args['hcat']['boxsize'] is not None:
-                self.boxsize = self.args['hcat']['boxsize']
-            else:
-                raise ValueError('Boxsize not provided')
-            print(f'Halo catalog initialized with boxsize of lenght {self.boxsize}', flush=True)
 
         else: 
             if self.args['hcat']['path_to_sim'] is None:
@@ -110,12 +106,10 @@ class HOD:
             if not os.path.exists(self.args['hcat']['path_to_sim']): 
                 raise FileNotFoundError('{} not found'.format(self.args['hcat']['path_to_sim']))
             self.hcat = Catalog.read(self.args['hcat'][['path_to_sim']]) 
-            if boxsize is not None:
-                self.boxsize = boxsize
-            elif self.args['hcat']['boxsize'] is not None:
-                self.boxsize = self.args['hcat']['boxsize']
 
-        #init cosmology 
+        if self.boxsize is None: raise ValueError('Boxsize not provided')
+
+        # init cosmology 
         if self.cosmo is None:
             self.init_cosmology()
 
@@ -140,7 +134,6 @@ class HOD:
                 
         if self.args['assembly_bias']:
             self._compute_assembly_bias_columns()
-
 
     def init_cosmology(self):
         try: 
