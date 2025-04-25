@@ -9,7 +9,7 @@ HOD base class
 
 .. automodule:: HODDIES.hod
   :members:
-  :inherited-members:
+  :undoc-members:
   :show-inheritance:
 
 Utilities
@@ -20,7 +20,7 @@ HOD_models
 
 .. automodule:: HODDIES.HOD_models
   :members:
-  :inherited-members:
+  :undoc-members:
   :show-inheritance:
 
 utils
@@ -28,7 +28,7 @@ utils
 
 .. automodule:: HODDIES.utils
   :members:
-  :inherited-members:
+  :undoc-members:
   :show-inheritance:
 
 abacus_io
@@ -36,7 +36,7 @@ abacus_io
 
 .. automodule:: HODDIES.abacus_io
   :members:
-  :inherited-members:
+  :undoc-members:
   :show-inheritance:
 
 
