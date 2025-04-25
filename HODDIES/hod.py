@@ -139,6 +139,38 @@ class HOD:
             self._compute_assembly_bias_columns()
 
     def init_cosmology(self):
+        """
+        Initialize the cosmology model using Cosmoprimo.
+
+        This method attempts to set the `self.cosmo` attribute using cosmological parameters
+        defined in the input configuration (`self.args['cosmo']`). It supports loading:
+        
+        - AbacusSummit cosmologies if the simulation name (`sim_name`) is present
+        - Custom cosmology from provided parameters if no Abacus name is specified
+
+        It uses the `cosmoprimo` package to construct the cosmology and raises a warning if
+        the library is not available.
+
+        Returns
+        -------
+        None
+            Sets the `self.cosmo` attribute to an instance of `cosmoprimo.Cosmology`
+            or leaves it as `None` if the initialization fails.
+
+        Raises
+        ------
+        ImportWarning
+            If `cosmoprimo` is not installed, a warning is issued and no cosmology is set.
+
+        Notes
+        -----
+        - Required fields in `self.args['cosmo']` are passed as keyword arguments to
+        `cosmoprimo.fiducial.Cosmology`.
+        - For AbacusSummit cosmologies, the cosmology identifier is extracted from
+        the `sim_name` string.
+        - Cosmology is used later for computing RSD and distance-based statistics.
+        """
+
         try: 
             from cosmoprimo.fiducial import Cosmology, AbacusSummit
             if "sim_name" in self.args["hcat"].keys():
@@ -1306,14 +1338,11 @@ class HOD:
             - HOD parameters
             - Mean chi² value for the realizations
             - Uncertainty on chi² (standard deviation / sqrt(N_real))
-
-        Side Effects
-        ------------
-        - Reads all training `.npy` files from `self.args['fit_param']['path_to_training_point']` with the given sampling type.
-        - Applies covariance matrix adjustments if requested.
-
+        
         Notes
         -----
+        - Reads all training `.npy` files from `self.args['fit_param']['path_to_training_point']` with the given sampling type.
+        - Applies covariance matrix adjustments if requested.
         - Supports either 'wp', 'xi', or both statistics depending on `self.args['fit_param']['fit_type']`.
         - Combines model realizations by flattening tracer combinations and statistics into a single vector.
         - Computes chi² using the `compute_chi2()` utility, which is assumed to match the data/model shape.
@@ -1388,16 +1417,14 @@ class HOD:
         -------
         new_points : ndarray
             Array of shape (nb_points, n_parameters) with newly suggested parameter values.
+        
 
-        Side Effects
-        ------------
+        Notes
+        -----
         - Trains a GP model using scikit-learn's `GaussianProcessRegressor`.
         - Runs MCMC sampling using `emcee` or `zeus`. Default sampler is emcee.
         - Logs GPR and MCMC diagnostics to `output_GP_*.txt`.
         - Saves the full sampled chain with GP predictions to `chains/chain_*.txt`.
-
-        Notes
-        -----
         - The GP kernel is configured based on `self.args['fit_param']['kernel_gp']`. Default kernel is Matern 5/2.
         - Trained GP model and MCMC output are saved for post-analysis and reproducibility.
         - During MCMC, parameter boundaries are enforced via a likelihood mask.
@@ -1589,8 +1616,8 @@ class HOD:
         None
             All fitting results are saved to disk. No return value.
 
-        Side Effects
-        ------------
+        Notes
+        -----
         - Creates and updates files under `dir_output_fit`, including:
             - `*.txt` logs of sampled parameter values and chi² results
             - Chains of samples in `chains/` directory
@@ -1600,9 +1627,6 @@ class HOD:
             - `get_crosswp()`, `get_cross2PCF()`: for 2PCF computation
             - `compute_chi2()`: to evaluate model-data fit
             - `run_gp_mcmc()`: for parameter sampling via GP-MCMC
-
-        Notes
-        -----
         - Convergence is optionally monitored via KL divergence, but the stopping criterion is commented out.
         - Handles both projected (wp) and full-space (xi) correlation functions depending on `fit_type`.
         - Assumes the availability of `emcee` or `zeus` samplers for MCMC.
