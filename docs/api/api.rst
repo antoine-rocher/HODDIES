@@ -15,6 +15,14 @@ HOD base class
 Utilities
 ---------
 
+HOD_models
+~~~~~~~~~~
+
+.. automodule:: HODDIES.HOD_models
+  :members:
+  :inherited-members:
+  :show-inheritance:
+
 utils
 ~~~~~~~~~~
 
@@ -26,7 +34,9 @@ utils
 abacus_io
 ~~~~~~~~~~
 
-.. automodule:: HODDIES.utils
+.. automodule:: HODDIES.abacus_io
   :members:
   :inherited-members:
   :show-inheritance:
+
+

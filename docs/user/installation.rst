@@ -7,12 +7,8 @@ Requirements
 Strict requirements are:
 
   - numpy   
-  - matplotlib
   - mpytools 
-  - pycorr 
   - numba
-  - idaes-pse
-  - scikit-learn
 
 Pip Installation
 ----------------
