@@ -1,21 +1,10 @@
-import matplotlib.pyplot as plt 
-import matplotlib.lines as mlines
 from numba import njit, jit, numba
 import time 
 import os
-from cosmoprimo.fiducial import Cosmology, AbacusSummit
 from .utils import *
 from .HOD_models import _SHOD, _GHOD, _SFHOD, _SHOD, _LNHOD, _HMQ, _mHMQ, _Nsat_pow_law
-from .abacus_func import *
 import yaml 
-import socket
-from .pinnochio_io import *
-from pypower import CatalogMesh
 import glob
-from .fits_functions import *
-import emcee 
-import zeus
-import sklearn.gaussian_process as skg
 from mpytools import Catalog
 import collections.abc
 
@@ -62,6 +51,8 @@ class HOD:
         
         
         self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)
+        self.cosmo = None
+        self.H_0 = 100 # H_0 is always set to 100 km/s/Mpc
 
         def update_dic(d, u):
             for k, v in u.items():
@@ -77,16 +68,16 @@ class HOD:
         print('Set number of threads to {}'.format(self.args['nthreads']), flush=True)
 
         if path_to_abacus_sim  is not None:
-                self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
-                self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim, halo_lc=self.args['hcat']['halo_lc'])
-                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'])   
+            from .abacus_io import read_Abacus_hcat
+            self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
+            self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim)
                             
-                
         elif read_pinnochio  is not None:
-                print('Read Pinnochio', flush=True)
-                start = time.time()
-                self.hcat, self.boxsize, self.cosmo = read_pinnochio_hcat(self.args)
-                print('Done {:.2f}'.format(time.time()-start), flush=True)  
+            from .pinnochio_io import read_pinnochio_hcat
+            print('Read Pinnochio', flush=True)
+            start = time.time()
+            self.hcat, self.boxsize, self.cosmo = read_pinnochio_hcat(self.args)
+            print('Done {:.2f}'.format(time.time()-start), flush=True)  
         
         elif hcat_file is not None:
             init_cols = ['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'Rs', 'c', 'Vrms', 'halo_id']
@@ -105,7 +96,6 @@ class HOD:
                     raise TypeError(f'Halo catalog must be a structured ndarray with field {init_cols}')
                 self.hcat = Catalog.from_array(hcat_file)
                 
-            self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
             if boxsize is not None:
                 self.boxsize = boxsize
             elif self.args['hcat']['boxsize'] is not None:
@@ -120,18 +110,22 @@ class HOD:
             if not os.path.exists(self.args['hcat']['path_to_sim']): 
                 raise FileNotFoundError('{} not found'.format(self.args['hcat']['path_to_sim']))
             self.hcat = Catalog.read(self.args['hcat'][['path_to_sim']]) 
-            self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
             if boxsize is not None:
                 self.boxsize = boxsize
             elif self.args['hcat']['boxsize'] is not None:
                 self.boxsize = self.args['hcat']['boxsize']
 
+        #init cosmology 
+        if self.cosmo is None:
+            self.init_cosmology()
+
         if 'log10_Mh' not in self.hcat.columns(): 
             self.hcat['log10_Mh'] = np.log10(self.hcat['Mh'])
-        self.H_0 = 100
+        
 
         if 'c' not in self.hcat.columns():
-            print('Concentration column "c" is not provided. The concentration is computed from mass-concentration relation of {} using {} as mass definition'.format(self.args['cm_relation'], self.args['mass_def']))
+            print('Concentration column "c" is not provided. The concentration is computed from colossus package using mass-concentration relation of {} with {} as mass definition'.format(self.args['cm_relation'], self.args['mass_def']), flush=True)
+            from pinnochio_io import get_concentration
             self.hcat['c'] = get_concentration(self.hcat['Mvir'], cosmo=self.cosmo, mdef=self.args['mass_def'], cmrelation=self.args['cm_relation'])
         
         try :
@@ -146,8 +140,23 @@ class HOD:
                 
         if self.args['assembly_bias']:
             self._compute_assembly_bias_columns()
-    
-    
+
+
+    def init_cosmology(self):
+        try: 
+            from cosmoprimo.fiducial import Cosmology, AbacusSummit
+            if "sim_name" in self.args["hcat"].keys():
+                print('Initialize Abacus c{} cosmology'.format(self.args['hcat']['sim_name'].split('_c')[-1][:3]))
+                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'], flush=True)   
+            else:
+                print('Initialize custom cosmology from the "cosmo" parameters', flush=True)
+                self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
+        except ImportError:
+            import warnings
+            warnings.warn('Could not import cosmoprimo. Install cosmoprimo with "python -m pip install python -m pip install git+https://github.com/cosmodesi/cosmoprimo".\n'\
+                  'Cosmology needed to apply RSD when computing correlations. No cosmology set.')
+            self.cosmo = None
+
     def __init_hod_param(self, tracer):
 
         """
@@ -294,6 +303,7 @@ class HOD:
         None
             Add column named ``env`` in the halo catalog self.hcat 
         """
+        from pypower import CatalogMesh
 
         print(f'Compute environment in cellsize {cellsize}...', flush=True)
         import warnings
@@ -1019,6 +1029,7 @@ class HOD:
         HOD_plot(tracer='ELG')   # Plot HOD for the 'ELG' tracer.
         HOD_plot(tracer=['ELG', 'QSO'])  # Plot HOD for both 'ELG' and 'QSO' tracers.
         """
+        import matplotlib.pyplot as plt
 
     
         if tracer is None:
@@ -1076,6 +1087,8 @@ class HOD:
         plot_HMF(cats, show_sat=True, range=(10.8, 15), tracer='ELG')  # Plot HMF for the 'ELG' tracer with satellite galaxies.
         plot_HMF(cats, inital_HMF=True)  # Plot HMF with the initial HMF included.
         """
+        import matplotlib.lines as mlines
+        import matplotlib.pyplot as plt
 
         colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red'}
         handles=[]
@@ -1157,6 +1170,7 @@ class HOD:
 
         
     def compute_training(self, nreal=20, training_points=None, start_point=0, verbose=False):
+        
         """
         Generate and save training data for HOD model fitting by sampling parameter sets 
         (training points), generating mock catalogs, and computing clustering statistics.
@@ -1172,7 +1186,7 @@ class HOD:
 
         training_points : structured array or None, optional
             Array of training points with named fields corresponding to HOD parameters. If None, 
-            training points will be generated using `self.genereate_training_points`.
+            training points will be generated using `genereate_training_points`.
 
         start_point : int, optional
             Starting index for training point numbering (useful when continuing interrupted runs). Default is 0.
@@ -1211,6 +1225,7 @@ class HOD:
         self.compute_training(nreal=10, verbose=True)
         """
 
+        from .fits_functions import genereate_training_points
 
         if not set(self.args['tracers']) == set(self.args['fit_param']['priors'].keys()):
             raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self.args['tracers'], self.args['fit_param']['priors'].keys()))
@@ -1221,12 +1236,10 @@ class HOD:
             raise ValueError('The training sample shape ({}) does not correspond to the number of parameters ({})'.format(len(self.args['fit_param']['priors'][tr]), len(training_points.dtype.names)))
                 
         if training_points is None:
-            training_points = self.genereate_training_points(self)
+            training_points = genereate_training_points(self.args['fit_param']['n_calls'], self.args['fit_param']['priors'], sampling_type='lhs', path_to_save_training_point=self.args['fit_param']['path_to_training_point'], rand_seed=None)
             
         tracers = self.args['tracers']
-        
-        os.makedirs(self.args['fit_param']["path_to_training_point"], exist_ok=True)
-        
+                
         if verbose:
             print(f'Run training sample', flush=True)
 
@@ -1298,7 +1311,7 @@ class HOD:
         >>> train_set = model.read_training(observed_data, inv_cov2)
         """
 
-
+        from fits_functions import compute_chi2
 
         print('Read training sample...', flush=True)
         files = glob.glob(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_*.npy'.format(self.args['fit_param']['sampling_type'])))
@@ -1587,6 +1600,15 @@ class HOD:
         >>> model.run_fit(data, inv_cov, training_set, resume_fit=True)
         """
         import pandas as pd
+        from .fits_functions import compute_chi2
+        if self.args['fit_param']['sampler'] == "zeus":
+            import zeus
+        elif self.args['fit_param']['sampler'] == "emcee":
+            import emcee 
+        else: 
+            raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
+        
+        import sklearn.gaussian_process as skg
 
         nmock = self.args['fit_param']['nb_real']
         dir_output_file= self.args['fit_param']['dir_output_fit']
