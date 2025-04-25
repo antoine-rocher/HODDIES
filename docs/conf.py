@@ -42,7 +42,7 @@ release = __version__
 
 html_theme = 'sphinx_rtd_theme'
 
-autodoc_mock_imports = ['Corrfunc', 'mpi4py', 'pmesh']
+autodoc_mock_imports = ['pycorr', 'colossus', 'cosmoprimo']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -51,6 +51,13 @@ templates_path = ['_templates']
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = ['build', '**.ipynb_checkpoints']
+
+root_doc = 'index'
+source_suffix = {
+    '.rst': 'restructuredtext',
+    '.ipynb': 'myst-nb',
+}
+
 
 # -- Options for HTML output -------------------------------------------------
 
