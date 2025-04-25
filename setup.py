@@ -15,7 +15,7 @@ setup(name=package_basename,
       description='Fast HOD code for small scale clustering analysis',
       license='GPLv3',
       url='https://github.com/antoine-rocher/HODDIES',
-      install_requires=['matplotlib', 'numpy', 'mpytools', 'pycorr', 'numba', 'idaes-pse', 'scikit-learn'],
+      install_requires=['numpy', 'scipy', 'mpytools', 'numba', 'cosmoprimo', 'yaml'],
       package_data={package_basename: ['default_HOD_parameters.yaml']},
       packages=find_packages()
 )     

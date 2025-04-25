@@ -1,12 +1,19 @@
 import numpy as np
-from pycorr import TwoPointCorrelationFunction, project_to_multipoles, project_to_wp
+try:
+    from pycorr import TwoPointCorrelationFunction, project_to_multipoles, project_to_wp
+
+except ImportError:
+    import warnings
+    warnings.warn(
+        'Could not import pycorr. Install pycorr with ' \
+        '"python -m pip install git+https://github.com/cosmodesi/pycorr#egg=pycorr[corrfunc]".' \
+        'pycorr currently use a branch of Corrfunc, uninstall previous Corrfunc version (if any): "pip uninstall Corrfunc"', 
+    )
+
 from numba import njit, numba
 import os
-from . import HOD_models
-import matplotlib.pyplot as plt
 # import mpytools as mpy
 import scipy
-from pypower import CatalogFFTPower
 
 
 def apply_rsd(cat, z, boxsize, H_0=100, los='z', vsmear=0, cosmo=None):
@@ -553,6 +560,7 @@ def plot_HOD(p_cen, p_sat, fun_cHOD, fun_sHOD, logM = np.linspace(10.8,15,100), 
         matplotlib.figure.Figure
             The plotted figure.
     """
+    import matplotlib.pyplot as plt
 
 
     if fig is None:
@@ -613,6 +621,7 @@ def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256,
     array
         Power spectrum multipoles.
     """
+    from pypower import CatalogFFTPower
 
     result = CatalogFFTPower(
         data_positions1=pos1, data_positions2=pos2,

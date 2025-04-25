@@ -1,5 +1,4 @@
 import numpy as np
-from idaes.core.surrogate.pysmo.sampling import HammersleySampling, LatinHypercubeSampling
 import os
 
 
@@ -24,7 +23,8 @@ def genereate_training_points(nPoints, priors, sampling_type='lhs', path_to_save
             sample_points : float array of shape (nPoints, len(priors))
                 Sample of points according to the sampling type. 
     """
-    
+    from idaes.core.surrogate.pysmo.sampling import HammersleySampling, LatinHypercubeSampling
+
     print(f"Creating {sampling_type} sample...", flush=True)
     priors_lists = np.vstack([list(priors[tr].values()) for tr in priors.keys()]).T.tolist() 
     
@@ -41,7 +41,8 @@ def genereate_training_points(nPoints, priors, sampling_type='lhs', path_to_save
     for i,v in enumerate(name_param):
         sample_points[v] = res.T[i] 
     if path_to_save_training_point is not None:
-        np.savez(os.path.join("path_to_training_point", f'point_{sampling_type}'),
+        os.makedirs(path_to_save_training_point, exist_ok=True)
+        np.savez(os.path.join(path_to_save_training_point, f'point_{sampling_type}'),
                     sample=sample_points, header=str(priors))
     
     return sample_points

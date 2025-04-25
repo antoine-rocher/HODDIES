@@ -100,7 +100,7 @@ hcat:
 fit_param:
   nb_real: 20  # Number of mock catalogs to generate for each HOD parameter set to estimate stochastic noise 
   fit_name: myhodfit  # Name identifier for this fitting run
-  path_to_training_point: path_to_save_training_point  # Path to save or read precomputed training samples
+  path_to_training_point: null  # Path to save or read precomputed training samples
   dir_output_fit: path_to_save_fit_outputs  # Directory where output from this fitting will be saved
   fit_type: wp+xi  # Type of 2PCF(s) used in fitting: wp = projected, xi = multipoles
   generate_training_sample: True  # Whether to generate a new training sample using sampling_type

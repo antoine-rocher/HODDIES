@@ -4,8 +4,26 @@
 
 ![HOD cartoon](https://github.com/antoine-rocher/HODDIES/blob/main/HOD_cartoon.png)
 
-An example run on NERSC, using [AbacusSummit](https://abacussummit.readthedocs.io/en/latest/) simualtions. The code be initialized using the default [paramerter file](https://github.com/antoine-rocher/HODDIES/blob/main/HODDIES/default_HOD_parameters.yaml)
+
+An example can using a custom halo catlog. The code is initialized using the default [paramerter file](https://github.com/antoine-rocher/HODDIES/blob/main/HODDIES/default_HOD_parameters.yaml)
 (pseudo-code, for an example with all variables defined see [this notebook](https://github.com/antoine-rocher/HODDIES/blob/main/nb/basic_HOD_examples.ipynb)):
+```
+from HODDIES import HOD
+# Initiate the HOD instance with default parameter file parameters_HODdefaults.yaml
+
+HOD_obj= HOD(hcat='path_to_halo_catalog')
+
+# Generate the mock catalog
+mock_cat = HOD_obj.make_mock_cat(fix_seed=None) 
+
+# Compute clustering statistics
+
+rp, wp = HOD_obj.get_wp(cats, tracers='ELG')
+s, xi = HOD_obj.get_2PCF(cats, tracers='ELG')
+```
+
+
+An example can be run at NERSC, using [AbacusSummit](https://abacussummit.readthedocs.io/en/latest/) simualtions. 
 ```
 from HODDIES import HOD
 # Initiate the HOD instance with default parameter file parameters_HODdefaults.yaml
@@ -38,11 +56,12 @@ Strict requirements are:
 
   - numpy
   - matplotlib
-  - mpytools
-  - pycorr
-  - numba
-  - idaes-pse
-  - scikit-learn
+  - [numba](https://numba.pydata.org/)
+  - [mpytools](https://github.com/cosmodesi/mpytools)
+  - [pycorr](https://py2pcf.readthedocs.io/en/stable/)
+  - [cosmoprimo](https://cosmoprimo.readthedocs.io/en/latest/)
+  - [idaes-pse](https://idaes-pse.readthedocs.io/en/stable/tutorials/getting_started/index.html)
+  - [scikit-learn](https://scikit-learn.org/stable/)
 
 ## Installation
 
