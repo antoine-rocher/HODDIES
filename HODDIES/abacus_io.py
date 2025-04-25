@@ -1,7 +1,7 @@
 """ Io tools to load AbacusSummit simualtions"""
 
 import numpy as np
-from abacusnbody.data.compaso_halo_catalog import CompaSOHaloCatalog
+# from abacusnbody.data.compaso_halo_catalog import CompaSOHaloCatalog
 import time 
 from numba import njit, numba
 import os 
