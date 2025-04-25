@@ -7,7 +7,8 @@ except ImportError:
     warnings.warn(
         'Could not import pycorr. Install pycorr with ' \
         '"python -m pip install git+https://github.com/cosmodesi/pycorr#egg=pycorr[corrfunc]".' \
-        'pycorr currently use a branch of Corrfunc, uninstall previous Corrfunc version (if any): "pip uninstall Corrfunc"', 
+        'pycorr currently use a branch of Corrfunc, uninstall previous Corrfunc version (if any): "pip uninstall Corrfunc"'\
+        '' 
     )
 
 from numba import njit, numba
@@ -16,7 +17,7 @@ import os
 import scipy
 
 
-def apply_rsd(cat, z, boxsize, H_0=100, los='z', vsmear=0, cosmo=None):
+def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
 
     """
     Apply redshift-space distortions (RSD) to a galaxy catalog.
@@ -29,14 +30,14 @@ def apply_rsd(cat, z, boxsize, H_0=100, los='z', vsmear=0, cosmo=None):
         Redshift at which to apply the distortions.
     boxsize : float
         Size of the simulation box in Mpc/h.
+    cosmo : object
+        Cosmology object from cosmoprimo.
     H_0 : float, optional
         Hubble constant in km/s/Mpc. Default is 100.
     los : {'x', 'y', 'z'}, optional
         Line-of-sight axis. Default is 'z'.
     vsmear : float, optional
         Add redshift error using gaussian distribution in km/s. Default is 0.
-    cosmo : object, optional
-        Cosmology object from cosmoprimo. If None, uses DESI fiducial cosmology. 
 
     Returns
     -------
@@ -44,9 +45,6 @@ def apply_rsd(cat, z, boxsize, H_0=100, los='z', vsmear=0, cosmo=None):
         List of arrays containing RSD-applied positions for x, y, and z.
     """
 
-    if cosmo is None :
-        from cosmoprimo.fiducial import DESI
-        cosmo = DESI(engine='class')
     rsd_factor = 1 / (1 / (1 + z) * H_0 * cosmo.efunc(z))
     pos_rsd = [cat[p] % boxsize if p !=los else (cat[p] + (cat['v'+p] + np.random.normal(0,vsmear, size=len(cat[p])))*rsd_factor) %boxsize if vsmear is not None else (cat[p] + cat['v'+p]*rsd_factor) %boxsize for p in 'xyz']
     return pos_rsd
@@ -83,7 +81,7 @@ def compute_2PCF(pos1, edges, boxsize, ells=(0, 2), los='z', nthreads=32, R1R2=N
     s, (multipoles) : tuple(array, ndarray)
         Average separation for each s bin and computed multipoles of the 2PCF.
     """    
-        
+
     result = TwoPointCorrelationFunction('smu', edges, 
                                          data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
                                          boxsize=boxsize, los=los, nthreads=nthreads, R1R2=R1R2, mpicomm=mpicomm)
