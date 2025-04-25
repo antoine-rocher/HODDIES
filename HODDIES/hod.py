@@ -1,3 +1,6 @@
+""" Base HOD class """
+
+
 from numba import njit, jit, numba
 import time 
 import os
