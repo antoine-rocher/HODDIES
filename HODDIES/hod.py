@@ -1234,6 +1234,7 @@ class HOD:
         Example
         -------
         self.compute_training(nreal=10, verbose=True)
+        
         """
 
         from .fits_functions import genereate_training_points
@@ -1586,12 +1587,10 @@ class HOD:
             - MCMC chains for each iteration under `chains/`
             - Updated training data with new chi² evaluations
 
+            
         Side Effects
         ------------
-        - Reads and writes files in `dir_output_fit`, including:
-            - Parameter chains
-            - Updated training set
-            - Convergence diagnostics (e.g., KL divergence)
+        - Reads and writes files in `dir_output_fit`, including: chain parameters, updated training set, convergence diagnostics (e.g., KL divergence)
         - Runs galaxy mock generation and two-point correlation function (2PCF) measurements.
 
         Notes

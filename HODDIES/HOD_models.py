@@ -31,6 +31,7 @@ def HMQ(log10_Mh, Ac, Mc, sig_M, gamma, Q, pmax):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
 
     phi_x = 1 / (np.sqrt(2 * np.pi) * sig_M) * np.exp(
@@ -63,6 +64,7 @@ def mHMQ(log10_Mh, Ac, Mc, sig_M, gamma):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
 
     phi_x = 1 / (np.sqrt(2 * np.pi) * sig_M) * np.exp(
@@ -91,6 +93,7 @@ def GHOD(log10_Mh, Ac, Mc, sig_M):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
 
     return Ac / (np.sqrt(2 * np.pi) * sig_M) * np.exp(-(log10_Mh - Mc)**2 / (2 * sig_M**2))
@@ -116,6 +119,7 @@ def LNHOD(log10_Mh, Ac, Mc, sig_M):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
 
     x = log10_Mh - Mc + 1
@@ -147,6 +151,7 @@ def SFHOD(log10_Mh, Ac, Mc, sig_M, gamma):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
 
     norm = Ac / (np.sqrt(2 * np.pi) * sig_M)
@@ -175,6 +180,7 @@ def SHOD(log10_Mh, Ac, Mc, sig_M):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
 
     return Ac * 0.5 * (1 + math.erf((log10_Mh - Mc) / sig_M))
@@ -202,6 +208,7 @@ def Nsat_pow_law(log10_Mh, As, M_0, M_1, alpha):
     --------
     - float
         Expected number of satellite galaxies in a halo of mass log10_Mh.
+
     """
 
     N_sat = As * ((10**log10_Mh - 10**M_0) / 10**M_1)**alpha
@@ -222,7 +229,9 @@ def _Nsat_pow_law(log10_Mh, p_sat):
     --------
     - float
         Expected number of satellite galaxies in a halo of mass log10_Mh.
+
     """
+    
     As, M_0, M_1, alpha = p_sat
     return Nsat_pow_law(log10_Mh, As, M_0, M_1, alpha)
 
@@ -241,7 +250,9 @@ def _SHOD(log10_Mh, p_cen):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
+
     Ac, Mc, sigM = p_cen
     return SHOD(log10_Mh, Ac, Mc, sigM)
 
@@ -260,7 +271,9 @@ def _GHOD(log10_Mh, p_cen):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
+
     Ac, Mc, sigM = p_cen
     return GHOD(log10_Mh, Ac, Mc, sigM)
 
@@ -279,7 +292,9 @@ def _LNHOD(log10_Mh, p_cen):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
+
     Ac, Mc, sigM = p_cen
     return LNHOD(log10_Mh, Ac, Mc, sigM)
 
@@ -298,7 +313,9 @@ def _SFHOD(log10_Mh, p_cen):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+        
     """
+
     Ac, Mc, sigM, gamma = p_cen
     return SFHOD(log10_Mh, Ac, Mc, sigM, gamma)
 
@@ -317,7 +334,9 @@ def _HMQ(log10_Mh, p_cen):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
+
     Ac, Mc, sig_M, gamma, Q, pmax = p_cen
     return HMQ(log10_Mh, Ac, Mc, sig_M, gamma, Q, pmax)
 
@@ -336,6 +355,8 @@ def _mHMQ(log10_Mh, p_cen):
     --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
+
     """
+
     Ac, Mc, sig_M, gamma = p_cen
     return mHMQ(log10_Mh, Ac, Mc, sig_M, gamma)
