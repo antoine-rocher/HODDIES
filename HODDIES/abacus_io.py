@@ -5,7 +5,7 @@ from abacusnbody.data.compaso_halo_catalog import CompaSOHaloCatalog
 import time 
 from numba import njit, numba
 import os 
-from mpytools import Catalog
+# from mpytools import Catalog
 
 
 def read_Abacus_hcat(args, dir_sim, use_L2=True):
