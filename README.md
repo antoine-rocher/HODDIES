@@ -11,22 +11,15 @@ An example can using a custom halo catlog. The code is initialized using the def
 from HODDIES import HOD
 # Initiate the HOD instance with default parameter file parameters_HODdefaults.yaml
 
+# Using path to catalog
+path_to_halo_catalog = '/path/to/halo_catalog' # catalog type can be fits, h5, asdf
 HOD_obj= HOD(hcat='path_to_halo_catalog')
 
-# Generate the mock catalog
-mock_cat = HOD_obj.make_mock_cat(fix_seed=None) 
+# Using a preloaded catalog. 
+# This catalog need to be a dictonary / structured array or mpy Catalog with colunms names ['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'Rs', 'c', 'Vrms', 'halo_id']  
+HOD_obj= HOD(hcat=mycatalog) 
 
-# Compute clustering statistics
-
-rp, wp = HOD_obj.get_wp(cats, tracers='ELG')
-s, xi = HOD_obj.get_2PCF(cats, tracers='ELG')
-```
-
-
-An example can be run at NERSC, using [AbacusSummit](https://abacussummit.readthedocs.io/en/latest/) simualtions. 
-```
-from HODDIES import HOD
-# Initiate the HOD instance with default parameter file parameters_HODdefaults.yaml
+# Using root AbacusSummit simulation path, example at NERSC
 HOD_obj= HOD(path_to_abacus_sim='/global/cfs/cdirs/desi/cosmosim/Abacus')
 
 # Generate the mock catalog
@@ -55,13 +48,18 @@ Example notebooks are provided in directory nb/.
 Strict requirements are:
 
   - numpy
-  - matplotlib
+  - yaml
   - [numba](https://numba.pydata.org/)
   - [mpytools](https://github.com/cosmodesi/mpytools)
-  - [pycorr](https://py2pcf.readthedocs.io/en/stable/)
-  - [cosmoprimo](https://cosmoprimo.readthedocs.io/en/latest/)
-  - [idaes-pse](https://idaes-pse.readthedocs.io/en/stable/tutorials/getting_started/index.html)
-  - [scikit-learn](https://scikit-learn.org/stable/)
+  
+
+Extra requirements are:
+
+  - [pycorr](https://py2pcf.readthedocs.io/en/stable/) for 2PCF computation
+  - [cosmoprimo](https://cosmoprimo.readthedocs.io/en/latest/) for cosmology tools
+  - [abacusutils](https://abacusutils.readthedocs.io/en/latest/installation.html) to load AbacusSummit simulations
+  - [idaes-pse](https://idaes-pse.readthedocs.io/en/stable/tutorials/getting_started/index.html) for inital sampling when performing HOD fits  
+  - [scikit-learn](https://scikit-learn.org/stable/) used for gaussian processes regression when performing HOD fits  
 
 ## Installation
 
