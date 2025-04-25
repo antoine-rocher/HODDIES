@@ -7,8 +7,8 @@ Welcome to HODDIES's documentation!
   :maxdepth: 1
   :caption: User documentation
 
-  installation
-  api
+  user/installation
+  api/api
 
 .. toctree::
   :hidden:
@@ -16,7 +16,7 @@ Welcome to HODDIES's documentation!
 Introduction
 ************
 
-**HODDIES** is a Python toolkit to generate mock galaxy catalogs based on Halo Occupation Distribution (HOD) model. It also provide a tools to fit HOD models on data.   
+**HODDIES** is a Python toolkit to generate mock galaxy catalogs based on Halo Occupation Distribution (HOD) models. It also provide a tools to fit HOD models on data.   
 
 A typical generation of a HOD-based mock is as simple as:
 
