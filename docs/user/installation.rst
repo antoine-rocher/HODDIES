@@ -17,7 +17,7 @@ Extra requirements are:
   - `pycorr <https://py2pcf.readthedocs.io/en/stable/>`_ for 2PCF computation (installed without Corrfunc )
   - `cosmoprimo <https://cosmoprimo.readthedocs.io/en/latest/>`_ for cosmology tools
   - `abacusutils <https://abacusutils.readthedocs.io/en/latest/installation.html>`_ to load AbacusSummit simulations
-  - `idaes-pse <ttps://idaes-pse.readthedocs.io/en/stable/tutorials/getting_started/index.html>`_ for inital sampling when performing HOD fits  
+  - `idaes-pse <https://idaes-pse.readthedocs.io/en/stable/tutorials/getting_started/index.html>`_ for inital sampling when performing HOD fits  
   - `scikit-learn <https://scikit-learn.org/stable/>`_ used for gaussian processes regression when performing HOD fits  
   - `colossus <https://bdiemer.bitbucket.io/colossus/index.html>`_ for mass concentration relations
 
@@ -43,14 +43,14 @@ To install only a part of extra requirements you can do:
 
 ``Pycorr`` and ``Corrfunc`` installation
 ----------------
-HODDIES provide two-point correlation measurement based on ``pycorr`` which use a specific branch of Corrfunc. ``pycorr`` is installed as an extra dependency in HODDIES without two-point counter engine, so fairly unusable. ``pycorr`` currently use a specific branch of Corrfunc, located `here <https://github.com/cosmodesi/Corrfunc/tree/desi>`_. To install Corrfunc(details on ``pycorr`` canbe found `here <<https://github.com/cosmodesi/Corrfunc/tree/desi>>`_):
+HODDIES provide two-point correlation measurement based on ``pycorr`` which use a specific branch of Corrfunc. ``pycorr`` is installed as an extra dependency in HODDIES without two-point counter engine, so fairly unusable. ``pycorr`` currently use a specific branch of Corrfunc, located `here <https://github.com/cosmodesi/Corrfunc/tree/desi>`_. To install Corrfunc(details on ``pycorr`` can be found `here <https://github.com/cosmodesi/Corrfunc/tree/desi>`_):
 ::
 
     $ python -m pip install git+https://github.com/adematti/Corrfunc@desi
 
 
 Git installation
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+----------------
 ::
 
     $ git clone https://github.com/antoine-rocher/HODDIES.git
