@@ -36,6 +36,7 @@ all = [
 cosmodesi = ['pycorr @ git+https://github.com/cosmodesi/pycorr', 'cosmoprimo @ git+https://github.com/cosmodesi/cosmoprimo']
 fit_tools = ['scikit-learn','emcee','zeus','idaes-pse']
 colossus = ['colossus']
+abacusutils = ['abacusutils[all]']
 
 
 [tool.setuptools]
