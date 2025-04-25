@@ -43,10 +43,23 @@ To install only a part of extra requirements you can do:
 
 ``Pycorr`` and ``Corrfunc`` installation
 ----------------
-HODDIES provide two-point correlation measurement based on ``pycorr`` which use a specific branch of Corrfunc. ``pycorr`` is installed as an extra dependency in HODDIES without two-point counter engine, so fairly unusable. ``pycorr`` currently use a specific branch of Corrfunc, located `here <https://github.com/cosmodesi/Corrfunc/tree/desi>`_. To install Corrfunc(details on ``pycorr`` can be found `here <https://github.com/cosmodesi/Corrfunc/tree/desi>`_):
+HODDIES provide two-point correlation measurement based on ``pycorr`` which use a specific branch of Corrfunc. ``pycorr`` is installed as an extra dependency in **HODDIES** without two-point counter engine, so fairly unusable. ``pycorr`` currently use a specific branch of Corrfunc, located `here <https://github.com/cosmodesi/Corrfunc/tree/desi>`_. Details on ``pycorr`` installation can be found `here <https://github.com/cosmodesi/Corrfunc/tree/desi>`_. 
+
+To install ``pycorr``with ``Corrfunc``, first, uninstall previous ``Corrfunc`` version (if any):
+::
+
+    $ pip uninstall Corrfunc
+
+
+To install ``Corrfunc`` if ``pycorr`` is already install :
 ::
 
     $ python -m pip install git+https://github.com/adematti/Corrfunc@desi
+
+To install ``Corrfunc`` and ``pycorr`` if both are not install:
+::
+
+    $ python -m pip install git+https://github.com/cosmodesi/pycorr#egg=pycorr[corrfunc]
 
 
 Git installation
