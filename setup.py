@@ -16,8 +16,8 @@ setup(name=package_basename,
       license='GPLv3',
       url='https://github.com/antoine-rocher/HODDIES',
       install_requires=['numpy', 'scipy', 'mpytools', 'numba', 'yaml'],
-      extras_require={'pycorr': ['pycorr @ git+https://github.com/cosmodesi/pycorr'], 'cosmoprimo': ['cosmoprimo @ git+https://github.com/cosmodesi/cosmoprimo'],
-                      'fit_tools':['scikit-learn', 'idaes-pse'], 'abacusutils':['abacusutils[all]']}
+      # extras_require={'pycorr': ['pycorr @ git+https://github.com/cosmodesi/pycorr'], 'cosmoprimo': ['cosmoprimo @ git+https://github.com/cosmodesi/cosmoprimo'],
+      #                 'fit_tools':['scikit-learn', 'idaes-pse'], 'abacusutils':['abacusutils[all]']}
       package_data={package_basename: ['default_HOD_parameters.yaml']},
       packages=find_packages()
 )     
