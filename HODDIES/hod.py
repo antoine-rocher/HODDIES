@@ -8,7 +8,7 @@ from .utils import *
 from .HOD_models import _SHOD, _GHOD, _SFHOD, _SHOD, _LNHOD, _HMQ, _mHMQ, _Nsat_pow_law
 import yaml 
 import glob
-from mpytools import Catalog
+# from mpytools import Catalog
 import collections.abc
 
 class HOD:
