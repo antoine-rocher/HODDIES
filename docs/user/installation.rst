@@ -42,7 +42,9 @@ To install only a part of extra requirements you can do:
     $ python -m pip install git+https://github.com/antoine-rocher/HODDIES[abacusutils]  # install ['abacusutils']
 
 ``Pycorr`` and ``Corrfunc`` installation
-----------------
+----------------------------------------
+
+
 HODDIES provide two-point correlation measurement based on ``pycorr`` which use a specific branch of Corrfunc. ``pycorr`` is installed as an extra dependency in **HODDIES** without two-point counter engine, so fairly unusable. ``pycorr`` currently use a specific branch of Corrfunc, located `here <https://github.com/cosmodesi/Corrfunc/tree/desi>`_. Details on ``pycorr`` installation can be found `here <https://github.com/cosmodesi/Corrfunc/tree/desi>`_. 
 
 To install ``pycorr``with ``Corrfunc``, first, uninstall previous ``Corrfunc`` version (if any):

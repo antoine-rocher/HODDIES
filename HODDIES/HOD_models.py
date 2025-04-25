@@ -11,12 +11,13 @@ def HMQ(log10_Mh, Ac, Mc, sig_M, gamma, Q, pmax):
     without normalization based on arxiv:1910.05095.
 
     Parameters:
+    -----------
     - log10_Mh: float
         Logarithm (base 10) of halo mass.
     - Ac: float
         Normalization amplitude.
     - Mc: float
-        Characteristic halo mass (log10).
+        Mean halo mass (log10).
     - sig_M: float
         Width of central galaxy mass distribution.
     - gamma: float
@@ -27,6 +28,7 @@ def HMQ(log10_Mh, Ac, Mc, sig_M, gamma, Q, pmax):
         Maximum probability.
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -45,18 +47,20 @@ def mHMQ(log10_Mh, Ac, Mc, sig_M, gamma):
     based on arxiv:2306.06319.
 
     Parameters:
+    -----------
     - log10_Mh: float
-        Logarithm of halo mass.
+        Logarithm (base 10) of halo mass.
     - Ac: float
-        Amplitude parameter.
+        Normalization amplitude.
     - Mc: float
-        Characteristic halo mass (log10).
+        Mean halo mass (log10).
     - sig_M: float
         Width of central galaxy mass distribution.
     - gamma: float
-        Controls the asymmetry of the distribution.
+        Shape parameter controlling the asymetry.
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -73,16 +77,18 @@ def GHOD(log10_Mh, Ac, Mc, sig_M):
     Gaussian HOD model based on arXiv:1708.07628.
 
     Parameters:
+    -----------
     - log10_Mh: float
-        Logarithm of halo mass.
+        Logarithm (base 10) of halo mass.
     - Ac: float
-        Amplitude parameter.
+        Normalization amplitude.
     - Mc: float
-        Characteristic halo mass (log10).
+        Mean halo mass (log10).
     - sig_M: float
         Width of central galaxy mass distribution.
-    
+
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -96,16 +102,18 @@ def LNHOD(log10_Mh, Ac, Mc, sig_M):
     Log-normal HOD model based on arxiv:2306.06319.
 
     Parameters:
+    -----------
     - log10_Mh: float
-        Logarithm of halo mass.
+        Logarithm (base 10) of halo mass.
     - Ac: float
-        Amplitude parameter.
+        Normalization amplitude.
     - Mc: float
-        Characteristic halo mass (log10).
+        Mean halo mass (log10).
     - sig_M: float
         Width of central galaxy mass distribution.
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -123,18 +131,20 @@ def SFHOD(log10_Mh, Ac, Mc, sig_M, gamma):
     Star-forming HOD model based on arXiv:1708.07628.
 
     Parameters:
+    -----------
     - log10_Mh: float
-        Logarithm of halo mass.
+        Logarithm (base 10) of halo mass.
     - Ac: float
-        Amplitude parameter.
+        Normalization amplitude.
     - Mc: float
-        Characteristic halo mass (log10).
+        Mean halo mass (log10).
     - sig_M: float
         Width of central galaxy mass distribution.
     - gamma: float
-        Controls the asymmetry of the distribution.
+        Shape parameter controlling the asymetry.
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -152,16 +162,17 @@ def SHOD(log10_Mh, Ac, Mc, sig_M):
     Standard HOD model (Zheng et al. 2007).
 
     Parameters:
+    -----------
     - log10_Mh: float
-        Logarithm of halo mass.
+        Logarithm (base 10) of halo mass.
     - Ac: float
-        Amplitude parameter.
+        Normalization amplitude.
     - Mc: float
-        Characteristic halo mass (log10).
+        Halo mass cut (log10).
     - sig_M: float
         Stepness of the step function.
-
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -175,13 +186,20 @@ def Nsat_pow_law(log10_Mh, As, M_0, M_1, alpha):
     Power-law model for satellite galaxies (Zheng et al. 2005).
 
     Parameters:
+    -----------
     - log10_Mh: float
+        Logarithm (base 10) of halo mass.
     - As: float
+        Normalization amplitude.
     - M_0: float
+        Minimum halo mass to host a satellite galaxy.
     - M_1: float
+        Characteristic halo mass to host a satellite (log10).
     - alpha: float
+        Slope of the pozer law distribution.
 
     Returns:
+    --------
     - float
         Expected number of satellite galaxies in a halo of mass log10_Mh.
     """
@@ -195,11 +213,13 @@ def _Nsat_pow_law(log10_Mh, p_sat):
     Wrapper for Nsat_pow_law using parameter array.
 
     Parameters:
+    -----------
     - log10_Mh: float
     - p_sat: array-like
         Parameters [As, M_0, M_1, alpha]
 
     Returns:
+    --------
     - float
         Expected number of satellite galaxies in a halo of mass log10_Mh.
     """
@@ -212,11 +232,13 @@ def _SHOD(log10_Mh, p_cen):
     Wrapper for SHOD using parameter array.
 
     Parameters:
+    -----------
     - log10_Mh: float
     - p_cen: array-like
         Parameters [Ac, Mc, sigM]
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -229,11 +251,13 @@ def _GHOD(log10_Mh, p_cen):
     Wrapper for GHOD using parameter array.
 
     Parameters:
+    -----------
     - log10_Mh: float
     - p_cen: array-like
         Parameters [Ac, Mc, sigM]
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -246,11 +270,13 @@ def _LNHOD(log10_Mh, p_cen):
     Wrapper for LNHOD using parameter array.
 
     Parameters:
+    -----------
     - log10_Mh: float
     - p_cen: array-like
         Parameters [Ac, Mc, sigM]
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -263,11 +289,13 @@ def _SFHOD(log10_Mh, p_cen):
     Wrapper for SFHOD using parameter array.
 
     Parameters:
+    -----------
     - log10_Mh: float
     - p_cen: array-like
         Parameters [Ac, Mc, sigM, gamma]
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -280,11 +308,13 @@ def _HMQ(log10_Mh, p_cen):
     Wrapper for HMQ using parameter array.
 
     Parameters:
+    -----------
     - log10_Mh: float
     - p_cen: array-like
         Parameters [Ac, Mc, sig_M, gamma, Q, pmax]
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """
@@ -297,11 +327,13 @@ def _mHMQ(log10_Mh, p_cen):
     Wrapper for mHMQ using parameter array.
 
     Parameters:
+    -----------
     - log10_Mh: float
     - p_cen: array-like
         Parameters [Ac, Mc, sig_M, gamma]
 
     Returns:
+    --------
     - float
         Expected number of galaxies in a halo of mass log10_Mh.
     """

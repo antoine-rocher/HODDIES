@@ -1197,14 +1197,11 @@ class HOD:
         ----------
         nreal : int, optional
             Number of mock realizations to generate for each training point. Default is 20.
-
         training_points : structured array or None, optional
             Array of training points with named fields corresponding to HOD parameters. If None, 
             training points will be generated using `genereate_training_points`.
-
         start_point : int, optional
             Starting index for training point numbering (useful when continuing interrupted runs). Default is 0.
-
         verbose : bool, optional
             Whether to print progress messages during execution. Default is False.
 

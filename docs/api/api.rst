@@ -24,7 +24,7 @@ HOD_models
   :show-inheritance:
 
 utils
-~~~~~~~~~~
+~~~~~~
 
 .. automodule:: HODDIES.utils
   :members:
