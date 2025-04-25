@@ -45,10 +45,6 @@ packages = ["HODDIES"]
 [tool.setuptools.package-data]
 HODDIES = ["default_HOD_parameters.yaml"]
 
-[tool.setuptools_scm]
-version_file = "HODDIES/_version.py"
-version_file_template = '__version__ = "{version}"'
-
 [tool.ruff.format]
 quote-style = "single"
 docstring-code-format = true
