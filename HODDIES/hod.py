@@ -688,7 +688,7 @@ class HOD:
         return sat_cat
 
 
-    def get_2PCF(self, cats, tracers=None, R1R2=None, verbose=True):
+    def get_2PCF(self, cats, tracers=None, ells=None, R1R2=None, verbose=True):
         """
         Compute the two-point correlation function (2PCF) for a given mock catalog in a cubic box.
 
@@ -704,6 +704,8 @@ class HOD:
         tracers : list or str, optional
             A list of tracer names (keys in `cats`) for which the 2PCF should be computed. 
             If None, all tracers in `self.args['tracers']` are considered. Defaults to None.
+        ells : tuple of int, optional
+            Multipoles to project onto. If None, ells in `self.args['2PCF_settings']['multipole_index']` are considered. Default to None.
         R1R2 : tuple or None, optional
             A tuple defining a range for R1 and R2 for the 2PCF computation. If None, 
             the default values will be used. Defaults to None.
@@ -744,21 +746,21 @@ class HOD:
                 r_bins = np.linspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
             
             self.args['2PCF_settings']['edges_smu'] = (r_bins, np.linspace(-self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['n_mu_bins']))
-
+        ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
         s_all, xi_all = [],[]
         for tr in tracers:
             mock_cat = cats[cats['TRACER'] == tr]
             if verbose:
-                print('#Computing 2PCF for {}...'.format(tr), flush=True)
+                print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
                 time1 = time.time()
             if self.args['2PCF_settings']['rsd']:
                 pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'], self.cosmo)
             else:
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
             
-            s, xi = compute_2PCF(pos, self.args['2PCF_settings']['edges_smu'], self.boxsize, self.args['2PCF_settings']['multipole_index'], self.args['2PCF_settings']['los'], self.args['nthreads'], R1R2=R1R2)
+            s, xi = compute_2PCF(pos, self.args['2PCF_settings']['edges_smu'], self.boxsize, ells, self.args['2PCF_settings']['los'], self.args['nthreads'], R1R2=R1R2)
             if verbose:
-                print('#2PCF for {} computed !time = {:.3f} s'.format(tr, time.time()-time1), flush=True)
+                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
             if len(tracers) > 1:
                 s_all += [s]
                 xi_all += [xi]
@@ -824,7 +826,7 @@ class HOD:
         for tr in tracers:
             mock_cat = cats[cats['TRACER'] == tr]
             if verbose:
-                print('#Computing wp for {}...'.format(tr), flush=True)
+                print('#Compute wp for {}...'.format(tr), flush=True)
                 time1 = time.time()
             if self.args['2PCF_settings']['rsd']:
                 pos = apply_rsd(mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'], self.cosmo)
@@ -832,7 +834,7 @@ class HOD:
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
             rp, wp = compute_wp(pos, self.args['2PCF_settings']['edges_rppi'], self.boxsize, self.args['2PCF_settings']['pimax'], self.args['2PCF_settings']['los'],  self.args['nthreads'], R1R2=R1R2)
             if verbose:
-                print('#wp for {} computed !time = {:.3f} s'.format(tr, time.time()-time1), flush=True)
+                print('Done in {:.3f} s'.format(time.time()-time1), flush=True)
             if len(tracers) > 1:
                 rp_all += [rp]
                 wp_all += [wp]
@@ -895,7 +897,7 @@ class HOD:
         mask_tr = [cats['TRACER'] == tr for tr in tracers]
         for tr in com_tr:
             if verbose:
-                print('#Computing wp for {}...'.format(tr), flush=True)
+                print('#Compute wp for {}...'.format(tr), flush=True)
                 time1 = time.time()
             if self.args['2PCF_settings']['rsd']:
                 pos1 = apply_rsd(cats[mask_tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'], self.cosmo)
@@ -906,12 +908,12 @@ class HOD:
 
             res_dict[f'{tr[0]}_{tr[1]}'] = compute_wp(pos1, self.args['2PCF_settings']['edges_rppi'], self.boxsize, self.args['2PCF_settings']['pimax'], self.args['2PCF_settings']['los'],  self.args['nthreads'], R1R2=R1R2, pos2=pos2)
             if verbose:
-                print('#wp for {} computed !time = {:.3f} s'.format(tr, time.time()-time1), flush=True)
+                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
 
         return res_dict
     
 
-    def get_cross2PCF(self, cats, tracers, R1R2=None, verbose=True):
+    def get_cross2PCF(self, cats, tracers, ells=None, R1R2=None, verbose=True):
         """
         Compute the two-point correlation function (2PCF) multipoles for a given mock catalog in a cubic box.
 
@@ -926,6 +928,8 @@ class HOD:
         tracers : list of str
             A list of tracer names (keys in `cats`) for which the cross 2PCF should be computed. The function 
             computes the 2PCF for all pairs of tracers in the list.
+        ells : tuple of int, optional
+            Multipoles to project onto. If None, ells in `self.args['2PCF_settings']['multipole_index']` are considered. Default to None.
         R1R2 : tuple or None, optional
             A tuple defining a range for R1 and R2 for the 2PCF computation. If None, the default values will be used.
             Defaults to None.
@@ -960,13 +964,13 @@ class HOD:
                 r_bins = np.linspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
             
             self.args['2PCF_settings']['edges_smu'] = (r_bins, np.linspace(-self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['n_mu_bins']))
-
+        ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
         res_dict = {}
         com_tr =np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
         mask_tr = [cats['TRACER'] == tr for tr in tracers]
         for tr in com_tr:
             if verbose:
-                print('#Computing 2PCF for {}...'.format(tr), flush=True)
+                print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
                 time1 = time.time()
             if self.args['2PCF_settings']['rsd']:
                 pos1 = apply_rsd(cats[mask_tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'], self.cosmo)
@@ -977,7 +981,7 @@ class HOD:
 
             res_dict[f'{tr[0]}_{tr[1]}'] = compute_2PCF(pos1, self.args['2PCF_settings']['edges_smu'], self.boxsize, self.args['2PCF_settings']['multipole_index'],  self.args['2PCF_settings']['los'], self.args['nthreads'], pos2=pos2, R1R2=R1R2)
             if verbose:
-                print('#2PCF for {} computed !time = {:.3f} s'.format(tr, time.time()-time1), flush=True)
+                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
         return res_dict
     
     
