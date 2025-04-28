@@ -5,6 +5,12 @@
 ![HOD cartoon](https://github.com/antoine-rocher/HODDIES/blob/main/HOD_cartoon.png)
 
 
+## Documentation
+
+Documentation is hosted on Read the Docs, [HODDIES docs](https://hoddies.readthedocs.io).
+
+### Examples
+
 An example can using a custom halo catlog. The code is initialized using the default [paramerter file](https://github.com/antoine-rocher/HODDIES/blob/main/HODDIES/default_HOD_parameters.yaml)
 (pseudo-code, for an example with all variables defined see [this notebook](https://github.com/antoine-rocher/HODDIES/blob/main/nb/basic_HOD_examples.ipynb)):
 ```
@@ -51,10 +57,6 @@ HOD_obj.plot_HMF(mock_cat, show_sat=True)
 Example notebooks are provided in directory [nb/](https://github.com/antoine-rocher/HODDIES/tree/main/nb).
 
 
-## Documentation
-
-Documentation is hosted on Read the Docs, [HODDIES docs](https://hoddies.readthedocs.io).
-
 ## Requirements
 
 Strict requirements are:
@@ -80,7 +82,7 @@ Extra requirements are:
 
 Simply run:
 ```
-python -m pip install git+https://github.com/antoine-rocher/HODDIES
+python -m pip install git+https://github.com/antoine-rocher/HODDIES#egg=HODDIES[all]
 ```
 
 ### git
