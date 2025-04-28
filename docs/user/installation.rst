@@ -31,15 +31,15 @@ Simply run:
 This will install dependencies, to generate mocks. To install all extra requirements use:
 ::
 
-    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES[all]
+    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES#egg=HODDIES[all]
 
 To install only a part of extra requirements you can do:
 ::
 
-    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES[cosmodesi]    # install ['pycorr', 'cosmoprimo']
-    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES[fit_tools]    # install ['scikit-learn','emcee','zeus','idaes-pse']
-    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES[colossus]     # install ['colossus']
-    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES[abacusutils]  # install ['abacusutils']
+    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES#egg=HODDIES[cosmodesi]    # install ['pycorr', 'cosmoprimo']
+    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES#egg=HODDIES[fit_tools]    # install ['scikit-learn','emcee','zeus','idaes-pse']
+    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES#egg=HODDIES[colossus]     # install ['colossus']
+    $ python -m pip install git+https://github.com/antoine-rocher/HODDIES#egg=HODDIES[abacusutils]  # install ['abacusutils']
 
 ``Pycorr`` and ``Corrfunc`` installation
 ----------------------------------------
