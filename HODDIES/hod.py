@@ -73,6 +73,7 @@ class HOD:
 
         self.args['nthreads'] = min(numba.get_num_threads(), self.args['nthreads'])
         print('Set number of threads to {}'.format(self.args['nthreads']), flush=True)
+        self.part_subsamples = subsample
 
         if path_to_abacus_sim  is not None:
             from .abacus_io import read_Abacus_hcat
