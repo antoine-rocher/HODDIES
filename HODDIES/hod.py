@@ -74,11 +74,13 @@ class HOD:
         self.args['nthreads'] = min(numba.get_num_threads(), self.args['nthreads'])
         print('Set number of threads to {}'.format(self.args['nthreads']), flush=True)
         self.part_subsamples = subsample
-
+        
+        self.__is_sim_abacus = False
         if path_to_abacus_sim  is not None:
             from .abacus_io import read_Abacus_hcat
             self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
             self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim)
+            self.__is_sim_abacus = True
                             
         elif read_pinnochio  is not None:
             from .pinnochio_io import read_pinnochio_hcat
@@ -572,7 +574,7 @@ class HOD:
                 
                 if self.args['use_particles'] & (self.part_subsamples is not None):
                     if verbose: print('Using particles', flush=True)
-                    if 'Abacus' in self.args['hcat']['sim_name']:
+                    if self.__is_sim_abacus:
                         mask_nfw = compute_sat_from_abacus_part(self.part_subsamples['pos'].T[0],self.part_subsamples['pos'].T[1],self.part_subsamples['pos'].T[2],
                             self.part_subsamples['vel'].T[0], self.part_subsamples['vel'].T[1],self.part_subsamples['vel'].T[2],
                             sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
@@ -584,7 +586,15 @@ class HOD:
                             seed = rng.randint(0, 4294967295, sat_cat.size)
                         else:
                             seed = None
-                        mask_nfw = compute_sat_from_part(self.part_subsamples['halo_id'], sat_cat['halo_id'], list_nsat, self.args['nthreads'], seed=seed)
+                        uniq_sat_id = sat_cat['halo_id']
+                        flat, offsets = find_indices_large(self.part_subsamples['halo_id'], uniq_sat_id)
+                        result = [flat[offsets[i]:offsets[i+1]] for i in range(len(uniq_sat_id))]
+                        sat_cat = sat_cat[sat_cat['halo_id'].argsort()]
+                        mask_nfw = compute_sat_from_part(self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
+                                                         self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'],
+                                                         sat_cat['x'], sat_cat['y'], sat_cat['z'], 
+                                                         sat_cat['vx'], sat_cat['vy'], sat_cat['vz'], result,
+                                                         list_nsat, np.insert(np.cumsum(list_nsat),0,0), 256, seed=seed)
                         if verbose: print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
                 else:
                     mask_nfw = np.ones(Nb_sat, dtype=bool)
