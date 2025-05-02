@@ -947,7 +947,7 @@ class HOD:
 
         res_dict = {}
         com_tr =np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
-        mask_tr = [cats['TRACER'] == tr for tr in tracers]
+        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
         for tr in com_tr:
             if verbose:
                 print('#Compute wp for {}...'.format(tr), flush=True)
@@ -955,15 +955,14 @@ class HOD:
 
             if self.cosmo is not None:
                 if self.args['2PCF_settings']['rsd']:
-                    pos1 = apply_rsd(cats[mask_tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'])
-                    pos2 = apply_rsd(cats[mask_tr[1]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'])
+                    pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'])
+                    pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'])
             else:
                 if self.args['2PCF_settings']['rsd']:
                     print('Cosmology not set, does not apply rsd', flush=True)
-                pos1 = cats[mask_tr[0]]['x']%self.boxsize, cats[mask_tr[0]]['y']%self.boxsize, cats[mask_tr[0]]['z']%self.boxsize
-                pos2 = cats[mask_tr[1]]['x']%self.boxsize, cats[mask_tr[1]]['y']%self.boxsize, cats[mask_tr[1]]['z']%self.boxsize
+                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
+                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
             
-
             res_dict[f'{tr[0]}_{tr[1]}'] = compute_wp(pos1, self.args['2PCF_settings']['edges_rppi'], self.boxsize, self.args['2PCF_settings']['pimax'], self.args['2PCF_settings']['los'],  self.args['nthreads'], R1R2=R1R2, pos2=pos2)
             if verbose:
                 print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
@@ -1025,7 +1024,7 @@ class HOD:
         ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
         res_dict = {}
         com_tr =np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
-        mask_tr = [cats['TRACER'] == tr for tr in tracers]
+        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
         for tr in com_tr:
             if verbose:
                 print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
@@ -1033,13 +1032,13 @@ class HOD:
 
             if self.cosmo is not None:
                 if self.args['2PCF_settings']['rsd']:
-                    pos1 = apply_rsd(cats[mask_tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'])
-                    pos2 = apply_rsd(cats[mask_tr[1]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'])
+                    pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'])
+                    pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'])
             else:
                 if self.args['2PCF_settings']['rsd']:
                     print('Cosmology not set, does not apply rsd', flush=True)
-                pos1 = cats[mask_tr[0]]['x']%self.boxsize, cats[mask_tr[0]]['y']%self.boxsize, cats[mask_tr[0]]['z']%self.boxsize
-                pos2 = cats[mask_tr[1]]['x']%self.boxsize, cats[mask_tr[1]]['y']%self.boxsize, cats[mask_tr[1]]['z']%self.boxsize
+                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
+                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
 
             res_dict[f'{tr[0]}_{tr[1]}'] = compute_2PCF(pos1, self.args['2PCF_settings']['edges_smu'], self.boxsize, self.args['2PCF_settings']['multipole_index'],  self.args['2PCF_settings']['los'], self.args['nthreads'], pos2=pos2, R1R2=R1R2)
             if verbose:
