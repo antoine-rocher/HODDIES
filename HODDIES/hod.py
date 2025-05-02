@@ -569,17 +569,22 @@ class HOD:
                 else:
                     seed = None
                 
-                if self.args['use_particles']:
+                if self.args['use_particles'] & (self.part_subsamples is not None):
                     if verbose: print('Using particles', flush=True)
-                    if self.part_subsamples is not None:
+                    if 'Abacus' in self.args['hcat']['sim_name']:
                         mask_nfw = compute_sat_from_abacus_part(self.part_subsamples['pos'].T[0],self.part_subsamples['pos'].T[1],self.part_subsamples['pos'].T[2],
                             self.part_subsamples['vel'].T[0], self.part_subsamples['vel'].T[1],self.part_subsamples['vel'].T[2],
                             sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
                             self.hcat['npoutA'][mask_sat], self.hcat['npstartA'][mask_sat], list_nsat, np.insert(np.cumsum(list_nsat), 0, 0), self.args['nthreads'], seed=seed)
                         if verbose: print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
-                    else:
-                        print('No particles found continue with NFW', flush=True)
-                        mask_nfw = np.ones(Nb_sat, dtype=bool)
+
+                    elif self.part_subsamples is not None:
+                        if fix_seed is not None:
+                            seed = rng.randint(0, 4294967295, sat_cat.size)
+                        else:
+                            seed = None
+                        mask_nfw = compute_sat_from_part(self.part_subsamples['halo_id'], sat_cat['halo_id'], list_nsat, self.args['nthreads'], seed=seed)
+                        if verbose: print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
                 else:
                     mask_nfw = np.ones(Nb_sat, dtype=bool)
                 

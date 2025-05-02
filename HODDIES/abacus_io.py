@@ -20,9 +20,6 @@ def read_Abacus_hcat(args, dir_sim, use_L2=True):
         Path to the root simulation directory.
     use_L2 : bool, optional
         Whether to use L2com statistic from Abacus simulation or not. Default is True.
-    halo_lc : bool, optional
-        Whether to load the halo light cone catalog. Default is False.
-
     Returns
     -------
     hcat : Catalog
@@ -40,18 +37,16 @@ def read_Abacus_hcat(args, dir_sim, use_L2=True):
     else : 
         Lsuff = ''
     
-    usecols=['id', f'x_{Lsuff}com', f'v_{Lsuff}com', 'N', f'r25_{Lsuff}com', f'r98_{Lsuff}com', f'sigmav3d_{Lsuff}com'] if not args['hcat']['halo_lc'] else ['index_halo', f'pos_interp', f'vel_interp', 'N_interp', 'redshift_interp']
-    str_z = format(args['hcat']["z_simu"], ".3f")
+    usecols=['id', f'x_{Lsuff}com', f'v_{Lsuff}com', 'N', f'r25_{Lsuff}com', f'r98_{Lsuff}com', f'sigmav3d_{Lsuff}com'] 
     if 'small' in args['hcat']['sim_name']:
         path_to_sim = os.path.join(dir_sim, 'small',
                                     args['hcat']['sim_name'], "halos", "z{:.3f}".format(args['hcat']["z_simu"]))
     elif args['hcat']['halo_lc']:
-        if args['hcat']["z_simu_lc"] is None:
-            args['hcat']["z_simu_lc"] = [args['hcat']["z_simu"]]
-        if not isinstance(args['hcat']["z_simu_lc"], list):
-            args['hcat']["z_simu_lc"] = [args['hcat']["z_simu_lc"]]
+        usecols =['index_halo', f'pos_interp', f'vel_interp', 'N_interp', 'redshift_interp', f'r25_{Lsuff}com', f'r98_{Lsuff}com', f'sigmav3d_{Lsuff}com'] 
+        if not isinstance(args['hcat']["z_simu"], list):
+            args['hcat']["z_simu"] = [args['hcat']["z_simu"]]
         path_to_sim = [os.path.join(dir_sim, 'halo_light_cones',
-                                    args['hcat']['sim_name'], "z{:.3f}".format(z_lc)) for z_lc in args['hcat']["z_simu_lc"]]
+                                    args['hcat']['sim_name'], "z{:.3f}".format(z_lc)) for z_lc in args['hcat']["z_simu"]]
     else:
         path_to_sim = os.path.join(dir_sim, 
                                     args['hcat']['sim_name'], "halos",  "z{:.3f}".format(args['hcat']["z_simu"]))
@@ -148,14 +143,11 @@ def compute_col_from_Abacus(N, pos, vel, ParticleMassHMsun,
         Number of threads for parallel execution.
     """
 
-    
     numba.set_num_threads(Nthread)
     # starting index of each thread
-    hstart = np.rint(np.linspace(0, len(N), Nthread + 1))
     # figuring out the number of halos kept for each thread
 
-    for tid in numba.prange(Nthread):
-        for i in range(int(hstart[tid]), int(hstart[tid + 1])):
+    for i in numba.prange(len(N)):
             Mvir[i] = (N[i]*ParticleMassHMsun)
             log10_Mh[i] = np.log10(Mvir[i])
             x[i], y[i], z[i] = pos[i]

@@ -72,7 +72,7 @@ hcat:
     sim_name: AbacusSummit_highbase_c000_ph100  # Specific to Abacus simulation
     load_particles: false  # Whether to load particle data
     halo_lc: False  # Use lightcone halo catalog
-    z_simu_lc: null  # Redshift shells for lightcone simulation (optional) can be a single redshift or a list of redshifts.
+    z_simu: 1.1  # Redshift of Abacus snapshot or list redhsifts from Abacus light cone shells.
   Pinnochio:
     dir_sim: null  # Path to Pinocchio simulation
 

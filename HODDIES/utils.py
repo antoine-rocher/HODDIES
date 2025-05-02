@@ -489,7 +489,7 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
         if seed is not None:
             np.random.seed(seed[tid])
         for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-            ind = i
+            # ind = i
             #while (NFW_draw[ind] > c[i]):
             #    ind = np.random.randint(0, len(NFW_draw))
             #etaVir = NFW_draw[ind]/c[i]  # =r/rvir
@@ -630,6 +630,33 @@ def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256,
         mpicomm=mpicomm
     )
     return result.poles
+
+
+@njit(fastmath=True, parallel=True)
+def compute_sat_from_part(part_hid_wsat, hid, nb_sat, Nthread, seed=None):
+    
+    """
+    --- Compute  positions and velocities for satelitte galaxies
+    """
+
+    numba.set_num_threads(Nthread)
+    mask = np.zeros(part_hid_wsat.size, dtype='bool')
+    mask_nfw = np.zeros_like(nb_sat)
+    for ii in numba.prange(hid.size):
+        if seed is not None:
+            np.random.seed(seed[ii])
+        idex = np.where(part_hid_wsat == hid[ii])[0]
+        n_p = idex.size
+        if nb_sat[ii] <= n_p:
+            idex = np.random.choice(idex, nb_sat[ii], replace=False)
+        else:
+            mask_nfw[ii] = nb_sat[ii] - n_p
+        # np.random.choice(1, nb_sat[i], replace=False) 
+        mask[idex] = True
+
+    return mask, mask_nfw
+
+
 
 # #### MPI FUNCTIONS
 # Need to be tested
