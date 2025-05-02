@@ -632,29 +632,93 @@ def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256,
     return result.poles
 
 
-@njit(fastmath=True, parallel=True)
-def compute_sat_from_part(part_hid_wsat, hid, nb_sat, Nthread, seed=None):
+@njit(parallel=True)
+def find_indices_large(part_id, sat_id):
+    n = len(part_id)
+    m = len(sat_id)
+
+    # Phase 1 — index inverse (hash simplifié pour matching rapide)
+    val_map = dict()
+    for i in range(m):
+        val_map[sat_id[i]] = i
+    val_index = np.full(np.max(part_id) + 1, -1, dtype=np.int64)
+    for i in range(m):
+        val_index[sat_id[i]] = i
+
+    # Phase 2 — compteur par valeur
+    counts = np.zeros(m, dtype=np.int64)
+    for i in numba.prange(n):
+        v = part_id[i]
+        if v < val_index.size:
+            j = val_index[v]
+            if j != -1:
+                counts[j] += 1
+
+    # Phase 3 — calcul des offsets (CSR-style)
+    offsets = np.zeros(m + 1, dtype=np.int64)
+    for i in range(m):
+        offsets[i + 1] = offsets[i] + counts[i]
+
+    # Phase 4 — allocation et remplissage
+    flat = np.empty(offsets[-1], dtype=np.int64)
+    current = offsets[:-1].copy()
+
+    for i in numba.prange(n):
+        v = part_id[i]
+        if v < val_index.size:
+            j = val_index[v]
+            if j != -1:
+                idx = current[j]
+                flat[idx] = i
+                current[j] += 1
+
+    return flat, offsets
+
+
+
+@njit(parallel=True, fastmath=True)
+def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
+                          x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, indexes_p,
+                          nb_sat, cum_sum_sat, Nthread, seed=None):
     
     """
     --- Compute  positions and velocities for satelitte galaxies
     """
 
     numba.set_num_threads(Nthread)
-    mask = np.zeros(part_hid_wsat.size, dtype='bool')
-    mask_nfw = np.zeros_like(nb_sat)
-    for ii in numba.prange(hid.size):
+    mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
+    hstart = np.rint(np.linspace(0, x_sat.size, Nthread + 1))
+    
+    for tid in numba.prange(Nthread):
         if seed is not None:
-            np.random.seed(seed[ii])
-        idex = np.where(part_hid_wsat == hid[ii])[0]
-        n_p = idex.size
-        if nb_sat[ii] <= n_p:
-            idex = np.random.choice(idex, nb_sat[ii], replace=False)
-        else:
-            mask_nfw[ii] = nb_sat[ii] - n_p
-        # np.random.choice(1, nb_sat[i], replace=False) 
-        mask[idex] = True
+            np.random.seed(seed[tid])
 
-    return mask, mask_nfw
+        for i in range(int(hstart[tid]), int(hstart[tid + 1])):
+            nb_sub = indexes_p[i].size
+            if nb_sub==0:
+                mask_nfw[cum_sum_sat[i]: cum_sum_sat[i+1]] = True
+
+            elif nb_sat[i] <= nb_sub:
+                index = np.random.choice(indexes_p[i], nb_sat[i], replace=False)
+                x_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = xp[index]
+                y_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = yp[index]
+                z_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = zp[index]
+                vx_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vxp[index]
+                vy_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vyp[index]
+                vz_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vzp[index]
+                #id_parts[cum_sum_sat[i]: cum_sum_sat[i+1]] = tt + npstart[i]            
+            else:
+                x_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = xp[indexes_p[i]]
+                y_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = yp[indexes_p[i]]
+                z_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = zp[indexes_p[i]]
+                vx_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = vxp[indexes_p[i]]
+                vy_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = vyp[indexes_p[i]]
+                vz_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = vzp[indexes_p[i]]
+                
+                mask_nfw[cum_sum_sat[i]+nb_sub: cum_sum_sat[i+1]] = True
+    return mask_nfw
+
+
 
 
 
@@ -768,4 +832,5 @@ def compute_sat_from_part(part_hid_wsat, hid, nb_sat, Nthread, seed=None):
 #     ur = getPointsOnSphere_mpi(sat_cat.size, rng)
 #     uv = getPointsOnSphere_mpi(sat_cat.size, rng)
 #     return _rescale(ur, (etaVir*sat_cat["Rh"])), _rescale(uv, v)
+
 
