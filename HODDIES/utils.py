@@ -633,7 +633,8 @@ def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256,
 
 
 @njit(parallel=True)
-def find_indices_large(part_id, sat_id):
+def find_indices_large(part_id, sat_id, Nthread):
+    numba.set_num_threads(Nthread)
     n = len(part_id)
     m = len(sat_id)
 
