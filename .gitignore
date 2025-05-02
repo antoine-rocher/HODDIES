@@ -52,3 +52,4 @@ docs/_build/
 # Custom 
 HODDIES/read_uchuu.py
 setup_test.py
+*test*.ipynb
