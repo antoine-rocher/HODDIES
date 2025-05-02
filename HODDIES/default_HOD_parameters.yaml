@@ -6,11 +6,11 @@ tracers:
 # HOD (Halo Occupation Distribution) parameters for LRGs 
 LRG: # Name of tracer 1
   Ac: 1  # Normalization amplitude for central distribution
-  As: 0.5  # Normalization amplitude for satellite distribution
+  As: 1  # Normalization amplitude for satellite distribution
   HOD_model: SHOD  # Central galaxy HOD model. Choices: SHOD, GHOD, SFHOD, HMQ, mHMQ, LNHOD.
   sat_HOD_model: Nsat_pow_law  # Satellite galaxy HOD model 
   M_0: 12.5  # Minimum halo mass for satellites
-  M_1: 14  # Characteristic mass for satellites
+  M_1: 13.5  # Characteristic mass for satellites
   Q: 100  # Quenching parameter (only used for HMQ model)
   alpha: 1  # Power-law slope of the satellite HOD
   assembly_bias: # Assembly bias parameters, only used if 'assembly_bias' is True in global settings
@@ -21,10 +21,10 @@ LRG: # Name of tracer 1
   density: 0.0007  # Target galaxy number density
   f_sigv: 1  # Scaling factor for velocity dispersion
   gamma: 1  # Shape parameter controlling the asymetry of the central distribution.
-  log_Mcent: 12.5  # Central galaxy cutoff mass (log scale) or mean value if gausaain distribution
+  log_Mcent: 12.75  # Central galaxy cutoff mass (log scale) or mean value if gausaain distribution
   pmax: 1 # Max probability for central occupation (only used for HMQ model)  
   satellites: true  # Whether satellites are included
-  sigma_M: 0.3  # Width of central galaxy mass distribution or stepness of the step function. 
+  sigma_M: 0.5  # Width of central galaxy mass distribution or stepness of the step function. 
   vel_sat: rd_normal  # Velocity distribution model for satellites: 'rd_normal', 'NFW' or 'infall'
   exp_frac: 0  # Fraction of satellites to sample using an exponential halo profile.
   exp_scale: 1  # Scale of exponential halo profile
