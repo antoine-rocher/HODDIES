@@ -587,14 +587,15 @@ class HOD:
                         else:
                             seed = None
                         uniq_sat_id = sat_cat['halo_id']
-                        flat, offsets = find_indices_large(self.part_subsamples['halo_id'], uniq_sat_id)
+                        flat, offsets = find_indices_large(self.part_subsamples['halo_id'], uniq_sat_id, self.args['nthreads'])
                         result = [flat[offsets[i]:offsets[i+1]] for i in range(len(uniq_sat_id))]
+                        print('indexes done')
                         sat_cat = sat_cat[sat_cat['halo_id'].argsort()]
                         mask_nfw = compute_sat_from_part(self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
                                                          self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'],
                                                          sat_cat['x'], sat_cat['y'], sat_cat['z'], 
                                                          sat_cat['vx'], sat_cat['vy'], sat_cat['vz'], result,
-                                                         list_nsat, np.insert(np.cumsum(list_nsat),0,0), 256, seed=seed)
+                                                         list_nsat, np.insert(np.cumsum(list_nsat),0,0), self.args['nthreads'], seed=seed)
                         if verbose: print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
                 else:
                     mask_nfw = np.ones(Nb_sat, dtype=bool)
