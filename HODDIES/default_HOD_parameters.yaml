@@ -30,7 +30,7 @@ LRG: # Name of tracer 1
   exp_scale: 1  # Scale of exponential halo profile
   nfw_rescale: 1  # Rescaling of NFW profile
   v_infall: 0  # Infall velocity offset, only used if `vel_sat` is 'infall'
-  vsmear: 0  # Add redshift error by introducing gaussian smearing in km/s (null or 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s
+  vsmear: 0  # Add redshift error by introducing gaussian smearing in km/s (default 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s
 
 # HOD parameters for ELGs, similar to LRG with some changes
 ELG: # Name of tracer 2
@@ -121,6 +121,10 @@ fit_param:
 
   priors:  # Prior ranges for HOD parameters for each tracer
     ELG:
+      assembly_bias:
+        c: 
+          - [0,1]
+          - [0,1]
       As: [0.01, 0.7]  # Amplitude of satellite velocity bias
       log_Mcent: [11.4, 12.2]  # Log of central mass scale
       alpha: [0.3, 1.5]  # Power-law slope of the satellite HOD
