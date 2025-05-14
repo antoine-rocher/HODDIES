@@ -15,7 +15,6 @@ from numba import njit, numba
 import os
 # import mpytools as mpy
 import scipy
-import numbers
 
 def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
 
@@ -46,8 +45,6 @@ def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
     """
 
     rsd_factor = 1 / (1 / (1 + z) * H_0 * cosmo.efunc(z))   
-    if isinstance(vsmear, numbers.Number):
-        vsmear = np.random.normal(0,vsmear,cat.size) if vsmear != 0 else 0
     pos_rsd = [cat[p] % boxsize if p !=los else (cat[p] + (cat['v'+p] + vsmear)*rsd_factor) %boxsize for p in 'xyz']    
     return pos_rsd
     
