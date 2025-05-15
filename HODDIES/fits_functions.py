@@ -136,18 +136,20 @@ def multivariate_gelman_rubin(chains):
 
 
 
-def func_stochopy(new_params, HOD_obj, name_param, data, inv_cov2, fix_seed=10): 
+def func_stochopy(new_params, HOD_obj, name_param, data, inv_cov2, fix_seed=10, verbose=False, **kwargs): 
+
+    print(*zip(name_param, new_params), flush=True)
     new_params= np.array([new_params])
     
     new_params.dtype = [(name, dt) for name, dt in zip(name_param, ['float64']*len(name_param))]
     HOD_obj.update_new_param(new_params, name_param)
-    cats = HOD_obj.make_mock_cat(fix_seed=fix_seed, verbose=False) 
+    cats = HOD_obj.make_mock_cat(fix_seed=fix_seed, verbose=verbose) 
 
     result = {}
     if 'wp' in HOD_obj.args['fit_param']["fit_type"]:
-        result['wp']= HOD_obj.get_crosswp(cats, tracers=HOD_obj.args['tracers'], verbose=False)
+        result['wp']= HOD_obj.get_crosswp(cats, tracers=HOD_obj.args['tracers'], verbose=verbose)
     if 'xi' in HOD_obj.args['fit_param']["fit_type"]:
-        result['xi'] = HOD_obj.get_cross2PCF(cats, tracers=HOD_obj.args['tracers'], verbose=False)
+        result['xi'] = HOD_obj.get_cross2PCF(cats, tracers=HOD_obj.args['tracers'], verbose=verbose)
 
     stats = ['wp', 'xi'] if ('wp' in HOD_obj.args['fit_param']["fit_type"]) & ('xi' in HOD_obj.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in HOD_obj.args['fit_param']["fit_type"]) else ['xi']
     res = {}
@@ -155,19 +157,15 @@ def func_stochopy(new_params, HOD_obj, name_param, data, inv_cov2, fix_seed=10):
     res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][1])for stat in stats]) for comb_tr in comb_trs])
 
     chi2 = compute_chi2(res, data, inv_Cov2=inv_cov2)
-    print(new_params[0], chi2, flush=True)
+    print('chi2=', chi2, flush=True)
 
     return chi2
 
 
-import glob 
-from pycorr import TwoPointCorrelationFunction, utils
-import os
-import numpy as np 
-
-
 def get_corr_small_boxes(param, tracers, **kwargs):
-    
+
+    from pycorr import TwoPointCorrelationFunction, utils
+
     param.update(kwargs)
     com_tr = np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
     str_tr_all = '_'.join(map(str, np.unique(com_tr)))
@@ -177,7 +175,7 @@ def get_corr_small_boxes(param, tracers, **kwargs):
         print(f'Load correlation matrix for {str_tr_all} at z{param["z_simu"]} ...', flush=True)
         corr = np.loadtxt(corr_fn)
         return corr
-    print('Load correlation matrix...', flush=True)
+    print(f'Load correlation matrix for {str_tr_all}...', flush=True)
     corr_type= ['rppi', 'smu'] if ('wp' in param['fit_type']) & ('xi' in param['fit_type']) else ['rppi'] if ('wp' in param['fit_type']) else ['smu']
     res = []
     for tr in com_tr:
@@ -211,14 +209,15 @@ def get_corr_small_boxes(param, tracers, **kwargs):
 
 
 def load_desi_data(fit_param, tracers, **kwargs):
+
     from pycorr import TwoPointCorrelationFunction
     
-    print('Load data vector...', flush=True)
     fit_param.update(kwargs)
     if 'ELG' in tracers:
         tracers[tracers.index('ELG')] = 'ELG_LOPnotqso'
     
     com_tr = np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
+    print('Load data vector for', '_'.join(map(str, np.unique(com_tr))),  flush=True)
     
     # data = {'wp': {}, 'xi': {}}  if ('wp' in fit_param['fit_type']) & ('xi' in fit_param['fit_type']) else {'wp': {}}  if ('wp' in fit_param['fit_type']) else {'xi': {}}
     data = {}
@@ -258,7 +257,7 @@ def load_desi_data(fit_param, tracers, **kwargs):
         
     if fit_param['load_cov_jk'] is not None:
         data['cov_jk'] = ((result.nrealizations-1) * np.cov(np.hstack(cov_jk11), rowvar=False, ddof=0))
-    tracers[tracers.index('ELG_LOPnotqso')] = 'ELG'
+    if 'ELG' in tracers: tracers[tracers.index('ELG_LOPnotqso')] = 'ELG'
     return data
 
 
