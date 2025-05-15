@@ -56,7 +56,7 @@ class HOD:
         """
         
         
-        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
+        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), '_default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
         self.cosmo = None
         self.H_0 = 100 # H_0 is always set to 100 km/s/Mpc
 
@@ -750,18 +750,24 @@ class HOD:
         return sat_cat
     
 
-    def get_vsmear(self, tracer, cat_size):
+    def get_vsmear(self, tracer, cat_size, verbose=True):
 
         """
         Generate a random velocity smear for the specified tracer
         """
 
-        if isinstance(self.args[tracer]['vsmear'], numbers.Number):
-            vsmear = self.rng.normal(0, self.args[tracer]['vsmear'], cat_size) if self.args[tracer]['vsmear'] != 0 else 0
+        if isinstance(self.args[tracer]['vsmear'], numbers.Number) and (self.args[tracer]['vsmear'] != 0):
+            if self.args[tracer]['vsmear'] < 0:
+                raise ValueError('vsmear must be positive')
+            if verbose: 
+                print('Generate gaussian vsmear for {} of {} km/s...'.format(tracer, self.args[tracer]['vsmear']), flush=True)
+            vsmear = self.rng.normal(0, self.args[tracer]['vsmear'], cat_size)
             
         elif isinstance(self.args[tracer]['vsmear'], list):
             from HODDIES.desi.Y3_redshift_systematics import vsmear as gen_vsmear
-            vsmear = gen_vsmear(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1], cat_size, dvmode='obs',seed=42,verbose=False)
+            if verbose: 
+                print('Generate vsmear for {} at z {:.2f}-{:.2f}...'.format(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1]), flush=True)
+            vsmear = gen_vsmear(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1], cat_size, dvmode='obs',seed=42,verbose=verbose)
         else:
             vsmear = 0
         return vsmear
@@ -834,7 +840,7 @@ class HOD:
                 time1 = time.time() 
 
             if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
-                vsmear = self.get_vsmear(tr, mock_cat.size)
+                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
                 pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear)
             else:
                 if self.args['2PCF_settings']['rsd']:
@@ -913,7 +919,7 @@ class HOD:
                 time1 = time.time()
             
             if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
-                vsmear = self.get_vsmear(tr, mock_cat.size)
+                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
                 pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear)
             else:
                 if self.args['2PCF_settings']['rsd']:
@@ -984,13 +990,14 @@ class HOD:
         res_dict = {}
         com_tr = self.get_comb_tr_list(tracers)
         mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
+        
         for tr in com_tr:
             if verbose:
                 print('#Compute wp for {}...'.format(tr), flush=True)
                 time1 = time.time()
 
             if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
-                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum()), self.get_vsmear(tr[1], mask_tr[tr[1]].sum())
+                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
                 pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
                 pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
             else:
@@ -1069,7 +1076,7 @@ class HOD:
                 time1 = time.time()
             
             if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
-                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum()), self.get_vsmear(tr[1], mask_tr[tr[1]].sum())
+                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
                 pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
                 pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
             else:
@@ -1284,7 +1291,7 @@ class HOD:
     def get_param_and_prior(self):
         priors = {}
         priors_array = []
-        for tr in self.args['fit_param']['priors'].keys():
+        for tr in self.args['tracers']:
             priors[tr] = self.args['fit_param']['priors'][tr].copy()
 
             if 'assembly_bias' in priors[tr].keys():
@@ -1860,95 +1867,53 @@ class HOD:
                 print(f'Iteration {j} done, took {time.strftime("%H:%M:%S",time.gmtime(time.time()-time_compute_mcmc))}', flush=True)
 
     
-    def initialize_fit(self, init_params=None, seed=10, mpi_comm=None, save_name=False, minimizer_options={}, **kwargs):
+    def initialize_fit(self, data_vec=None, inv_cov2=None, **kwargs):
 
         from .fits_functions import load_desi_data, get_corr_small_boxes
-    
 
-        self.args['fit_param'].update(kwargs)
-
-        data_dic = load_desi_data(self.args['fit_param'], load_cov_jk=self.args['fit_param']['load_cov_jk'])
-
-        mm = [list(data_dic.keys())[i].endswith(tuple(self.args['tracers'])) for i in range(len(data_dic.keys()))]
-        comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
-        data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
-        sig_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
-
-        if self.args['fit_param']['load_cov_jk']:
-            inv_cov2 = np.linalg.inv(data_dic['cov_jk'])
-        else:
-            corr = get_corr_small_boxes(self.args['fit_param'], zsim=0.95)
-            cov = corr*sig_vec*sig_vec[:,None]
-
-            hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
-            inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
-
-        self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
-        self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
-
-        name_param, priors_array = self.get_param_and_prior()
-        if init_params is None:
-            init_params = []
-            for tr in self.args['tracers']:
-                priors_tmp = self.args['fit_param']['priors'][tr].copy()
-                param_ab = []
-                if 'assembly_bias' in priors_tmp.keys():
-                    ab_list = priors_tmp['assembly_bias'].keys()
-                    param_ab = [self.args[tr]['assembly_bias'][vv] for vv in ab_list][0]
-                    priors_tmp.pop('assembly_bias')
-                print(tr, priors_tmp.keys(), param_ab)
-                init_params += [self.args[tr][vv] for vv in priors_tmp.keys()]
-                init_params += param_ab
-
-        options = {"maxiter":40, "popsize": 10, 'xtol':1e-6}
-        options.update(minimizer_options)  
-
-        if mpi_comm is None:
-            mpi_rank = 0
-        else:
-            mpi_rank = mpi_comm.Get_rank()
-            options['workers'] = mpi_comm.Get_size()
-            options['backend']= 'mpi'
-
-        res = minimize(func_stochopy, args=(self, name_param, data_vec, inv_cov2, seed),
-                    bounds=priors_array, x0=init_params,
-                    method='cmaes', options=options)
-        
-        if save_name & mpi_rank==0:
-            np.save(save_name, res)
-        return res
-
-    
-    def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, save_name=False, minimizer_options={}, **kwargs):
-        from stochopy.optimize import minimize
-        from .fits_functions import func_stochopy, load_desi_data, get_corr_small_boxes
-    
-
-        self.args['fit_param'].update(kwargs)
         self.args['fit_param']['pimax'] = self.args['2PCF_settings']['pimax']
         self.args['fit_param']['multipole_index'] = self.args['2PCF_settings']['multipole_index']
         self.args['fit_param']['z_simu'] = self.args['hcat']['z_simu']
+        self.args['fit_param'].update(kwargs)
+
+        if self.args['fit_param']['use_desi_data']:
+            data_dic = load_desi_data(self.args['fit_param'], self.args['tracers'], load_cov_jk=self.args['fit_param']['load_cov_jk'])
+
+            mm = [list(data_dic.keys())[i].endswith(tuple(self.args['tracers'])) for i in range(len(data_dic.keys()))]
+            comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
+            data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+            sig_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+
+            if self.args['fit_param']['load_cov_jk']:
+                inv_cov2 = np.linalg.inv(data_dic['cov_jk'])
+            else:
+                corr = get_corr_small_boxes(self.args['fit_param'], self.args['tracers'])
+                cov = corr*sig_vec*sig_vec[:,None]
+
+                hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
+                inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+
+            self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
+            self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
+
+        if data_vec.size != inv_cov2.diagonal().size:
+            raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
+
+        self.data = data_vec
+        self.inv_cov2 = inv_cov2
         
-        data_dic = load_desi_data(self.args['fit_param'], self.args['tracers'])
-
-        mm = [list(data_dic.keys())[i].endswith(tuple(self.args['tracers'])) for i in range(len(data_dic.keys()))]
-        comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
-        data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
-        sig_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
-
-        if self.args['fit_param']['load_cov_jk']:
-            inv_cov2 = np.linalg.inv(data_dic['cov_jk'])
+    
+    def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, minimizer_options={}, **kwargs):
+        from stochopy.optimize import minimize
+        from .fits_functions import func_stochopy
+        
+        if hasattr(self, 'data') & hasattr(self, 'inv_cov2'):
+            pass
         else:
-            corr = get_corr_small_boxes(self.args['fit_param'], self.args['tracers'])
-            cov = corr*sig_vec*sig_vec[:,None]
-
-            hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
-            inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
-
-        self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
-        self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
-
+            self.initialize_fit(**kwargs)
+        
         name_param, priors_array = self.get_param_and_prior()
+        print('Priors:', *zip(name_param, priors_array))
         if init_params is None:
             init_params = []
             for tr in self.args['tracers']:
@@ -1958,10 +1923,9 @@ class HOD:
                     ab_list = priors_tmp['assembly_bias'].keys()
                     param_ab = [self.args[tr]['assembly_bias'][vv] for vv in ab_list][0]
                     priors_tmp.pop('assembly_bias')
-                print(tr, priors_tmp.keys(), param_ab)
                 init_params += [self.args[tr][vv] for vv in priors_tmp.keys()]
                 init_params += param_ab
-
+        print('First point:', *zip(name_param, init_params))
         options = {"maxiter":40, "popsize": 10, 'xtol':1e-6}
         options.update(minimizer_options)  
 
@@ -1972,12 +1936,12 @@ class HOD:
             options['workers'] = mpi_comm.Get_size()
             options['backend']= 'mpi'
 
-        res = minimize(func_stochopy, args=(self, name_param, data_vec, inv_cov2, seed),
+        res = minimize(func_stochopy, args=(self, name_param, self.data, self.inv_cov2, seed),
                     bounds=priors_array, x0=init_params,
                     method='cmaes', options=options)
         
-        if save_name & mpi_rank==0:
-            np.save(save_name, res)
+        if isinstance(self.args['fit_param']['save_fn'], str) & (mpi_rank==0):
+            np.save(self.args['fit_param']['save_fn'], res)
         return res
 
     
