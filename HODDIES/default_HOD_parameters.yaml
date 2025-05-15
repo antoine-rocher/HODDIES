@@ -5,34 +5,46 @@ tracers:
 
 # HOD (Halo Occupation Distribution) parameters for LRGs 
 LRG: # Name of tracer 1
-  Ac: 1  # Normalization amplitude for central distribution
-  As: 1  # Normalization amplitude for satellite distribution
+
+  # Parameters for the central HOD model
   HOD_model: SHOD  # Central galaxy HOD model. Choices: SHOD, GHOD, SFHOD, HMQ, mHMQ, LNHOD.
+
+  Ac: 1  # Normalization amplitude for central distribution
+  log_Mcent: 12.75  # Central galaxy cutoff mass (log scale) or mean value if gausaain distribution
+  sigma_M: 0.5  # Width of central galaxy mass distribution or stepness of the step function. 
+  gamma: 1  # Shape parameter controlling the asymetry of the central distribution.
+  pmax: 1 # Max probability for central occupation (only used for HMQ model)  
+  Q: 100  # Quenching parameter (only used for HMQ model)
+
+  # Parameters for the satellite HOD model
+  satellites: true  # Whether satellites are included
   sat_HOD_model: Nsat_pow_law  # Satellite galaxy HOD model 
+  As: 1  # Normalization amplitude for satellite distribution
   M_0: 12.5  # Minimum halo mass for satellites
   M_1: 13.5  # Characteristic mass for satellites
-  Q: 100  # Quenching parameter (only used for HMQ model)
   alpha: 1  # Power-law slope of the satellite HOD
+  f_sigv: 1  # Scaling factor for velocity dispersion
+  vel_sat: rd_normal  # Velocity distribution model for satellites: 'rd_normal', 'NFW' or 'infall'
+  v_infall: 0  # Infall velocity offset, only used if `vel_sat` is 'infall'
+
+  # Assembly bias Parameters 
   assembly_bias: # Assembly bias parameters, only used if 'assembly_bias' is True in global settings
     c:
-    - 0  #central
-    - 0  #satellite
+    - 0  # concentration based assembly bias parameters for central
+    - 0  # concentration based assembly bias parameters for satellite
     env:
     - 0  # Assembly bias parameters for environment for central
     - 0  # Assembly bias parameters for environment for satelitte
+  
   conformity_bias: false  # Whether to include conformity bias
+  
+  # Parameters for the modified NFW profile
+  exp_frac: 0  # Fraction of satellites to sample using an exponential halo profile. If zero, all satellites are sampled using the NFW profile.
+  # If exp_frac > 0, the remaining fraction (1 - exp_frac) is sampled using the NFW profile.
+  exp_scale: 1  # Scale of exponential halo profile. If `exp_frac` = 0, this parameter is ignored.
+  nfw_rescale: 1  # Rescaling of NFW profile. 
+
   density: 0.0007  # Target galaxy number density
-  f_sigv: 1  # Scaling factor for velocity dispersion
-  gamma: 1  # Shape parameter controlling the asymetry of the central distribution.
-  log_Mcent: 12.75  # Central galaxy cutoff mass (log scale) or mean value if gausaain distribution
-  pmax: 1 # Max probability for central occupation (only used for HMQ model)  
-  satellites: true  # Whether satellites are included
-  sigma_M: 0.5  # Width of central galaxy mass distribution or stepness of the step function. 
-  vel_sat: rd_normal  # Velocity distribution model for satellites: 'rd_normal', 'NFW' or 'infall'
-  exp_frac: 0  # Fraction of satellites to sample using an exponential halo profile.
-  exp_scale: 1  # Scale of exponential halo profile
-  nfw_rescale: 1  # Rescaling of NFW profile
-  v_infall: 0  # Infall velocity offset, only used if `vel_sat` is 'infall'
   vsmear: 0  # Add redshift error by introducing gaussian smearing in km/s (default 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s. 
 #              To use DESI redshift error, set a list with [zmin,zmax] to genereate the vsmear distribution for each tracer.
 
@@ -48,7 +60,7 @@ ELG: # Name of tracer 2
   alpha: 0.6
   assembly_bias:
     c:
-    - 0
+    - 0 
     - 0
   conformity_bias: false
   density: 0.001
@@ -148,7 +160,11 @@ fit_param:
   length_scale: False  # If set to a list, GP kernel uses fixed length scales
   kernel_gp: Matern_52  # Type of GP kernel to use
 
-  # DESI specific settings
+  #Minimizer settings
+  save_fn: 'results_fit.npy'
+
+  use_desi_data: True 
+  # DESI specific settings. Ignore if use_desi_data is False
   zmin: 0.8
   zmax: 1.1
   dir_data: /global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP
@@ -157,37 +173,21 @@ fit_param:
   njack: 128
   nran: 4
   bin_type: log
-
-  # if not provided used JK covaraince matrix
   load_cov_jk: False  # Use JK covariance matrix
+  # Load correlation for Abacus small boxes 
+  #root directory to find correlation matrices (to be rescaled by JK variances)
   corr_dir: /global/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/  #root directory to find correlation matrices (to be rescaled by JK variances)
   nb_mocks: 1883 # Nb of mocks used to compute the covariance
 
   fit_type: wp+xi # Only wp or xi available at the moment
 
-  priors:  # Prior ranges for HOD parameters for each tracer
-    ELG:
-      # assembly_bias:
-      #   c: 
-      #     - [-1,1]
-      #     - [-1,1]
-      #   env: 
-      #     - [-1,1]
-      #     - [-1,1]
-      As: [0.01, 0.4]  # Amplitude of satellite velocity bias
-      log_Mcent: [11.4, 12.2]  # Log of central mass scale
-      alpha: [0.3, 1.5]  # Power-law slope of the satellite HOD
-      f_sigv: [0.8, 1.5]  # Velocity dispersion scaling factor
-      sigma_M: [0.05, 0.5]  # Width of the central occupation transition
-      gamma: [1, 8]  # Radial distribution parameter
-      exp_scale: [0.9, 10]  # Exponential profile scale (if using exponential HOD model)
-      exp_frac: [0, 1]  # Fraction of satellites in exponential profile
-      nfw_rescale: [0.1, 2]  # Rescaling factor for NFW profile
-
-    LRG:
-      M_0: [12.5, 13.5]
-      M_1: [13, 14.5]
-      alpha: [0.5, 1.5]
-      f_sigv: [0.5, 1.5]
-      log_Mcent: [12.4, 13.5]
-      sigma_M: [0.05, 1]
+  # Prior ranges for HOD parameters for each tracer
+  # priors:  
+    # Example of prior ranges for LRG 
+    # LRG:
+    #   M_0: [12.5, 13.5]
+    #   M_1: [13, 14.5]
+    #   alpha: [0.5, 1.5]
+    #   f_sigv: [0.5, 1.5]
+    #   log_Mcent: [12.4, 13.5]
+    #   sigma_M: [0.05, 1]
