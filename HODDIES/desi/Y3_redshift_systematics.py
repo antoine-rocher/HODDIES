@@ -312,13 +312,12 @@ def vsmear(tracer,zmin,zmax,Ngal,dvmode='obs',seed=42,verbose=False):
         fn_cdf = f'{repeatdir}/{tracer_key}_z{zmin:.1f}-{zmax:.1f}_CDF.npz'
     elif dvmode == 'model':
         fn_cdf = f'{repeatdir}/{tracer_key}_z{zmin:.1f}-{zmax:.1f}_kernel0.3_CDF.npz'  
-    if verbose:
-        print(f'load {fn_cdf} to add redshift uncertainties and catastrophics')
     if not os.path.exists(fn_cdf):
         raise ValueError(f"No prepared file: {fn_cdf}.\n \
         Please use function Y3_redshift_systematics.vsmear_modelling to prepare them!")
+    if verbose:
+        print(f'load {fn_cdf} to add redshift uncertainties and catastrophics')
 
-    print(fn_cdf)
     # Load the saved data
     data     = np.load(fn_cdf)
     xgrid_raw= data["vbin"]
