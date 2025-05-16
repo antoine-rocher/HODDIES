@@ -257,7 +257,7 @@ def load_desi_data(fit_param, tracers, **kwargs):
         
     if fit_param['load_cov_jk'] is not None:
         data['cov_jk'] = ((result.nrealizations-1) * np.cov(np.hstack(cov_jk11), rowvar=False, ddof=0))
-    if 'ELG' in tracers: tracers[tracers.index('ELG_LOPnotqso')] = 'ELG'
+    if 'ELG_LOPnotqso' in tracers: tracers[tracers.index('ELG_LOPnotqso')] = 'ELG'
     return data
 
 
