@@ -29,7 +29,7 @@ LRG:
   
   
   density: 0.0007  # Target galaxy number density
-  vsmear: [0.4,0.6]  # Add redshift error by introducing gaussian smearing in km/s (default 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s. 
+  vsmear: 0  # Add redshift error by introducing gaussian smearing in km/s (default 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s. 
 #              To use DESI redshift error, set a list with [zmin,zmax] to genereate the vsmear distribution for each tracer.
 
 
@@ -77,6 +77,7 @@ fit_param:
   njack: 128
   nran: 4
   bin_type: log
+  use_vsmear: True
   
   # if not provided used JK covaraince matrix
   load_cov_jk: False  # Use JK covariance matrix
