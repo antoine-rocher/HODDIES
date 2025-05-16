@@ -23,6 +23,7 @@ def get_HOD_model_name(args):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dir_param_file', help='path to param file', type=str)
+# parser.add_argument('--path_to_save_result', help='path to save fit results', type=str, default=None)
 
 args = parser.parse_args()
 
@@ -33,13 +34,17 @@ mpi_rank = mpi_comm.Get_rank()
 
 
 model_name = get_HOD_model_name(HOD_obj.args)
-save_fn= f"fit_result_{model_name}_{HOD_obj.args['hcat']['sim_name']}_z{HOD_obj.args['hcat']['z_simu']}_{HOD_obj.args['fit_param']['fit_type']}.npy"
+save_fn= f"desi/fit_result_{model_name}_{HOD_obj.args['hcat']['sim_name']}_z{HOD_obj.args['hcat']['z_simu']}_{HOD_obj.args['fit_param']['fit_type']}.npy"
 
-minimizer_options = {"maxiter":100, "popsize": 40, 'xtol':1e-6, 'workers':mpi_comm.Get_size(),  'backend':'mpi'}
-init_params = [12.82663346, 13.82364144,  1.00700969,  0.87145873, 12.72177864, 0.21941988]
+minimizer_options = {"maxiter":200, "popsize": 100, 'xtol':1e-6, 'workers':mpi_comm.Get_size(),  'backend':'mpi'}
 
+init_params = np.load(save_fn, allow_pickle=True).item()['x']
 res = HOD_obj.run_minimizer(init_params=init_params, minimizer_options=minimizer_options, save_fn=save_fn, mpi_comm=mpi_comm)
         
 if mpi_rank==0:
+    from pathlib import Path
+    save_fn_fig = Path(save_fn)
+    save_fn_fig.rename(save_fn_fig.with_suffix('.png'))
+    fig = HOD_obj.plot_bf_data(save=save_fn_fig)
     print(res, MPI.Wtime()/60, flush=True)
 
