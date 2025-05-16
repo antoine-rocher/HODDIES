@@ -1893,8 +1893,14 @@ class HOD:
                 hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
                 inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
 
-            self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
-            self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
+            if 'wp' in  data_dic['edges'].keys():
+                self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
+            if 'xi' in  data_dic['edges'].keys():
+                self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
+            if self.args['fit_param']['use_vsmear']:
+                for tr in self.args['tracers']:
+                    print('Apply vsmear for {} at z{}-{}'.format(tr, self.args['fit_param']['zmin'], self.args['fit_param']['zmax']))
+                    self.args[tr]['vsmear'] = [self.args['fit_param']['zmin'], self.args['fit_param']['zmax']]
 
         if data_vec.size != inv_cov2.diagonal().size:
             raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
@@ -1926,7 +1932,7 @@ class HOD:
                 init_params += [self.args[tr][vv] for vv in priors_tmp.keys()]
                 init_params += param_ab
         print('First point:', *zip(name_param, init_params))
-        options = {"maxiter":40, "popsize": 10, 'xtol':1e-6}
+        options = {"maxiter":10, "popsize": 10, 'xtol':1e-6}
         options.update(minimizer_options)  
 
         if mpi_comm is None:
@@ -1940,8 +1946,156 @@ class HOD:
                     bounds=priors_array, x0=init_params,
                     method='cmaes', options=options)
         
+        self.result_fit = res
         if isinstance(self.args['fit_param']['save_fn'], str) & (mpi_rank==0):
             np.save(self.args['fit_param']['save_fn'], res)
         return res
 
     
+
+    def compute_bf_corr(self, bf_file=None, verbose=False, **kwargs):
+
+        from HODDIES.fits_functions import compute_chi2
+        name_param, priors_array = self.get_param_and_prior()
+        if hasattr(self, 'result_fit'):
+            self.result_fit = self.result_fit if bf_file is None else np.load(bf_file, allow_pickle=True).item()
+        else:
+            if bf_file is None:
+                raise ValueError('No best fit file provided and no previous fit result found.')
+            self.result_fit = np.load(bf_file, allow_pickle=True).item()
+
+        new_params= np.array([self.result_fit['x']])
+        
+        new_params.dtype = [(name, dt) for name, dt in zip(name_param, ['float64']*len(name_param))]
+        self.update_new_param(new_params, name_param)
+        print('Best fit point:', *zip(name_param, self.result_fit['x']), flush=True)
+        cat = self.make_mock_cat()
+        result = {}
+        if 'wp' in self.args['fit_param']["fit_type"]:
+            result['wp'] = self.get_crosswp(cat, tracers=self.args['tracers'], verbose=verbose)
+        if 'xi' in self.args['fit_param']["fit_type"]:
+            result['xi'] = self.get_cross2PCF(cat, tracers=self.args['tracers'], verbose=verbose)
+
+        stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+        res = {}
+        comb_trs = result[stats[0]].keys() 
+        res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][1])for stat in stats]) for comb_tr in comb_trs])
+
+        if hasattr(self, 'data'):
+            result['chi2'] = compute_chi2(res, self.data, inv_Cov2=self.inv_cov2)
+
+        return result
+
+
+    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=1,
+                    max_sig = 5, **kwargs):
+
+        from HODDIES.fits_functions import load_desi_data
+        from matplotlib.gridspec import GridSpec
+        import matplotlib.pyplot as plt
+        
+        
+        data_dic = load_desi_data(self.args['fit_param'], self.args['tracers'], multipole_index=self.args['2PCF_settings']['multipole_index'], pimax=self.args['2PCF_settings']['pimax'],**kwargs)
+        self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
+        self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
+        result_bf = self.compute_bf_corr(**kwargs)
+        stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+        comb_trs = list(result_bf[stats[0]].keys())
+
+        nb_tracers = len(comb_trs)
+        ncols = len(data_dic[comb_trs[0]].keys())            
+
+        if 'xi' in data_dic[comb_trs[0]].keys():
+            ncols += 1
+            ells = self.args['2PCF_settings']['multipole_index']
+        else:
+            ells = None
+
+        default_color = {'BGS_BGS': 'yellowgreen', 'ELG_ELG': 'steelblue', 'LRG_LRG': 'orangered', 'QSO_QSO': 'seagreen', 'ELG_LRG': 'firebrick', 
+                        'LRG_ELG': 'firebrick', 'QSO_ELG': 'skyblue', 'ELG_QSO': 'skyblue', 'LRG_QSO': 'peru', 'QSO_LRG': 'peru'}
+        
+        if fig is None:
+            new_fig = True
+            if figsize is None: 
+                size = 9 if nb_tracers == 1 else 18 if nb_tracers == 3 else 27
+                figsize=(9, size/ncols)
+            fig = plt.figure(figsize=figsize)
+            fig.suptitle(suptitle, fontsize=suptitle_fontsize)
+            gs = GridSpec(len(comb_trs)*2, ncols, height_ratios=[ncols, len(comb_trs)]*len(comb_trs), hspace=0.0)
+            
+        else:   
+            new_fig=False
+            axes = fig.axes
+        i_ax = 0
+        # Setup figure and grid    
+
+        # for lax, trs in zip(axes, comb_trs):
+        for ii, trs in enumerate(comb_trs):
+            ii = ii * 2
+            # for col in range(len(stats)):
+                
+            color = default_color[trs] if kwargs.get('color') is None else kwargs['color']
+            col = 0
+            for corr in data_dic[trs].keys():
+                
+                sep_data, res_data, sig_data = data_dic[trs][corr]
+                sep_m, res_model = result_bf[corr][trs]
+                xlabel = '$s$ [Mpc/h]' if corr == 'xi' else '$r_p$ [Mpc/h]' if corr == 'wp' else None
+                ylabel = r'$s \cdot \xi_{{{:d}}}(s)$ [$\mathrm{{Mpc}}/h$]' if corr == 'xi' else r'$r_p \cdot w_p(r_p)$ [$\mathrm{{Mpc}}/h$]' if corr == 'wp' else None
+
+                if len(res_data.shape) == 1:
+                    res_data = [res_data]
+                    sig_data = [sig_data]
+                    res_model = [res_model]
+                
+                panel_titles = ['Monopole', 'Quadrupole', 'Hexadecaople'] if corr == 'xi' else ['Projected clustering'] if corr == 'wp' else None
+
+                for (ill, panel_title), res_m, res, sig in zip(enumerate(panel_titles), res_model, res_data, sig_data):
+                    ax_main = fig.add_subplot(gs[ii, col]) if new_fig  else axes[i_ax]
+                    ax_main.errorbar(sep_data, sep_data**pow_sep*res+shift ,yerr= sep_data**pow_sep*sig,fmt='.',
+                                    markerfacecolor='w', zorder=0, label=f'{trs} z{self.args["fit_param"]["zmin"]}-{self.args["fit_param"]["zmax"]}', color=color)
+                    ax_main.plot(sep_m, sep_m**pow_sep*res_m, color=color, alpha=0.8, lw=1.2)
+                    ax_main.set_ylabel(ylabel.format(ells[ill]), fontsize=fontsize)
+                    
+                
+                    ax_main.grid(True)
+                    ax_main.set_xscale('log')
+                    if ii == 0:  ax_main.set_title(panel_title,fontsize=fontsize)
+                    # ax_main.set_xlabel(xlabel, fontsize=fontsize)
+                    if col == 0:
+                        ax_main.set_ylabel(ylabel.format(ells[ill]), fontsize=fontsize)
+
+                    if col == len(stats):
+                        ax_main.legend(fontsize=fontsize)
+                    # ax_main.tick_params(labelbottom=False)
+
+                    # Residual plot
+
+                    ax_res = fig.add_subplot(gs[ii + 1, col], sharex=ax_main) if new_fig else axes[i_ax+1]
+                    residual = (res - res_m) / sig
+                    ax_res.axhspan(-2, 2, color='gray', alpha=0.2)
+                    ax_res.axhline(0, color='black', linestyle='--')
+                    ax_res.plot(sep_data, residual, color=color)
+                    ax_res.set_xscale('log')
+                    ax_res.set_ylim(-max_sig, max_sig)
+                    ax_res.set_xlabel(xlabel, fontsize=fontsize)
+                
+                    if col == 0:
+                        ax_res.set_ylabel(r"$\Delta/\sigma$")
+
+                    
+
+                    if (ii == 0) &  (col == 0) & ('chi2' in result_bf.keys()):
+                        props = dict(boxstyle='round', facecolor='w', alpha=0.5)
+
+                        # place a text box in upper left in axes coords
+                        ax_main.text(0.05, 0.95, r'$\chi^2 = {:.2f}$'.format(result_bf['chi2']), transform=ax_main.transAxes, fontsize=fontsize,
+                                verticalalignment='top', bbox=props)
+                    col +=1     
+                    i_ax += 2
+        fig.tight_layout()                  
+        if save: 
+            fig.savefig(save, facecolor='w',  bbox_inches='tight', pad_inches=0.1)
+        if show:
+            plt.show()
+        return fig
