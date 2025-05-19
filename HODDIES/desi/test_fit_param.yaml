@@ -63,6 +63,7 @@ nthreads: 32  # Number of threads to use
 assembly_bias: False  # Global flag to enable assembly bias
 use_particles: false  # Whether to use particle data to sample satellite galaxies
 
+
 #fitting settings
 fit_param:
   #Minimizer settings
