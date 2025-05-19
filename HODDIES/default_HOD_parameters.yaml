@@ -5,32 +5,48 @@ tracers:
 
 # HOD (Halo Occupation Distribution) parameters for LRGs 
 LRG: # Name of tracer 1
-  Ac: 1  # Normalization amplitude for central distribution
-  As: 1  # Normalization amplitude for satellite distribution
+
+  # Parameters for the central HOD model
   HOD_model: SHOD  # Central galaxy HOD model. Choices: SHOD, GHOD, SFHOD, HMQ, mHMQ, LNHOD.
+
+  Ac: 1  # Normalization amplitude for central distribution
+  log_Mcent: 12.75  # Central galaxy cutoff mass (log scale) or mean value if gausaain distribution
+  sigma_M: 0.5  # Width of central galaxy mass distribution or stepness of the step function. 
+  gamma: 1  # Shape parameter controlling the asymetry of the central distribution.
+  pmax: 1 # Max probability for central occupation (only used for HMQ model)  
+  Q: 100  # Quenching parameter (only used for HMQ model)
+
+  # Parameters for the satellite HOD model
+  satellites: true  # Whether satellites are included
   sat_HOD_model: Nsat_pow_law  # Satellite galaxy HOD model 
+  As: 1  # Normalization amplitude for satellite distribution
   M_0: 12.5  # Minimum halo mass for satellites
   M_1: 13.5  # Characteristic mass for satellites
-  Q: 100  # Quenching parameter (only used for HMQ model)
   alpha: 1  # Power-law slope of the satellite HOD
+  f_sigv: 1  # Scaling factor for velocity dispersion
+  vel_sat: rd_normal  # Velocity distribution model for satellites: 'rd_normal', 'NFW' or 'infall'
+  v_infall: 0  # Infall velocity offset, only used if `vel_sat` is 'infall'
+
+  # Assembly bias Parameters 
   assembly_bias: # Assembly bias parameters, only used if 'assembly_bias' is True in global settings
     c:
-    - 0  
-    - 0
+    - 0  # concentration based assembly bias parameters for central
+    - 0  # concentration based assembly bias parameters for satellite
+    env:
+    - 0  # Assembly bias parameters for environment for central
+    - 0  # Assembly bias parameters for environment for satelitte
+  
   conformity_bias: false  # Whether to include conformity bias
+  
+  # Parameters for the modified NFW profile
+  exp_frac: 0  # Fraction of satellites to sample using an exponential halo profile. If zero, all satellites are sampled using the NFW profile.
+  # If exp_frac > 0, the remaining fraction (1 - exp_frac) is sampled using the NFW profile.
+  exp_scale: 1  # Scale of exponential halo profile. If `exp_frac` = 0, this parameter is ignored.
+  nfw_rescale: 1  # Rescaling of NFW profile. 
+
   density: 0.0007  # Target galaxy number density
-  f_sigv: 1  # Scaling factor for velocity dispersion
-  gamma: 1  # Shape parameter controlling the asymetry of the central distribution.
-  log_Mcent: 12.75  # Central galaxy cutoff mass (log scale) or mean value if gausaain distribution
-  pmax: 1 # Max probability for central occupation (only used for HMQ model)  
-  satellites: true  # Whether satellites are included
-  sigma_M: 0.5  # Width of central galaxy mass distribution or stepness of the step function. 
-  vel_sat: rd_normal  # Velocity distribution model for satellites: 'rd_normal', 'NFW' or 'infall'
-  exp_frac: 0  # Fraction of satellites to sample using an exponential halo profile.
-  exp_scale: 1  # Scale of exponential halo profile
-  nfw_rescale: 1  # Rescaling of NFW profile
-  v_infall: 0  # Infall velocity offset, only used if `vel_sat` is 'infall'
-  vsmear: 0  # Add redshift error by introducing gaussian smearing in km/s (null or 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s
+  vsmear: 0  # Add redshift error by introducing gaussian smearing in km/s (default 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s. 
+#              To use DESI redshift error, set a list with [zmin,zmax] to genereate the vsmear distribution for each tracer.
 
 # HOD parameters for ELGs, similar to LRG with some changes
 ELG: # Name of tracer 2
@@ -44,7 +60,7 @@ ELG: # Name of tracer 2
   alpha: 0.6
   assembly_bias:
     c:
-    - 0
+    - 0 
     - 0
   conformity_bias: false
   density: 0.001
@@ -59,20 +75,20 @@ ELG: # Name of tracer 2
   exp_scale: 1
   nfw_rescale: 1
   v_infall: 0
-  vsmear: null
+  vsmear: 0
 
 # Halo catalog and simulation settings
 hcat:
-  boxsize: null  # Simulation box size (to be set)
+  boxsize: null  # Simulation box size (to be set if path_to_sim is provided)
   path_to_sim: null  # Path to halo catalogs
   path_to_part: null  # Path to particle or subhalos data for satellites sampling
   mass_cut: null  # Minimum halo mass cut
-  z_simu: 1.1  # Redshift of simulation snapshot
+  z_simu: 0.95  # Redshift of simulation snapshot
   Abacus:
     sim_name: AbacusSummit_highbase_c000_ph100  # Specific to Abacus simulation
     load_particles: false  # Whether to load particle data
     halo_lc: False  # Use lightcone halo catalog
-    z_simu: 1.1  # Redshift of Abacus snapshot or list redhsifts from Abacus light cone shells.
+    z_simu: 0.95 # Redshift of Abacus snapshot or list redhsifts from Abacus light cone shells.
   Pinnochio:
     dir_sim: null  # Path to Pinocchio simulation
 
@@ -96,50 +112,6 @@ hcat:
   los: z  # Line of sight direction
   pimax: 40  # Max pi for wp integration
 
-# GPR+MCMC fitting settings
-fit_param:
-  nb_real: 20  # Number of mock catalogs to generate for each HOD parameter set to estimate stochastic noise 
-  fit_name: myhodfit  # Name identifier for this fitting run
-  path_to_training_point: null  # Path to save or read precomputed training samples
-  dir_output_fit: path_to_save_fit_outputs  # Directory where output from this fitting will be saved
-  fit_type: wp+xi  # Type of 2PCF(s) used in fitting: wp = projected, xi = multipoles
-  generate_training_sample: True  # Whether to generate a new training sample using sampling_type
-  sampling_type: Hammersley  # Sampling method for generating initial training points. Choices: LHS or Hammersley 
-  N_trainning_points: 800  # Number of training points to generate
-  seed_trainning: 18  # Random seed for reproducibility of LHS sampling
-  n_calls: 800  # Number of GP iterations (total number of sampling steps)
-  logchi2: True  # Use log(chi²) instead of raw chi² in GP modeling (recommended)
-
-  sampler: 'emcee'  # MCMC sampler to use ('emcee' or 'zeus')
-  n_iter: 10000  # Number of iterations for MCMC sampling
-  nwalkers: 20  # Number of walkers for the MCMC sampler
-  func_aq: 'EI'  # Acquisition function for GP-based optimization ('EI' = Expected Improvement)
-
-  length_scale_bounds: [0.001, 10]  # Bounds for GP kernel length scale optimization
-  length_scale: False  # If set to a list, GP kernel uses fixed length scales
-  kernel_gp: Matern_52  # Type of GP kernel to use
-
-  priors:  # Prior ranges for HOD parameters for each tracer
-    ELG:
-      As: [0.01, 0.7]  # Amplitude of satellite velocity bias
-      log_Mcent: [11.4, 12.2]  # Log of central mass scale
-      alpha: [0.3, 1.5]  # Power-law slope of the satellite HOD
-      f_sigv: [0.8, 2.2]  # Velocity dispersion scaling factor
-      sigma_M: [0.05, 1]  # Width of the central occupation transition
-      gamma: [1, 8]  # Radial distribution parameter
-      exp_scale: [0.9, 10]  # Exponential profile scale (if using exponential HOD model)
-      exp_frac: [0, 1.1]  # Fraction of satellites in exponential profile
-      nfw_rescale: [0.1, 2]  # Rescaling factor for NFW profile
-
-    LRG:
-      M_0: [12.5, 13.5]
-      M_1: [13, 14.5]
-      alpha: [0.5, 1.5]
-      f_sigv: [0.5, 1.5]
-      log_Mcent: [12.4, 13.5]
-      sigma_M: [0.05, 1]
-
-
 # Cosmology settings using Cosmoprimo API
 # H_0 is fixed at 100, h values is not used for distance computation
 cosmo:
@@ -162,3 +134,60 @@ cm_relation: diemer19  # Concentration-mass relation model from colossus (used f
 mass_def: 200c  # Halo mass definition for colossus (e.g., 200 times critical density)
 assembly_bias: False  # Global flag to enable assembly bias
 use_particles: false  # Whether to use particle data to sample satellite galaxies
+
+#fitting settings
+fit_param:
+
+  # GPR+MCMC fitting settings
+  nb_real: 20  # Number of mock catalogs to generate for each HOD parameter set to estimate stochastic noise 
+  fit_name: myhodfit  # Name identifier for this fitting run
+  path_to_training_point: null  # Path to save or read precomputed training samples
+  dir_output_fit: path_to_save_fit_outputs  # Directory where output from this fitting will be saved
+  fit_type: wp+xi  # Type of 2PCF(s) used in fitting: wp = projected, xi = multipoles
+  generate_training_sample: True  # Whether to generate a new training sample using sampling_type
+  sampling_type: Hammersley  # Sampling method for generating initial training points. Choices: LHS or Hammersley 
+  N_trainning_points: 800  # Number of training points to generate
+  seed_trainning: 18  # Random seed for reproducibility of LHS sampling
+  n_calls: 800  # Number of GP iterations (total number of sampling steps)
+  logchi2: True  # Use log(chi²) instead of raw chi² in GP modeling (recommended)
+
+  sampler: 'emcee'  # MCMC sampler to use ('emcee' or 'zeus')
+  n_iter: 10000  # Number of iterations for MCMC sampling
+  nwalkers: 20  # Number of walkers for the MCMC sampler
+  func_aq: 'EI'  # Acquisition function for GP-based optimization ('EI' = Expected Improvement)
+
+  length_scale_bounds: [0.001, 10]  # Bounds for GP kernel length scale optimization
+  length_scale: False  # If set to a list, GP kernel uses fixed length scales
+  kernel_gp: Matern_52  # Type of GP kernel to use
+
+  #Minimizer settings
+  save_fn: 'results_fit.npy'
+
+  use_desi_data: True 
+  # DESI specific settings. Ignore if use_desi_data is False
+  zmin: 0.8
+  zmax: 1.1
+  dir_data: /global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP
+  region: GCcomb
+  weights_type: pip_angular_bitwise
+  njack: 128
+  nran: 4
+  bin_type: log
+  load_cov_jk: False  # Use JK covariance matrix
+  # Load correlation for Abacus small boxes 
+  #root directory to find correlation matrices (to be rescaled by JK variances)
+  corr_dir: /global/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/  #root directory to find correlation matrices (to be rescaled by JK variances)
+  nb_mocks: 1883 # Nb of mocks used to compute the covariance
+
+  fit_type: wp+xi # Only wp or xi available at the moment
+
+  # Prior ranges for HOD parameters for each tracer
+  # priors:  
+    # Example of prior ranges for LRG 
+    # LRG:
+    #   M_0: [12.5, 13.5]
+    #   M_1: [13, 14.5]
+    #   alpha: [0.5, 1.5]
+    #   f_sigv: [0.5, 1.5]
+    #   log_Mcent: [12.4, 13.5]
+    #   sigma_M: [0.05, 1]
