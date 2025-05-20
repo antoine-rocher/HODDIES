@@ -54,4 +54,4 @@ HODDIES/read_uchuu.py
 setup_test.py
 *test*.ipynb
 *test*.py
-_default_HOD_parameters.yaml
+*_default_HOD_parameters.yaml
