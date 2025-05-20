@@ -1,0 +1,133 @@
+# List of galaxy tracers used in the analysis
+tracers:
+  - QSO
+
+QSO:
+  Ac: 1
+  As: 1
+  HOD_model: SHOD
+  sat_HOD_model: Nsat_pow_law
+  M_0: 12.
+  M_1: 13.
+  Q: 100
+  alpha: 0.9
+  assembly_bias:
+    c:
+    - 0
+    - 0
+  conformity_bias: False
+  density: 0.0005
+  f_sigv: 1
+  gamma: 5.57
+  log_Mcent: 12.2
+  pmax: 1
+  satellites: true
+  sigma_M: 0.45
+  vel_sat: rd_normal
+  exp_frac: 0
+  exp_scale: 6.14
+  nfw_rescale: 1
+  v_infall: 1.8
+  vsmear: 0
+
+# Halo catalog and simulation settings
+hcat:
+  boxsize: null  # Simulation box size (to be set)
+  path_to_sim: null  # Path to halo catalogs
+  path_to_part: null  # Path to particle or subhalos data for satellites sampling
+  mass_cut: null  # Minimum halo mass cut
+  z_simu: 1.1  # Redshift of simulation snapshot
+  Abacus:
+    sim_name: AbacusSummit_highbase_c000_ph100  # Specific to Abacus simulation
+    load_particles: false  # Whether to load particle data
+    halo_lc: False  # Use lightcone halo catalog
+    z_simu: 1.1  # Redshift of Abacus snapshot or list redhsifts from Abacus light cone shells.
+  Pinnochio:
+    dir_sim: null  # Path to Pinocchio simulation
+
+# Two-point correlation function (2PCF) settings
+2PCF_settings:
+  rsd: True  # Use redshift-space distortions
+  bin_logscale: true  # Logarithmic binning in r
+  mu_max: 1  # Max mu for 2PCF (s,mu) correlation
+  n_mu_bins: 101  # Number of mu bins
+  multipole_index:
+    - 0  # Monopole
+    - 2  # Quadrupole
+  n_r_bins: 25  # Number of radial bins
+  n_rp_bins: 25  # Number of rp (projected separation) bins
+  rmax: 30  # Maximum r (Mpc/h)
+  rmin: 0.01  # Minimum r (Mpc/h)
+  rp_max: 30  # Maximum rp
+  rp_min: 0.01  # Minimum rp
+  edges_rppi: null  # Custom bin edges for rp-pi (if any, else computed from rp_min, rp_max, n_rp_bins, and -pimax, pimax with linear bins of 1 Mpc/h size)
+  edges_smu: null  # Custom bin edges for s-mu (if any, else computed from rmin, rmax, n_r_bins and -mu_max, mu_max, n_mu_bins)
+  los: z  # Line of sight direction
+  pimax: 40  # Max pi for wp integration
+
+# GPR+MCMC fitting settings
+fit_param:
+  nb_real: 20  # Number of mock catalogs to generate for each HOD parameter set to estimate stochastic noise 
+  fit_name: myhodfit  # Name identifier for this fitting run
+  path_to_training_point: null  # Path to save or read precomputed training samples
+  dir_output_fit: path_to_save_fit_outputs  # Directory where output from this fitting will be saved
+  fit_type: wp+xi  # Type of 2PCF(s) used in fitting: wp = projected, xi = multipoles
+  generate_training_sample: True  # Whether to generate a new training sample using sampling_type
+  sampling_type: Hammersley  # Sampling method for generating initial training points. Choices: LHS or Hammersley 
+  N_trainning_points: 800  # Number of training points to generate
+  seed_trainning: 18  # Random seed for reproducibility of LHS sampling
+  n_calls: 800  # Number of GP iterations (total number of sampling steps)
+  logchi2: True  # Use log(chi²) instead of raw chi² in GP modeling (recommended)
+
+  sampler: 'emcee'  # MCMC sampler to use ('emcee' or 'zeus')
+  n_iter: 10000  # Number of iterations for MCMC sampling
+  nwalkers: 20  # Number of walkers for the MCMC sampler
+  func_aq: 'EI'  # Acquisition function for GP-based optimization ('EI' = Expected Improvement)
+
+  length_scale_bounds: [0.001, 10]  # Bounds for GP kernel length scale optimization
+  length_scale: False  # If set to a list, GP kernel uses fixed length scales
+  kernel_gp: Matern_52  # Type of GP kernel to use
+
+  priors:  # Prior ranges for HOD parameters for each tracer
+    ELG:
+      As: [0.01, 0.7]  # Amplitude of satellite velocity bias
+      log_Mcent: [11.4, 12.2]  # Log of central mass scale
+      alpha: [0.3, 1.5]  # Power-law slope of the satellite HOD
+      f_sigv: [0.8, 2.2]  # Velocity dispersion scaling factor
+      sigma_M: [0.05, 1]  # Width of the central occupation transition
+      gamma: [1, 8]  # Radial distribution parameter
+      exp_scale: [0.9, 10]  # Exponential profile scale (if using exponential HOD model)
+      exp_frac: [0, 1.1]  # Fraction of satellites in exponential profile
+      nfw_rescale: [0.1, 2]  # Rescaling factor for NFW profile
+
+    LRG:
+      M_0: [12.5, 13.5]
+      M_1: [13, 14.5]
+      alpha: [0.5, 1.5]
+      f_sigv: [0.5, 1.5]
+      log_Mcent: [12.4, 13.5]
+      sigma_M: [0.05, 1]
+
+
+# Cosmology settings using Cosmoprimo API
+# H_0 is fixed at 100, h values is not used for distance computation
+cosmo:
+  fiducial_cosmo: null  # Name of predefined cosmology (e.g., Planck2018FullFlatLCDM)
+  engine: class  # Use CLASS backend for cosmology computations
+  h: null  # Hubble parameter h
+  Omega_m: null  # Total matter density
+  Omega_cdm: null  # Cold dark matter density
+  Omega_L: null  # Dark energy density
+  Omega_b: null  # Baryon density
+  sigma_8: null  # Amplitude of fluctuations
+  n_s: null  # Scalar spectral index
+  w0_fdl: null  # Dark energy equation of state (w₀)
+  wa_fdl: null  # Dark energy equation of state (wa)
+
+# Global settings
+seed: null  # Global random seed
+nthreads: 32  # Number of threads to use
+cm_relation: diemer19  # Concentration-mass relation model from colossus (used for pinnochio halos, https://bdiemer.bitbucket.io/colossus/index.html)
+mass_def: 200c  # Halo mass definition for colossus (e.g., 200 times critical density)
+assembly_bias: False  # Global flag to enable assembly bias
+use_particles: false  # Whether to use particle data to sample satellite galaxies

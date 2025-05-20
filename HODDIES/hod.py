@@ -10,6 +10,8 @@ import yaml
 import glob
 from mpytools import Catalog
 import collections.abc
+from .fits_functions import compute_chi2
+import numbers
 
 class HOD:
 
@@ -54,7 +56,7 @@ class HOD:
         """
         
         
-        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
+        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), '_default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
         self.cosmo = None
         self.H_0 = 100 # H_0 is always set to 100 km/s/Mpc
 
@@ -140,6 +142,7 @@ class HOD:
                 
         if self.args['assembly_bias']:
             self._compute_assembly_bias_columns()
+        self.rng = np.random.RandomState(seed=self.args['seed'])
 
     def init_cosmology(self):
         """
@@ -178,13 +181,13 @@ class HOD:
             from cosmoprimo.fiducial import Cosmology, AbacusSummit
             if "sim_name" in self.args["hcat"].keys():
                 print('Initialize Abacus c{} cosmology'.format(self.args['hcat']['sim_name'].split('_c')[-1][:3]))
-                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'], flush=True)   
+                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3], engine=self.args['cosmo']['engine'])   
             else:
                 print('Initialize custom cosmology from the "cosmo" parameters', flush=True)
                 self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
         except ImportError:
             import warnings
-            warnings.warn('Could not import cosmoprimo. Install cosmoprimo with "python -m pip install python -m pip install git+https://github.com/cosmodesi/cosmoprimo".\n'\
+            warnings.warn('Could not import cosmoprimo. Install cosmoprimo with "python -m pip install git+https://github.com/cosmodesi/cosmoprimo[class,camb,extras]".\n'\
                   'Cosmology needed to apply RSD when computing correlations. No cosmology set.')
             self.cosmo = None
 
@@ -587,14 +590,18 @@ class HOD:
                         else:
                             seed = None
                         uniq_sat_id = sat_cat['halo_id']
-                        flat, offsets = find_indices_large(self.part_subsamples['halo_id'], uniq_sat_id, self.args['nthreads'])
+                        flat, offsets = find_indices(self.part_subsamples['halo_id'], uniq_sat_id, self.args['nthreads'])
+                        result = [flat[offsets[i]:offsets[i+1]] for i in range(len(uniq_sat_id))]
+                        print('indexes done')
+                        flat, offsets = find_indices(self.part_subsamples['halo_id'], uniq_sat_id, self.args['nthreads'])
                         result = [flat[offsets[i]:offsets[i+1]] for i in range(len(uniq_sat_id))]
                         print('indexes done')
                         sat_cat = sat_cat[sat_cat['halo_id'].argsort()]
-                        mask_nfw = compute_sat_from_part(self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
+                        print(sat_cat.size)
+                        sat_cat['x'], sat_cat['y'], sat_cat['z'], \
+                        sat_cat['vx'], sat_cat['vy'], sat_cat['vz'], mask_nfw = compute_sat_from_part(self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
                                                          self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'],
-                                                         sat_cat['x'], sat_cat['y'], sat_cat['z'], 
-                                                         sat_cat['vx'], sat_cat['vy'], sat_cat['vz'], result,
+                                                         result,
                                                          list_nsat, np.insert(np.cumsum(list_nsat),0,0), self.args['nthreads'], seed=seed)
                         if verbose: print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
                 else:
@@ -741,7 +748,30 @@ class HOD:
         
         sat_cat['Central'] = sat_cat.zeros()
         return sat_cat
+    
 
+    def get_vsmear(self, tracer, cat_size, verbose=True):
+
+        """
+        Generate a random velocity smear for the specified tracer
+        """
+
+        if isinstance(self.args[tracer]['vsmear'], numbers.Number) and (self.args[tracer]['vsmear'] != 0):
+            if self.args[tracer]['vsmear'] < 0:
+                raise ValueError('vsmear must be positive')
+            if verbose: 
+                print('Generate gaussian vsmear for {} of {} km/s...'.format(tracer, self.args[tracer]['vsmear']), flush=True)
+            vsmear = self.rng.normal(0, self.args[tracer]['vsmear'], cat_size)
+            
+        elif isinstance(self.args[tracer]['vsmear'], list):
+            from HODDIES.desi.Y3_redshift_systematics import vsmear as gen_vsmear
+            if verbose: 
+                print('Generate vsmear for {} at z {:.2f}-{:.2f}...'.format(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1]), flush=True)
+            vsmear = gen_vsmear(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1], cat_size, dvmode='obs',seed=42,verbose=verbose)
+        else:
+            vsmear = 0
+        return vsmear
+    
 
     def get_2PCF(self, cats, tracers=None, ells=None, R1R2=None, verbose=True):
         """
@@ -807,11 +837,11 @@ class HOD:
             mock_cat = cats[cats['TRACER'] == tr]
             if verbose:
                 print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
-                time1 = time.time()
+                time1 = time.time() 
 
-            if self.cosmo is not None:
-                if self.args['2PCF_settings']['rsd']:
-                    pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'])
+            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
+                pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear)
             else:
                 if self.args['2PCF_settings']['rsd']:
                     print('Cosmology not set, does not apply rsd', flush=True)
@@ -887,10 +917,10 @@ class HOD:
             if verbose:
                 print('#Compute wp for {}...'.format(tr), flush=True)
                 time1 = time.time()
-
-            if self.cosmo is not None:
-                if self.args['2PCF_settings']['rsd']:
-                    pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'])
+            
+            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
+                pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear)
             else:
                 if self.args['2PCF_settings']['rsd']:
                     print('Cosmology not set, does not apply rsd', flush=True)
@@ -947,7 +977,8 @@ class HOD:
         -------
         res = get_crosswp(cats, tracers=['LRG', 'ELG', 'QSO'])
         """
-        
+        if isinstance(tracers, str):
+            tracers = [tracers]
         if self.args['2PCF_settings']['edges_rppi'] is None:
             if self.args['2PCF_settings']['bin_logscale']:
                 r_bins = np.geomspace(self.args['2PCF_settings']['rp_min'], self.args['2PCF_settings']['rp_max'], self.args['2PCF_settings']['n_rp_bins']+1, endpoint=(True))
@@ -957,17 +988,18 @@ class HOD:
 
 
         res_dict = {}
-        com_tr =np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
+        com_tr = self.get_comb_tr_list(tracers)
         mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
+        
         for tr in com_tr:
             if verbose:
                 print('#Compute wp for {}...'.format(tr), flush=True)
                 time1 = time.time()
 
-            if self.cosmo is not None:
-                if self.args['2PCF_settings']['rsd']:
-                    pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'])
-                    pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'])
+            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
+                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
+                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
             else:
                 if self.args['2PCF_settings']['rsd']:
                     print('Cosmology not set, does not apply rsd', flush=True)
@@ -1023,7 +1055,9 @@ class HOD:
         -------
         res = get_cross2PCF(cats, tracers=['LRG', 'ELG', 'QSO'])
         """
-
+        
+        if isinstance(tracers, str):
+            tracers = [tracers]
         
         if self.args['2PCF_settings']['edges_smu'] is None:
             if self.args['2PCF_settings']['bin_logscale']:
@@ -1034,17 +1068,17 @@ class HOD:
             self.args['2PCF_settings']['edges_smu'] = (r_bins, np.linspace(-self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['n_mu_bins']))
         ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
         res_dict = {}
-        com_tr =np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
+        com_tr = self.get_comb_tr_list(tracers)
         mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
         for tr in com_tr:
             if verbose:
                 print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
                 time1 = time.time()
-
-            if self.cosmo is not None:
-                if self.args['2PCF_settings']['rsd']:
-                    pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'])
-                    pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'])
+            
+            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
+                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
+                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
             else:
                 if self.args['2PCF_settings']['rsd']:
                     print('Cosmology not set, does not apply rsd', flush=True)
@@ -1229,6 +1263,52 @@ class HOD:
         if mask is None:
             mask = np.random.uniform(size=len(cat['x'])) < ds_fac
         return cat[mask]
+    
+
+    def update_new_param(self, new_params, name_param, verbose=False):
+        
+        name_param_tr = {}
+
+        if not set(self.args['tracers']) == set(self.args['fit_param']['priors'].keys()):
+            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self.args['tracers'], self.args['fit_param']['priors'].keys()))
+
+        for tr in self.args['tracers']:
+            name_param_tr[tr] = [x.split(f'_{tr}')[0] for x in name_param if tr in x]
+            
+        for i, new_p in enumerate(new_params):
+            for tr in self.args['tracers']:
+                idx = np.where([tr in vv for vv in new_p.dtype.names])[0].tolist()
+                tr_par = list(name_param[i] for i in idx)
+
+                self.args[tr].update(dict(zip(name_param_tr[tr], new_p[tr_par][0])))
+                if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys():
+                    for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
+                        self.args[tr]['assembly_bias'][var] = [new_p[f'ab_{var}_cen_{tr}'], new_p[f'ab_{var}_sat_{tr}']]
+                if verbose:
+                    print(f"# {tr} {[(var, self.args[tr][var]) for var in self.args['fit_param']['priors'][tr].keys()]}", flush=True)
+
+
+    def get_param_and_prior(self):
+        priors = {}
+        priors_array = []
+        for tr in self.args['tracers']:
+            priors[tr] = self.args['fit_param']['priors'][tr].copy()
+
+            if 'assembly_bias' in priors[tr].keys():
+                for var in priors[tr]['assembly_bias'].keys():
+                    priors[tr][f'ab_{var}_cen'] =  priors[tr]['assembly_bias'][var][0]
+                    priors[tr][f'ab_{var}_sat'] = priors[tr]['assembly_bias'][var][1]
+                    priors[tr].pop('assembly_bias')
+            priors_array += list(priors[tr].values())
+        name_param = [f'{var}_{tr}' for tr in priors.keys() for var in priors[tr].keys()]
+        return name_param, priors_array
+
+    
+    @staticmethod
+    def get_comb_tr_list(tracers):
+        if isinstance(tracers, str):
+            tracers = [tracers]
+        return np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
 
         
     def compute_training(self, nreal=20, training_points=None, start_point=0, verbose=False):
@@ -1290,7 +1370,7 @@ class HOD:
         if not set(self.args['tracers']) == set(self.args['fit_param']['priors'].keys()):
             raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self.args['tracers'], self.args['fit_param']['priors'].keys()))
         
-        name_param, priors_array = self._get_param_and_prior()
+        name_param, priors_array = self.get_param_and_prior()
 
         if len(name_param) != len(training_points.dtype.names):
             raise ValueError('The training sample shape ({}) does not correspond to the number of parameters ({})'.format(len(self.args['fit_param']['priors'][tr]), len(training_points.dtype.names)))
@@ -1785,3 +1865,237 @@ class HOD:
             training_point = np.vstack((training_point, new_train_point))
             if verbose:
                 print(f'Iteration {j} done, took {time.strftime("%H:%M:%S",time.gmtime(time.time()-time_compute_mcmc))}', flush=True)
+
+    
+    def initialize_fit(self, data_vec=None, inv_cov2=None, **kwargs):
+
+        from .fits_functions import load_desi_data, get_corr_small_boxes
+
+        self.args['fit_param']['pimax'] = self.args['2PCF_settings']['pimax']
+        self.args['fit_param']['multipole_index'] = self.args['2PCF_settings']['multipole_index']
+        self.args['fit_param']['z_simu'] = self.args['hcat']['z_simu']
+        self.args['fit_param'].update(kwargs)
+
+        if self.args['fit_param']['use_desi_data']:
+            data_dic = load_desi_data(self.args['fit_param'], self.args['tracers'], load_cov_jk=self.args['fit_param']['load_cov_jk'])
+
+            mm = [list(data_dic.keys())[i].endswith(tuple(self.args['tracers'])) for i in range(len(data_dic.keys()))]
+            comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
+            data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+            sig_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+
+            if self.args['fit_param']['load_cov_jk']:
+                inv_cov2 = np.linalg.inv(data_dic['cov_jk'])
+            else:
+                corr = get_corr_small_boxes(self.args['fit_param'], self.args['tracers'])
+                cov = corr*sig_vec*sig_vec[:,None]
+
+                hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
+                inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+
+            if 'wp' in  data_dic['edges'].keys():
+                self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
+            if 'xi' in  data_dic['edges'].keys():
+                self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
+            if self.args['fit_param']['use_vsmear']:
+                for tr in self.args['tracers']:
+                    print('Apply vsmear for {} at z{}-{}'.format(tr, self.args['fit_param']['zmin'], self.args['fit_param']['zmax']))
+                    self.args[tr]['vsmear'] = [self.args['fit_param']['zmin'], self.args['fit_param']['zmax']]
+
+        if data_vec.size != inv_cov2.diagonal().size:
+            raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
+
+        self.data = data_vec
+        self.inv_cov2 = inv_cov2
+        
+    
+    def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, minimizer_options={}, **kwargs):
+        from stochopy.optimize import minimize
+        from .fits_functions import func_stochopy
+        
+        if hasattr(self, 'data') & hasattr(self, 'inv_cov2'):
+            pass
+        else:
+            self.initialize_fit(**kwargs)
+        
+        name_param, priors_array = self.get_param_and_prior()
+        print('Priors:', *zip(name_param, priors_array))
+        if init_params is None:
+            init_params = []
+            for tr in self.args['tracers']:
+                priors_tmp = self.args['fit_param']['priors'][tr].copy()
+                param_ab = []
+                if 'assembly_bias' in priors_tmp.keys():
+                    ab_list = priors_tmp['assembly_bias'].keys()
+                    param_ab = [self.args[tr]['assembly_bias'][vv] for vv in ab_list][0]
+                    priors_tmp.pop('assembly_bias')
+                init_params += [self.args[tr][vv] for vv in priors_tmp.keys()]
+                init_params += param_ab
+        print('First point:', *zip(name_param, init_params))
+        options = {"maxiter":10, "popsize": 10, 'xtol':1e-6}
+        options.update(minimizer_options)  
+
+        if mpi_comm is None:
+            mpi_rank = 0
+        else:
+            mpi_rank = mpi_comm.Get_rank()
+            options['workers'] = mpi_comm.Get_size()
+            options['backend']= 'mpi'
+
+        res = minimize(func_stochopy, args=(self, name_param, self.data, self.inv_cov2, seed),
+                    bounds=priors_array, x0=init_params,
+                    method='cmaes', options=options)
+        
+        self.result_fit = res
+        if isinstance(self.args['fit_param']['save_fn'], str) & (mpi_rank==0):
+            np.save(self.args['fit_param']['save_fn'], res)
+        return res
+
+    
+
+    def compute_bf_corr(self, bf_file=None, verbose=False, **kwargs):
+
+        from HODDIES.fits_functions import compute_chi2
+        name_param, priors_array = self.get_param_and_prior()
+        if hasattr(self, 'result_fit'):
+            self.result_fit = self.result_fit if bf_file is None else np.load(bf_file, allow_pickle=True).item()
+        else:
+            if bf_file is None:
+                raise ValueError('No best fit file provided and no previous fit result found.')
+            self.result_fit = np.load(bf_file, allow_pickle=True).item()
+
+        new_params= np.array([self.result_fit['x']])
+        
+        new_params.dtype = [(name, dt) for name, dt in zip(name_param, ['float64']*len(name_param))]
+        self.update_new_param(new_params, name_param)
+        print('Best fit point:', *zip(name_param, self.result_fit['x']), flush=True)
+        cat = self.make_mock_cat()
+        result = {}
+        if 'wp' in self.args['fit_param']["fit_type"]:
+            result['wp'] = self.get_crosswp(cat, tracers=self.args['tracers'], verbose=verbose)
+        if 'xi' in self.args['fit_param']["fit_type"]:
+            result['xi'] = self.get_cross2PCF(cat, tracers=self.args['tracers'], verbose=verbose)
+
+        stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+        res = {}
+        comb_trs = result[stats[0]].keys() 
+        res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][1])for stat in stats]) for comb_tr in comb_trs])
+
+        if hasattr(self, 'data'):
+            result['chi2'] = compute_chi2(res, self.data, inv_Cov2=self.inv_cov2)
+
+        return result
+
+
+    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=1,
+                    max_sig = 5, **kwargs):
+
+        from HODDIES.fits_functions import load_desi_data
+        from matplotlib.gridspec import GridSpec
+        import matplotlib.pyplot as plt
+        
+        
+        data_dic = load_desi_data(self.args['fit_param'], self.args['tracers'], multipole_index=self.args['2PCF_settings']['multipole_index'], pimax=self.args['2PCF_settings']['pimax'],**kwargs)
+        self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
+        self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
+        result_bf = self.compute_bf_corr(**kwargs)
+        stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+        comb_trs = list(result_bf[stats[0]].keys())
+
+        nb_tracers = len(comb_trs)
+        ncols = len(data_dic[comb_trs[0]].keys())            
+
+        if 'xi' in data_dic[comb_trs[0]].keys():
+            ncols += 1
+            ells = self.args['2PCF_settings']['multipole_index']
+        else:
+            ells = None
+
+        default_color = {'BGS_BGS': 'yellowgreen', 'ELG_ELG': 'steelblue', 'LRG_LRG': 'orangered', 'QSO_QSO': 'seagreen', 'ELG_LRG': 'firebrick', 
+                        'LRG_ELG': 'firebrick', 'QSO_ELG': 'skyblue', 'ELG_QSO': 'skyblue', 'LRG_QSO': 'peru', 'QSO_LRG': 'peru'}
+        
+        if fig is None:
+            new_fig = True
+            if figsize is None: 
+                size = 9 if nb_tracers == 1 else 18 if nb_tracers == 3 else 27
+                figsize=(9, size/ncols)
+            fig = plt.figure(figsize=figsize)
+            fig.suptitle(suptitle, fontsize=suptitle_fontsize)
+            gs = GridSpec(len(comb_trs)*2, ncols, height_ratios=[ncols, len(comb_trs)]*len(comb_trs), hspace=0.0)
+            
+        else:   
+            new_fig=False
+            axes = fig.axes
+        i_ax = 0
+        # Setup figure and grid    
+
+        # for lax, trs in zip(axes, comb_trs):
+        for ii, trs in enumerate(comb_trs):
+            ii = ii * 2
+            # for col in range(len(stats)):
+                
+            color = default_color[trs] if kwargs.get('color') is None else kwargs['color']
+            col = 0
+            for corr in data_dic[trs].keys():
+                
+                sep_data, res_data, sig_data = data_dic[trs][corr]
+                sep_m, res_model = result_bf[corr][trs]
+                xlabel = '$s$ [Mpc/h]' if corr == 'xi' else '$r_p$ [Mpc/h]' if corr == 'wp' else None
+                ylabel = r'$s \cdot \xi_{{{:d}}}(s)$ [$\mathrm{{Mpc}}/h$]' if corr == 'xi' else r'$r_p \cdot w_p(r_p)$ [$\mathrm{{Mpc}}/h$]' if corr == 'wp' else None
+
+                if len(res_data.shape) == 1:
+                    res_data = [res_data]
+                    sig_data = [sig_data]
+                    res_model = [res_model]
+                
+                panel_titles = ['Monopole', 'Quadrupole', 'Hexadecaople'] if corr == 'xi' else ['Projected clustering'] if corr == 'wp' else None
+
+                for (ill, panel_title), res_m, res, sig in zip(enumerate(panel_titles), res_model, res_data, sig_data):
+                    ax_main = fig.add_subplot(gs[ii, col]) if new_fig  else axes[i_ax]
+                    ax_main.errorbar(sep_data, sep_data**pow_sep*res+shift ,yerr= sep_data**pow_sep*sig,fmt='.',
+                                    markerfacecolor='w', zorder=0, label=f'{trs} z{self.args["fit_param"]["zmin"]}-{self.args["fit_param"]["zmax"]}', color=color)
+                    ax_main.plot(sep_m, sep_m**pow_sep*res_m, color=color, alpha=0.8, lw=1.2)
+                    ax_main.set_ylabel(ylabel.format(ells[ill]), fontsize=fontsize)
+                    
+                
+                    ax_main.grid(True)
+                    ax_main.set_xscale('log')
+                    if ii == 0:  ax_main.set_title(panel_title,fontsize=fontsize)
+                    # ax_main.set_xlabel(xlabel, fontsize=fontsize)
+                    if col == 0:
+                        ax_main.set_ylabel(ylabel.format(ells[ill]), fontsize=fontsize)
+
+                    if col == len(stats):
+                        ax_main.legend(fontsize=fontsize)
+                    # ax_main.tick_params(labelbottom=False)
+
+                    # Residual plot
+
+                    ax_res = fig.add_subplot(gs[ii + 1, col], sharex=ax_main) if new_fig else axes[i_ax+1]
+                    residual = (res - res_m) / sig
+                    ax_res.axhspan(-2, 2, color='gray', alpha=0.2)
+                    ax_res.axhline(0, color='black', linestyle='--')
+                    ax_res.plot(sep_data, residual, color=color)
+                    ax_res.set_xscale('log')
+                    ax_res.set_ylim(-max_sig, max_sig)
+                    ax_res.set_xlabel(xlabel, fontsize=fontsize)
+                
+                    if col == 0:
+                        ax_res.set_ylabel(r"$\Delta/\sigma$")
+
+                    
+
+                    if (ii == 0) &  (col == 0) & ('chi2' in result_bf.keys()):
+                        props = dict(boxstyle='round', facecolor='w', alpha=0.5)
+
+                        # place a text box in upper left in axes coords
+                        ax_main.text(0.05, 0.95, r'$\chi^2 = {:.2f}$'.format(result_bf['chi2']), transform=ax_main.transAxes, fontsize=fontsize,
+                                verticalalignment='top', bbox=props)
+                    col +=1     
+                    i_ax += 2
+        fig.tight_layout()                  
+        if save: 
+            fig.savefig(save, facecolor='w',  bbox_inches='tight', pad_inches=0.1)
+        if show:
+            plt.show()
+        return fig

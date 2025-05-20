@@ -16,7 +16,6 @@ import os
 # import mpytools as mpy
 import scipy
 
-
 def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
 
     """
@@ -36,8 +35,8 @@ def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
         Hubble constant in km/s/Mpc. Default is 100.
     los : {'x', 'y', 'z'}, optional
         Line-of-sight axis. Default is 'z'.
-    vsmear : float, optional
-        Add redshift error using gaussian distribution in km/s. Default is 0.
+    vsmear : float, array-like, optional
+        Add redshift errors in km/s. If vsmear is a number create a normal distribution $\mathcal{N} (0,v_\mathrm{smear)}$. Default is 0.
 
     Returns
     -------
@@ -45,8 +44,8 @@ def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
         List of arrays containing RSD-applied positions for x, y, and z.
     """
 
-    rsd_factor = 1 / (1 / (1 + z) * H_0 * cosmo.efunc(z))
-    pos_rsd = [cat[p] % boxsize if p !=los else (cat[p] + (cat['v'+p] + np.random.normal(0,vsmear, size=len(cat[p])))*rsd_factor) %boxsize if vsmear is not None else (cat[p] + cat['v'+p]*rsd_factor) %boxsize for p in 'xyz']
+    rsd_factor = 1 / (1 / (1 + z) * H_0 * cosmo.efunc(z))   
+    pos_rsd = [cat[p] % boxsize if p !=los else (cat[p] + (cat['v'+p] + vsmear)*rsd_factor) %boxsize for p in 'xyz']    
     return pos_rsd
     
     
@@ -633,7 +632,7 @@ def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256,
 
 
 @njit(parallel=True)
-def find_indices_large(part_id, sat_id, Nthread):
+def find_indices(part_id, sat_id, Nthread):
     numba.set_num_threads(Nthread)
     n = len(part_id)
     m = len(sat_id)
@@ -679,7 +678,7 @@ def find_indices_large(part_id, sat_id, Nthread):
 
 @njit(parallel=True, fastmath=True)
 def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
-                          x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, indexes_p,
+                          indexes_p,
                           nb_sat, cum_sum_sat, Nthread, seed=None):
     
     """
@@ -688,8 +687,14 @@ def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
 
     numba.set_num_threads(Nthread)
     mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
-    hstart = np.rint(np.linspace(0, x_sat.size, Nthread + 1))
-    
+    hstart = np.rint(np.linspace(0, nb_sat.sum(), Nthread + 1))
+    x_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
+    y_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
+    z_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
+    vx_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
+    vy_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
+    vz_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
+    print('ok', vz_sat.size)
     for tid in numba.prange(Nthread):
         if seed is not None:
             np.random.seed(seed[tid])
@@ -717,7 +722,116 @@ def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
                 vz_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = vzp[indexes_p[i]]
                 
                 mask_nfw[cum_sum_sat[i]+nb_sub: cum_sum_sat[i+1]] = True
+    return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw
+
+
+@njit(parallel=True, fastmath=True)
+def compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, x_sat, y_sat, z_sat, 
+                                 vx_sat, vy_sat, vz_sat, npout, npstart, nb_sat, 
+                                 cum_sum_sat, Nthread, seed=None):
+    
+    """
+    Sample satellite galaxy positions and velocities from Abacus particle subsamples.
+
+    Parameters
+    ----------
+    xp, yp, zp : arrays
+        Particle positions in each axis.
+    vxp, vyp, vzp : arrays
+        Particle velocities in each axis.
+    x_sat, y_sat, z_sat : arrays
+        Host halo positions in each axis.
+    vx_sat, vy_sat, vz_sat : arrays
+        Host halo velocities in each axis.
+    npout : array
+        Number of available particles for each halo.
+    npstart : array
+        Starting index in the global particle array for each halo.
+    nb_sat : array
+        Number of satellites to assign per halo.
+    cum_sum_sat : array
+        Cumulative sum array to locate output indices.
+    Nthread : int
+        Number of threads to use in parallel loop.
+    seed : array, optional
+        Array of seeds for reproducible random sampling across threads.
+
+    Returns
+    -------
+    mask_nfw : array
+        Boolean mask identifying entries with no enough particles (to be filled using NFW).
+    """
+
+    numba.set_num_threads(Nthread)
+    mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
+    hstart = np.rint(np.linspace(0, npout.size, Nthread + 1))
+    for tid in numba.prange(Nthread):
+        if seed is not None:
+            np.random.seed(seed[tid])
+
+        for i in range(int(hstart[tid]), int(hstart[tid + 1])):
+            if nb_sat[i] < npout[i]:
+                tt = np.random.choice(npout[i], nb_sat[i], replace=False) + npstart[i]
+                x_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = xp[tt]
+                y_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = yp[tt]
+                z_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = zp[tt]
+                vx_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vxp[tt]
+                vy_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vyp[tt]
+                vz_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vzp[tt]
+                #id_parts[cum_sum_sat[i]: cum_sum_sat[i+1]] = tt + npstart[i]            
+            else:
+                if npout[i] > 0:
+                    tt = np.arange(npout[i]) + npstart[i]
+                    x_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = xp[tt]
+                    y_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = yp[tt]
+                    z_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = zp[tt]
+                    vx_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vxp[tt]
+                    vy_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vyp[tt]
+                    vz_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vzp[tt]
+                
+                mask_nfw[cum_sum_sat[i]+npout[i]: cum_sum_sat[i+1]] = True
     return mask_nfw
+
+# @njit(parallel=True, fastmath=True)
+# def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
+#                           x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, indexes_p,
+#                           nb_sat, cum_sum_sat, Nthread, seed=None):
+    
+#     """
+#     --- Compute  positions and velocities for satelitte galaxies
+#     """
+
+#     numba.set_num_threads(Nthread)
+#     mask_nfw = np.zeros(nb_sat.sum(), dtype=np.int32)
+#     hstart = np.rint(np.linspace(0, x_sat.size, Nthread + 1))
+    
+#     for tid in numba.prange(Nthread):
+#         if seed is not None:
+#             np.random.seed(seed[tid])
+#         for i in range(int(hstart[tid]), int(hstart[tid + 1])):
+#             nb_sub = indexes_p[i].size
+#             start = cum_sum_sat[i]
+#             stop = cum_sum_sat[i + 1]
+#             num_sat = nb_sat[i]
+#             if nb_sub==0:
+#                 for k in range(start, stop):
+#                     mask_nfw[k] = 1
+#             else:
+#                 if num_sat <= nb_sub:
+#                     indexes = indexes_p[i][np.random.permutation(nb_sub)]
+#                 else:
+#                     for k in range(nb_sub, num_sat):
+#                         mask_nfw[start + k] = 1
+#                     indexes = indexes_p[i]
+
+#                 for k, idx in enumerate(indexes):
+#                     x_sat[start + k] = xp[idx]
+#                     y_sat[start + k] = yp[idx]
+#                     z_sat[start + k] = zp[idx]
+#                     vx_sat[start + k] = vxp[idx]
+#                     vy_sat[start + k] = vyp[idx]
+#                     vz_sat[start + k] = vzp[idx]
+#     return mask_nfw
 
 
 

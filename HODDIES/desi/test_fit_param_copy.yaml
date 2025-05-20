@@ -1,0 +1,187 @@
+# List of galaxy tracers used in the analysis
+tracers:
+  - LRG 
+  - QSO
+
+LRG: 
+  # Parameters for the central HOD model
+  HOD_model: SHOD  # Central galaxy HOD model. Choices: SHOD, GHOD, SFHOD, HMQ, mHMQ, LNHOD.
+
+  Ac: 1  # Normalization amplitude for central distribution
+  log_Mcent: 12.82  # Central galaxy cutoff mass (log scale) or mean value if gausaain distribution
+  sigma_M:  0.21  # Width of central galaxy mass distribution or stepness of the step function. 
+  gamma: 1  # Shape parameter controlling the asymetry of the central distribution.
+  pmax: 1 # Max probability for central occupation (only used for HMQ model)  
+  Q: 100  # Quenching parameter (only used for HMQ model)
+
+  # Parameters for the satellite HOD model
+  satellites: true  # Whether satellites are included
+  sat_HOD_model: Nsat_pow_law  # Satellite galaxy HOD model 
+  As: 1  # Normalization amplitude for satellite distribution
+  M_0: 12.72  # Minimum halo mass for satellites
+  M_1: 13.82  # Characteristic mass for satellites
+  alpha: 1  # Power-law slope of the satellite HOD
+  f_sigv: 0.87  # Scaling factor for velocity dispersion
+  vel_sat: rd_normal  # Velocity distribution model for satellites: 'rd_normal', 'NFW' or 'infall'
+  v_infall: 0  # Infall velocity offset, only used if `vel_sat` is 'infall'
+  
+  conformity_bias: false  # Whether to include conformity bias
+  
+  
+  density: 0.0007  # Target galaxy number density
+  vsmear: 0  # Add redshift error by introducing gaussian smearing in km/s (default 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s. 
+#              To use DESI redshift error, set a list with [zmin,zmax] to genereate the vsmear distribution for each tracer.
+
+ELG:
+  Ac: 0.1
+  As: 0.23
+  HOD_model: mHMQ
+  sat_HOD_model: Nsat_pow_law
+  M_0: 11.
+  M_1: 13 
+  Q: 100
+  alpha: 0.6
+  assembly_bias:
+    c:
+    - 0
+    - 0
+  conformity_bias: true
+  density: 0.001
+  f_sigv: 1.25
+  gamma: 8
+  log_Mcent: 11.63
+  pmax: 1
+  satellites: true
+  sigma_M: 0.3
+  vel_sat: rd_normal
+  exp_frac: 0
+  exp_scale: 1 
+  nfw_rescale: 1 
+  v_infall: 0
+  
+QSO:
+  Ac: 1
+  As: 1
+  HOD_model: SHOD
+  sat_HOD_model: Nsat_pow_law
+  M_0: 12.
+  M_1: 13.
+  Q: 100
+  alpha: 0.9
+  assembly_bias:
+    c:
+    - 0
+    - 0
+  conformity_bias: False
+  density: 0.0005
+  f_sigv: 1
+  gamma: 5.57
+  log_Mcent: 12.2
+  pmax: 1
+  satellites: true
+  sigma_M: 0.45
+  vel_sat: rd_normal
+  exp_frac: 0
+  exp_scale: 6.14
+  nfw_rescale: 1
+  v_infall: 1.8
+  vsmear: 0
+
+  
+# Halo catalog and simulation settings
+hcat:
+  boxsize: null  # Simulation box size (to be set if path_to_sim is provided)
+  path_to_sim: null  # Path to halo catalogs
+  path_to_part: null  # Path to particle or subhalos data for satellites sampling
+  mass_cut: null  # Minimum halo mass cut
+  z_simu: 0.95  # Redshift of simulation snapshot
+  Abacus:
+    sim_name: AbacusSummit_highbase_c000_ph100  # Specific to Abacus simulation
+    load_particles: false  # Whether to load particle data
+    halo_lc: False  # Use lightcone halo catalog
+    z_simu: 0.95 # Redshift of Abacus snapshot or list redhsifts from Abacus light cone shells.
+  Pinnochio:
+    dir_sim: null  # Path to Pinocchio simulation
+
+# Two-point correlation function (2PCF) settings
+2PCF_settings:
+  rsd: True  # Use redshift-space distortions
+  bin_logscale: true  # Logarithmic binning in r
+  multipole_index:
+    - 0  # Monopole
+    - 2  # Quadrupole
+  pimax: 40  # Max pi for wp integration
+
+# Global settings
+seed: 10  # Global random seed
+nthreads: 32  # Number of threads to use
+assembly_bias: False  # Global flag to enable assembly bias
+use_particles: false  # Whether to use particle data to sample satellite galaxies
+
+#fitting settings
+fit_param:
+  #Minimizer settings
+  use_desi_data: True 
+  save_fn: results_fit.npy
+  # DESI specific settings. Ignore if use_desi_data is False
+  zmin: 0.8
+  zmax: 1.1
+  dir_data: /global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP
+  region: GCcomb
+  weights_type: pip_angular_bitwise
+  njack: 128
+  nran: 4
+  bin_type: log
+  
+  # if not provided used JK covaraince matrix
+  load_cov_jk: False  # Use JK covariance matrix
+  corr_dir: /global/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/  #root directory to find correlation matrices (to be rescaled by JK variances)
+  nb_mocks: 1883 # Nb of mocks used to compute the covariance
+
+  fit_type: wp+xi # Only wp or xi available at the moment
+
+  priors:  # Prior ranges for HOD parameters for each tracer
+    LRG:
+      M_0: [12.5, 13.5]
+      M_1: [13, 14.5]
+      alpha: [0.5, 1.5]
+      f_sigv: [0.5, 1.5]
+      log_Mcent: [12.4, 13.5]
+      sigma_M: [0.05, 1]
+
+    QSO:
+      M_0: [12.5, 13.5]
+      M_1: [13, 14.5]
+      alpha: [0.5, 1.5]
+      f_sigv: [0.5, 1.5]
+      log_Mcent: [12.4, 13.5]
+      sigma_M: [0.05, 1]
+
+    ELG:
+        As:
+        - 0.01
+        - 0.4
+        log_Mcent:
+        - 11.4
+        - 12.2
+        alpha:
+        - 0.3
+        - 1.5
+        f_sigv:
+        - 0.8
+        - 2.2
+        sigma_M:
+        - 0.05
+        - 1
+        gamma:
+        - 1
+        - 8
+        # exp_scale:
+        # - 0.9
+        # - 10
+        # exp_frac:
+        # - 0
+        # - 1.1
+        # nfw_rescale:
+        # - 0.1
+        # - 2
