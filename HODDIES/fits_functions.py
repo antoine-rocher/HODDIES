@@ -195,9 +195,9 @@ def get_corr_small_boxes(param, tracers, **kwargs):
                 raise FileNotFoundError(f'No {corr_t} measurements at z{param["z_simu"]} for {str_tr}...')
             print(f'Load {corr_t} measurements at z{param["z_simu"]} for {str_tr}...', flush=True)
             if corr_t == 'rppi':
-                res_tr += [[TwoPointCorrelationFunction.load(file)(pimax=param['pimax']) for file in fns]]
+                res_tr += [[TwoPointCorrelationFunction.load(file)[::2][4:-3](pimax=param['pimax']) for file in fns]]
             else:
-                res_tr += [[np.hstack(TwoPointCorrelationFunction.load(file)(ells=param['multipole_index'])) for file in fns]]
+                res_tr += [[np.hstack(TwoPointCorrelationFunction.load(file)[16:-6](ells=param['multipole_index'])) for file in fns]]
         # print(len(glob.glob(f'/global/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/z{param["z_simu"]:.3f}/smu/allcounts_{param["z_simu"]}_AbacusSummit_small_c000_ph*.npy')))
         # return 0
         res += [np.hstack(res_tr)]        
