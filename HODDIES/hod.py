@@ -56,7 +56,7 @@ class HOD:
         """
         
         
-        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), '_default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
+        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
         self.cosmo = None
         self.H_0 = 100 # H_0 is always set to 100 km/s/Mpc
 
@@ -132,7 +132,7 @@ class HOD:
         
         try :
             self._fun_cHOD, self._fun_sHOD = {}, {}
-            for tr in self.args['tracers']:
+            for tr in self._tracers():
                 self._fun_cHOD[tr] = globals()['_'+self.args[tr]['HOD_model']]
                 self._fun_sHOD[tr] = globals()['_'+self.args[tr]['sat_HOD_model']]
         except :
@@ -249,6 +249,13 @@ class HOD:
             hod_param_ab = np.array(list(self.args[tracer]['assembly_bias'].values()), dtype='float64').T
 
         return np.float64(hod_list_param_cen), hod_list_param_sat, hod_param_ab
+
+    
+    def _tracers(self):
+        if isinstance(self.args['tracers'], str):
+            self.args['tracers'] = [self.args['tracers']]
+        return self.args['tracers']
+
 
 
     def get_ds_fac(self, tracer, verbose=False):
@@ -380,7 +387,7 @@ class HOD:
         the corresponding assembly bias columns in the halo catalog.
         """
 
-        ab_proxy = np.unique([[l for l in ll] for ll in [list(self.args[tr]['assembly_bias'].keys()) for tr in self.args['tracers']]])
+        ab_proxy = np.unique([[l for l in ll] for ll in [list(self.args[tr]['assembly_bias'].keys()) for tr in self._tracers()]])
         for ab in ab_proxy:
             self.set_assembly_bias_values(ab)
 
@@ -500,7 +507,7 @@ class HOD:
         start = time.time()
         
         if tracers is None: 
-            tracers = self.args['tracers']
+            tracers = self._tracers()
         else:
             tracers = tracers if isinstance(tracers, list) else [tracers]
         if verbose:
@@ -820,7 +827,7 @@ class HOD:
         """
 
         if tracers is None: 
-            tracers = self.args['tracers'] 
+            tracers = self._tracers()
         tracers = tracers if isinstance(tracers, list) else [tracers]
         
 
@@ -901,7 +908,7 @@ class HOD:
         """
 
         if tracers is None: 
-            tracers = self.args['tracers'] 
+            tracers = self._tracers()
         tracers = tracers if isinstance(tracers, list) else [tracers]
 
         if self.args['2PCF_settings']['edges_rppi'] is None:
@@ -1129,7 +1136,7 @@ class HOD:
 
     
         if tracer is None:
-            tracer=self.args['tracers']
+            tracer=self._tracers()
         else:
             tracer = tracer if isinstance(tracer, list) else [tracer]
         colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red'}
@@ -1190,7 +1197,7 @@ class HOD:
         handles=[]
         
         if tracer is None:
-            tracer=self.args['tracers']
+            tracer=self._tracers()
         else:
             if not isinstance(tracer, list):
                 tracer = [tracer]
@@ -1269,14 +1276,14 @@ class HOD:
         
         name_param_tr = {}
 
-        if not set(self.args['tracers']) == set(self.args['fit_param']['priors'].keys()):
-            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self.args['tracers'], self.args['fit_param']['priors'].keys()))
+        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
+            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
 
-        for tr in self.args['tracers']:
+        for tr in self._tracers():
             name_param_tr[tr] = [x.split(f'_{tr}')[0] for x in name_param if tr in x]
             
         for i, new_p in enumerate(new_params):
-            for tr in self.args['tracers']:
+            for tr in self._tracers():
                 idx = np.where([tr in vv for vv in new_p.dtype.names])[0].tolist()
                 tr_par = list(name_param[i] for i in idx)
 
@@ -1291,7 +1298,7 @@ class HOD:
     def get_param_and_prior(self):
         priors = {}
         priors_array = []
-        for tr in self.args['tracers']:
+        for tr in self._tracers():
             priors[tr] = self.args['fit_param']['priors'][tr].copy()
 
             if 'assembly_bias' in priors[tr].keys():
@@ -1367,8 +1374,8 @@ class HOD:
 
         from .fits_functions import genereate_training_points
 
-        if not set(self.args['tracers']) == set(self.args['fit_param']['priors'].keys()):
-            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self.args['tracers'], self.args['fit_param']['priors'].keys()))
+        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
+            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
         
         name_param, priors_array = self.get_param_and_prior()
 
@@ -1378,7 +1385,7 @@ class HOD:
         if training_points is None:
             training_points = genereate_training_points(self.args['fit_param']['n_calls'], self.args['fit_param']['priors'], sampling_type='lhs', path_to_save_training_point=self.args['fit_param']['path_to_training_point'], rand_seed=None)
             
-        tracers = self.args['tracers']
+        tracers = self._tracers()
                 
         if verbose:
             print(f'Run training sample', flush=True)
@@ -1538,7 +1545,7 @@ class HOD:
         """
 
         priors = self.args['fit_param']['priors']
-        priors_array = np.vstack([list(priors[tr].values()) for tr in self.args['tracers']])
+        priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
         nvar = len(priors_array)
         name_param = training_set.dtype.names[:-2]
         ranges = np.hstack((priors_array, np.mean(priors_array, axis=1).reshape(nvar,-1), np.diff(priors_array, axis=1)))
@@ -1747,7 +1754,7 @@ class HOD:
         dir_output_file= self.args['fit_param']['dir_output_fit']
         fit_name = self.args['fit_param']['fit_name']
         priors = self.args['fit_param']['priors']
-        priors_array = np.vstack([list(priors[tr].values()) for tr in self.args['tracers']])
+        priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
         nvar = len(priors_array)  
         arr_dtype = training_point.dtype
 
@@ -1818,7 +1825,7 @@ class HOD:
                 f.close()
 
             for i, new_p in enumerate(new_params):
-                for tr in self.args['tracers']:
+                for tr in self._tracers():
                     for var in self.args['fit_param']['priors'][tr].keys():
                         self.args[tr][var] = new_p['{}_{}'.format(var, tr)][0]
                     if verbose:
@@ -1826,7 +1833,7 @@ class HOD:
                 
                 time_function_compute_parralel_chi2 = time.time()
                 print(f'Run {nmock} galaxy catalog for iteration {j}', flush=True)
-                cats = [self.make_mock_cat(self.args['tracers'], verbose=False) for jj in range(nmock)]
+                cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmock)]
 
                 print(f'Time to compute {nmock} cats : {time.strftime("%H:%M:%S",time.gmtime(time.time() - time_function_compute_parralel_chi2))}', flush=True)
 
@@ -1835,9 +1842,9 @@ class HOD:
                 print('Run 2PCF...', flush=True)
                 result = {}
                 if 'wp' in self.args['fit_param']["fit_type"]:
-                    result['wp']= [self.get_crosswp(cats[i], tracers=self.args['tracers'], verbose=False) for i in range(nmock)]
+                    result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
                 if 'xi' in self.args['fit_param']["fit_type"]:
-                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self.args['tracers'], verbose=False) for i in range(nmock)]
+                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
                 if verbose:
                     print("#Time to compute 2PCFs =", time.strftime("%H:%M:%S", time.gmtime(time.time()-time_function_compute_parralel_chi2)), flush=True)
                     
@@ -1875,38 +1882,71 @@ class HOD:
         self.args['fit_param']['multipole_index'] = self.args['2PCF_settings']['multipole_index']
         self.args['fit_param']['z_simu'] = self.args['hcat']['z_simu']
         self.args['fit_param'].update(kwargs)
-
+        
         if self.args['fit_param']['use_desi_data']:
-            data_dic = load_desi_data(self.args['fit_param'], self.args['tracers'], load_cov_jk=self.args['fit_param']['load_cov_jk'])
+            data_dic = load_desi_data(self.args['fit_param'], self._tracers(), load_cov_jk=self.args['fit_param']['load_cov_jk'])
 
-            mm = [list(data_dic.keys())[i].endswith(tuple(self.args['tracers'])) for i in range(len(data_dic.keys()))]
+            mm = [list(data_dic.keys())[i].endswith(tuple(self._tracers())) for i in range(len(data_dic.keys()))]
             comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
             data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
             sig_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
-
-            if self.args['fit_param']['load_cov_jk']:
-                inv_cov2 = np.linalg.inv(data_dic['cov_jk'])
-            else:
-                corr = get_corr_small_boxes(self.args['fit_param'], self.args['tracers'])
-                cov = corr*sig_vec*sig_vec[:,None]
-
-                hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
-                inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
 
             if 'wp' in  data_dic['edges'].keys():
                 self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
             if 'xi' in  data_dic['edges'].keys():
                 self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
             if self.args['fit_param']['use_vsmear']:
-                for tr in self.args['tracers']:
+                for tr in self._tracers():
                     print('Apply vsmear for {} at z{}-{}'.format(tr, self.args['fit_param']['zmin'], self.args['fit_param']['zmax']))
                     self.args[tr]['vsmear'] = [self.args['fit_param']['zmin'], self.args['fit_param']['zmax']]
+
+            print('Compute poisson noise...', flush=True)
+            nmock = 50
+            cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmock)]
+
+            result = {}
+            if 'wp' in self.args['fit_param']["fit_type"]:
+                result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
+            if 'xi' in self.args['fit_param']["fit_type"]:
+                result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
+
+            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+
+            comb_trs = result[stats[0]][0].keys() 
+            std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmock)], axis=0)
+            print('Done', flush=True)
+            if self.args['fit_param']['load_cov_jk']:
+                from pycorr import utils
+                std_jk = (np.diag(data_dic['cov_jk']) + std_poisson**2)
+                corr_jk = utils.cov_to_corrcoef(data_dic['cov_jk'])
+                inv_cov2 = np.linalg.inv(corr_jk*std_jk*std_jk[:,None])
+            else:
+                corr = get_corr_small_boxes(self.args['fit_param'], self._tracers())
+                sig_all = (sig_vec**2 + std_poisson**2)
+                cov = corr*sig_all*sig_all[:,None]
+                hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
+                inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+
+                if np.isnan(sig_vec).any():
+                    mask = np.isnan(cov)
+                    cov = np.nan_to_num(cov, nan=1)
+                    inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+                    for i, mm in enumerate(mask):
+                        inv_cov2[i, mm] = 0
+                    data_vec = np.nan_to_num(data_vec, nan=0)
+                    sig_vec = np.nan_to_num(sig_vec, nan=0)
+
 
         if data_vec.size != inv_cov2.diagonal().size:
             raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
 
+        
+
         self.data = data_vec
         self.inv_cov2 = inv_cov2
+        self.sig = sig_vec
+        self.sig_model = std_poisson
+        self.name_params, self.priors = self.get_param_and_prior()
         
     
     def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, minimizer_options={}, **kwargs):
@@ -1922,7 +1962,7 @@ class HOD:
         print('Priors:', *zip(name_param, priors_array))
         if init_params is None:
             init_params = []
-            for tr in self.args['tracers']:
+            for tr in self._tracers():
                 priors_tmp = self.args['fit_param']['priors'][tr].copy()
                 param_ab = []
                 if 'assembly_bias' in priors_tmp.keys():
@@ -1948,12 +1988,13 @@ class HOD:
         
         self.result_fit = res
         if isinstance(self.args['fit_param']['save_fn'], str) & (mpi_rank==0):
+            print('Save fit result to:', self.args['fit_param']['save_fn'], flush=True)
             np.save(self.args['fit_param']['save_fn'], res)
         return res
 
     
 
-    def compute_bf_corr(self, bf_file=None, verbose=False, **kwargs):
+    def compute_bf_corr(self, bf_file=None, verbose=False, fix_seed=None, **kwargs):
 
         from HODDIES.fits_functions import compute_chi2
         name_param, priors_array = self.get_param_and_prior()
@@ -1969,36 +2010,36 @@ class HOD:
         new_params.dtype = [(name, dt) for name, dt in zip(name_param, ['float64']*len(name_param))]
         self.update_new_param(new_params, name_param)
         print('Best fit point:', *zip(name_param, self.result_fit['x']), flush=True)
-        cat = self.make_mock_cat()
+        cat = self.make_mock_cat(fix_seed=fix_seed)
         result = {}
         if 'wp' in self.args['fit_param']["fit_type"]:
-            result['wp'] = self.get_crosswp(cat, tracers=self.args['tracers'], verbose=verbose)
+            result['wp'] = self.get_crosswp(cat, tracers=self._tracers(), verbose=verbose)
         if 'xi' in self.args['fit_param']["fit_type"]:
-            result['xi'] = self.get_cross2PCF(cat, tracers=self.args['tracers'], verbose=verbose)
+            result['xi'] = self.get_cross2PCF(cat, tracers=self._tracers(), verbose=verbose)
 
-        stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
-        res = {}
-        comb_trs = result[stats[0]].keys() 
-        res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][1])for stat in stats]) for comb_tr in comb_trs])
-
+        
         if hasattr(self, 'data'):
+            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+            res = {}
+            comb_trs = result[stats[0]].keys() 
+            res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][1])for stat in stats]) for comb_tr in comb_trs])
             result['chi2'] = compute_chi2(res, self.data, inv_Cov2=self.inv_cov2)
 
         return result
 
 
-    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=1,
-                    max_sig = 5, **kwargs):
+    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=0,
+                     max_sig = 5, fix_seed=None, **kwargs):
 
         from HODDIES.fits_functions import load_desi_data
         from matplotlib.gridspec import GridSpec
         import matplotlib.pyplot as plt
         
         
-        data_dic = load_desi_data(self.args['fit_param'], self.args['tracers'], multipole_index=self.args['2PCF_settings']['multipole_index'], pimax=self.args['2PCF_settings']['pimax'],**kwargs)
+        data_dic = load_desi_data(self.args['fit_param'], self._tracers(), multipole_index=self.args['2PCF_settings']['multipole_index'], pimax=self.args['2PCF_settings']['pimax'],**kwargs)
         self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
         self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
-        result_bf = self.compute_bf_corr(**kwargs)
+        result_bf = self.compute_bf_corr(fix_seed=fix_seed, **kwargs)
         stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
         comb_trs = list(result_bf[stats[0]].keys())
 
@@ -2072,7 +2113,7 @@ class HOD:
                     # Residual plot
 
                     ax_res = fig.add_subplot(gs[ii + 1, col], sharex=ax_main) if new_fig else axes[i_ax+1]
-                    residual = (res - res_m) / sig
+                    residual = (res_m - res) / sig
                     ax_res.axhspan(-2, 2, color='gray', alpha=0.2)
                     ax_res.axhline(0, color='black', linestyle='--')
                     ax_res.plot(sep_data, residual, color=color)
