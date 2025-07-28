@@ -82,8 +82,8 @@ def compute_2PCF(pos1, edges, boxsize, ells=(0, 2), los='z', nthreads=32, R1R2=N
     """    
 
     result = TwoPointCorrelationFunction('smu', edges, 
-                                         data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
-                                         boxsize=boxsize, los=los, nthreads=nthreads, R1R2=R1R2, mpicomm=mpicomm)
+                                            data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
+                                            boxsize=boxsize, los=los, nthreads=nthreads, R1R2=R1R2, mpicomm=mpicomm)
     
     return project_to_multipoles(result, ells=ells)
 
@@ -128,7 +128,7 @@ def compute_wp(pos1, edges, boxsize, pimax=40, los='z', nthreads=32, R1R2=None, 
 
 
 @njit(parallel=True, fastmath=True)
-def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32, ab_arr=None, conformity=False, seed=None):
+def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32, ab_arr=None, conformity=False, link_sat_to_central=False, seed=None):
     """
     Compute the number of central and satellite galaxies in a halo using a HOD (Halo Occupation Distribution) model.
 
@@ -194,9 +194,10 @@ def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32,
                     p_sat[1] -= 0.001
                 else:
                     N_sat[i] = fun_sHOD(log10_Mh[i], p_sat)
-
+                if link_sat_to_central:
+                    N_sat[i] *= Ncent[i]
                 if p_ab is not None:
-                    N_sat[i] *= (1 + np.sum(p_ab[1] * ab_arr[i])*(1-N_sat[i]))
+                    N_sat[i] *= (1 + np.sum(p_ab[1] * ab_arr[i]))
                 if conformity:
                     proba_sat[i] = np.random.poisson(N_sat[i]*cond_cent[i])
                 else :
@@ -347,7 +348,7 @@ def rd_draw_NFW(nPoints, burn_in=100000):
 
 
 @njit(parallel=True, fastmath=True)
-def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, conformity=False):
+def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, conformity=False, link_sat_to_central=False):
     """
     Compute total number of galaxies and satellite fraction from a given HOD parameter set.
 
@@ -392,7 +393,7 @@ def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, confo
                 else:
                     N_sat = fun_sHOD(LogM, p_sat)
                 ngal_c += (nbinsM[i]/dM * Ncent*dM)
-                ngal_sat += (nbinsM[i]/dM * Ncent*N_sat*dM) if conformity else (nbinsM[i]/dM * N_sat*dM)
+                ngal_sat += (nbinsM[i]/dM * Ncent*N_sat*dM) if conformity | link_sat_to_central else (nbinsM[i]/dM * N_sat*dM)
         ngal_tot = ngal_c+ngal_sat
         return ngal_tot, ngal_sat/ngal_tot
     else : 
