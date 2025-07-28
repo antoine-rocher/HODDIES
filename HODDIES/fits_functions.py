@@ -213,7 +213,7 @@ def load_desi_data(fit_param, tracers, **kwargs):
     from pycorr import TwoPointCorrelationFunction
     
     fit_param.update(kwargs)
-    if 'ELG' in tracers:
+    if ('ELG' in tracers) & ~('EDA' in fit_param['dir_data']) :
         tracers[tracers.index('ELG')] = 'ELG_LOPnotqso'
     
     com_tr = np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
