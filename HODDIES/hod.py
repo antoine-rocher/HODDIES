@@ -55,8 +55,8 @@ class HOD:
 
         """
         
-        
-        self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
+        # self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
+        self.args = self._get_default_parameters()
         self.cosmo = None
         self.H_0 = 100 # H_0 is always set to 100 km/s/Mpc
 
@@ -69,8 +69,21 @@ class HOD:
             return d
         
         new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else args if args is not None else self.args
+        # if new_args['fit_param'].get('priors') is not None:
+        #     self.args['fit_param'].pop('priors')
+        # if kwargs.get('fit_param') is not None:
+        #     if kwargs['fit_param'].get('priors') is not None:
+        #         self.args['fit_param'].pop('priors')
+
         update_dic(self.args, new_args)
         update_dic(self.args, kwargs)
+        
+        # if 'tracers' not in self.args:
+        #     raise(ValueError('need to provide tracer names'))
+
+        self._initialize_tracer_params(self.args['tracers'])
+        self._initialize_fit_params(self.args['tracers'])
+
         self.boxsize = self.args['hcat']['boxsize']
 
         self.args['nthreads'] = min(numba.get_num_threads(), self.args['nthreads'])
@@ -128,7 +141,7 @@ class HOD:
         if 'c' not in self.hcat.columns():
             print('Concentration column "c" is not provided. The concentration is computed from colossus package using mass-concentration relation of {} with {} as mass definition'.format(self.args['cm_relation'], self.args['mass_def']), flush=True)
             from pinnochio_io import get_concentration
-            self.hcat['c'] = get_concentration(self.hcat['Mvir'], cosmo=self.cosmo, mdef=self.args['mass_def'], cmrelation=self.args['cm_relation'])
+            self.hcat['c'] = get_concentration(self.hcat['Mh'], cosmo=self.cosmo, mdef=self.args['mass_def'], cmrelation=self.args['cm_relation'], z=self.args['hcat']['z_simu'])
         
         try :
             self._fun_cHOD, self._fun_sHOD = {}, {}
@@ -143,6 +156,157 @@ class HOD:
         if self.args['assembly_bias']:
             self._compute_assembly_bias_columns()
         self.rng = np.random.RandomState(seed=self.args['seed'])
+
+    def _initialize_tracer_params(self, tracer):
+        """
+        Initializes HOD parameters for one or more tracers in-place,
+        using the default LRG parameters as a template.
+
+        This function sets the default HOD parameters for the given tracer(s)
+        by updating the main `self.args` dictionary. If a tracer's configuration
+        does not exist in `self.args`, it will be created.
+
+        Parameters
+        ----------
+        tracer : str or list of str
+            The name(s) of the tracer(s) to initialize.
+
+        Raises
+        ------
+        TypeError
+            If the tracer is not a string or a list of strings, or if elements
+            in the list are not strings.
+        """
+        
+        tracer_templates = {
+            'LRG': {
+                'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 12.75, 'sigma_M': 0.5, 'gamma': 1, 'pmax': 1, 'Q': 100,
+                'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 12.5, 'M_1': 13.5, 'alpha': 1,
+                'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
+                'assembly_bias': {'c': [0, 0], 'env': [0, 0]},
+                'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
+                'density': 0.0007, 'vsmear': 0
+            },
+            'ELG': {
+                'HOD_model': 'mHMQ', 'Ac': 0.05, 'log_Mcent': 11.63, 'sigma_M': 0.12, 'gamma':2, 'pmax': 1, 'Q': 100,
+                'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 0.11, 'M_0': 11.63, 'M_1': 11.7, 'alpha': 0.6,
+                'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
+                'assembly_bias': {'c': [0, 0]},
+                'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
+                'density': 0.001, 'vsmear': 0
+            },
+            'QSO': {
+                'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 13.25, 'sigma_M': 0.6, 'gamma': 1, 'pmax': 1, 'Q': 100,
+                'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 13.25, 'M_1': 14.25, 'alpha': 1.3,
+                'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
+                'assembly_bias': {'c': [0, 0], 'env': [0, 0]},
+                'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
+                'density': 0.0001, 'vsmear': 100
+            }
+        }
+        
+        tracers = tracer
+        if isinstance(tracer, str):
+            tracers = [tracer]
+
+        if not isinstance(tracers, list) or not all(isinstance(t, str) for t in tracers):
+            raise TypeError(f"Tracer must be a string or a list of strings, but got {type(tracer)}")
+
+        for t in tracers:
+            if t not in self.args:
+                self.args[t] = {}
+            
+            template = tracer_templates.get(t, tracer_templates['LRG'])
+            
+            # Create a copy to avoid modifying the template dictionary
+            params_to_set = template.copy()
+            
+            # Update with existing values to preserve them
+            params_to_set.update(self.args[t])
+            
+            # Set the merged parameters
+            self.args[t] = params_to_set
+
+    def _initialize_fit_params(self, tracer):
+        """
+        Initializes HOD fit parameters for one or more tracers in-place.
+        """
+        fit_param_template = {
+            'nb_real': 20, 'fit_name': 'myhodfit', 'path_to_training_point': None, 'dir_output_fit': 'path_to_save_fit_outputs',
+            'fit_type': 'wp+xi', 'generate_training_sample': True, 'sampling_type': 'Hammersley',
+            'N_trainning_points': 800, 'seed_trainning': 18, 'n_calls': 800, 'logchi2': True,
+            'sampler': 'emcee', 'n_iter': 10000, 'nwalkers': 20, 'func_aq': 'EI',
+            'length_scale_bounds': [0.001, 10], 'length_scale': False, 'kernel_gp': 'Matern_52',
+            'save_fn': 'results_fit.npy', 'use_desi_data': True, 'zmin': 0.8, 'zmax': 1.1,
+            'dir_data': '/global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP', 'region': 'GCcomb',
+            'weights_type': 'pip_angular_bitwise', 'njack': 128, 'nran': 4, 'bin_type': 'log',
+            'load_cov_jk': False, 'corr_dir': '/global/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/',
+            'nb_mocks': 1883,
+            'priors': {}
+        }
+
+        priors_templates = {
+            'LRG': {
+                'M_0': [12.5, 13.5], 'M_1': [13, 14.5], 'alpha': [0.5, 1.5], 'f_sigv': [0.5, 1.5],
+                'log_Mcent': [12.4, 13.5], 'sigma_M': [0.05, 1]
+            },
+            'ELG': {
+                'M_0': [11.0, 12.5], 'M_1': [11.0, 12.5], 'alpha': [0.3, 1.2], 'f_sigv': [0.5, 1.5],
+                'log_Mcent': [11.0, 12.5], 'sigma_M': [0.05, 0.5]
+            },
+            'QSO': {
+                'M_0': [12.5, 14.0], 'M_1': [13.5, 15.0], 'alpha': [0.8, 1.8], 'f_sigv': [0.5, 1.5],
+                'log_Mcent': [12.5, 14.0], 'sigma_M': [0.2, 1.0]
+            }
+        }
+        
+
+        if 'fit_param' not in self.args:
+            self.args['fit_param'] = {}
+        
+        params_to_set = fit_param_template.copy()
+        params_to_set.update(self.args['fit_param'])
+        self.args['fit_param'] = params_to_set
+        
+        tracers = tracer
+        if isinstance(tracer, str):
+            tracers = [tracer]
+        
+        for t in tracers:
+            if t not in self.args['fit_param']['priors']:
+                # a default prior is assigned if the tracer is not defined
+                template = priors_templates.get(t, priors_templates['LRG'])
+                self.args['fit_param']['priors'][t] = template.copy()
+
+    def _get_default_parameters(self):
+        """
+        Returns a dictionary with the default HOD and analysis parameters.
+        """
+        default_params = {
+            'tracers': None,
+
+            'hcat': {
+                'boxsize': None, 'path_to_sim': None, 'path_to_part': None, 'mass_cut': None, 'z_simu': 0.95,
+                'Abacus': {'sim_name': 'AbacusSummit_highbase_c000_ph100', 'load_particles': False, 'halo_lc': False, 'z_simu': 0.95},
+                'Pinnochio': {'dir_sim': None}
+            },
+            '2PCF_settings': {
+                'rsd': True, 'bin_logscale': True, 'mu_max': 1, 'n_mu_bins': 101, 'multipole_index': [0, 2],
+                'n_r_bins': 25, 'n_rp_bins': 25, 'rmax': 30, 'rmin': 0.01, 'rp_max': 30, 'rp_min': 0.01,
+                'edges_rppi': None, 'edges_smu': None, 'los': 'z', 'pimax': 40
+            },
+
+            'cosmo': {
+                'fiducial_cosmo': None, 'engine': 'class', 'h': None, 'Omega_m': None, 'Omega_cdm': None,
+                'Omega_L': None, 'Omega_b': None, 'sigma_8': None, 'n_s': None, 'w0_fdl': None, 'wa_fdl': None
+            },
+
+            'seed': None, 'nthreads': 32, 'cm_relation': 'diemer19', 'mass_def': '200c',
+            'assembly_bias': False, 'use_particles': False,
+
+        }
+        return default_params
+
 
     def init_cosmology(self):
         """
@@ -319,7 +483,7 @@ class HOD:
         start = time.time()
         hod_list_param_cen, hod_list_param_sat, _ = self.__init_hod_param(tracer)
         ngal, fsat = compute_ngal(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], self.args['nthreads'], 
-                                hod_list_param_cen, hod_list_param_sat, self.args[tracer]['conformity_bias'])
+                                hod_list_param_cen, hod_list_param_sat, self.args[tracer]['conformity_bias'], self.args[tracer]['link_sat_to_central'])
         if verbose:
             print(time.time()-start)
         return ngal, fsat   
@@ -442,7 +606,7 @@ class HOD:
         if col not in self.hcat.columns():
             raise ValueError(f'{col} not in halo catalog columns')
         
-        print(f'Set value for assembly bias according {col}...', flush=True)
+        print(f'Set value for assembly bias according to {col}...', flush=True)
         
         nb, mbins = np.histogram(self.hcat['log10_Mh'], bins=bins)
         self.hcat[f'ab_{col}'] = np.zeros_like(self.hcat['log10_Mh'])
@@ -552,7 +716,7 @@ class HOD:
                 hod_list_ab_param, ab_arr = None, None
 
             cent, sat, cond_cent, proba_sat = compute_N(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], hod_list_param_cen, hod_list_param_sat, hod_list_ab_param,
-                                                            self.args['nthreads'], ab_arr, self.args[tracer]['conformity_bias'], seed)
+                                                            self.args['nthreads'], ab_arr, self.args[tracer]['conformity_bias'], self.args[tracer]['link_sat_to_central'], seed)
 
             mask_cent = cond_cent == 1
             Nb_sat = proba_sat.sum()
@@ -1874,9 +2038,12 @@ class HOD:
                 print(f'Iteration {j} done, took {time.strftime("%H:%M:%S",time.gmtime(time.time()-time_compute_mcmc))}', flush=True)
 
     
-    def initialize_fit(self, data_vec=None, inv_cov2=None, **kwargs):
+    def initialize_fit(self, data_vec=None, inv_cov2=None, add_poisson_noise=True, nmocks_std=20, **kwargs):
 
         from .fits_functions import load_desi_data, get_corr_small_boxes
+
+        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
+            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
 
         self.args['fit_param']['pimax'] = self.args['2PCF_settings']['pimax']
         self.args['fit_param']['multipole_index'] = self.args['2PCF_settings']['multipole_index']
@@ -1900,29 +2067,33 @@ class HOD:
                     print('Apply vsmear for {} at z{}-{}'.format(tr, self.args['fit_param']['zmin'], self.args['fit_param']['zmax']))
                     self.args[tr]['vsmear'] = [self.args['fit_param']['zmin'], self.args['fit_param']['zmax']]
 
-            print('Compute poisson noise...', flush=True)
-            nmock = 50
-            cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmock)]
+            if add_poisson_noise:
+                print('Compute poisson noise...', flush=True)
 
-            result = {}
-            if 'wp' in self.args['fit_param']["fit_type"]:
-                result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
-            if 'xi' in self.args['fit_param']["fit_type"]:
-                result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
+                cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
 
-            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+                result = {}
+                if 'wp' in self.args['fit_param']["fit_type"]:
+                    result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+                if 'xi' in self.args['fit_param']["fit_type"]:
+                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
 
-            comb_trs = result[stats[0]][0].keys() 
-            std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmock)], axis=0)
-            print('Done', flush=True)
+                stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+
+                comb_trs = result[stats[0]][0].keys() 
+                std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
+                print('Done', flush=True)
+            else: 
+                std_poisson = np.zeros_like(sig_vec)
+
             if self.args['fit_param']['load_cov_jk']:
                 from pycorr import utils
-                std_jk = (np.diag(data_dic['cov_jk']) + std_poisson**2)
+                std_2 = np.sqrt(np.diag(data_dic['cov_jk']) + std_poisson**2)
                 corr_jk = utils.cov_to_corrcoef(data_dic['cov_jk'])
-                inv_cov2 = np.linalg.inv(corr_jk*std_jk*std_jk[:,None])
+                inv_cov2 = np.linalg.inv(corr_jk*std_2*std_2[:,None])
             else:
                 corr = get_corr_small_boxes(self.args['fit_param'], self._tracers())
-                sig_all = (sig_vec**2 + std_poisson**2)
+                sig_all = np.sqrt(sig_vec**2 + std_poisson**2)
                 cov = corr*sig_all*sig_all[:,None]
                 hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
                 inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
