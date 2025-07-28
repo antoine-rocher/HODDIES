@@ -19,6 +19,7 @@ LRG: # Name of tracer 1
   # Parameters for the satellite HOD model
   satellites: true  # Whether satellites are included
   sat_HOD_model: Nsat_pow_law  # Satellite galaxy HOD model 
+  link_sat_to_central: False # Wheter to multiply the mean satellite number Nsat by the central mean number Ncen (often use for LRG)  
   As: 1  # Normalization amplitude for satellite distribution
   M_0: 12.5  # Minimum halo mass for satellites
   M_1: 13.5  # Characteristic mass for satellites
@@ -182,12 +183,12 @@ fit_param:
   fit_type: wp+xi # Only wp or xi available at the moment
 
   # Prior ranges for HOD parameters for each tracer
-  # priors:  
+  priors:  
     # Example of prior ranges for LRG 
-    # LRG:
-    #   M_0: [12.5, 13.5]
-    #   M_1: [13, 14.5]
-    #   alpha: [0.5, 1.5]
-    #   f_sigv: [0.5, 1.5]
-    #   log_Mcent: [12.4, 13.5]
-    #   sigma_M: [0.05, 1]
+    LRG:
+      M_0: [12.5, 13.5]
+      M_1: [13, 14.5] 
+      alpha: [0.5, 1.5]
+      f_sigv: [0.5, 1.5]
+      log_Mcent: [12.4, 13.5]
+      sigma_M: [0.05, 1]
