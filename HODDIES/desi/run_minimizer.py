@@ -23,28 +23,42 @@ def get_HOD_model_name(args):
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dir_param_file', help='path to param file', type=str)
+parser.add_argument('--region', help='regions; choice NGC, SGC or GC_comb; default:GC_comb', type=str, nargs='*', choices=['NGC', 'SGC', 'GC_comb'], default='GC_comb')
+parser.add_argument('--zsim', help='zsnap', type=float)
+
+args = parser.parse_args()
 # parser.add_argument('--path_to_save_result', help='path to save fit results', type=str, default=None)
 
 args = parser.parse_args()
 
-HOD_obj= HOD(param_file=args.dir_param_file, path_to_abacus_sim='/global/cfs/cdirs/desi/cosmosim/Abacus')
+import yaml
+
+args_hod = yaml.load(open(args.dir_param_file, 'r'), Loader=yaml.FullLoader)  
+
+args_hod['hcat']['Abacus']['z_simu'] = args.zsim
+args_hod['fit_param']['zmin'], args_hod['fit_param']['zmax'] = [0.8,1.1] if args.zsim == 0.95 else [1.1,1.4] if args.zsim == 1.25 else [1.4,1.7] if args.zsim == 1.55 else [1.7,2.1]
+
+print('Run minimizer', flush=True)
+
+HOD_obj= HOD(args=args_hod, path_to_abacus_sim='/global/cfs/cdirs/desi/cosmosim/Abacus')
 
 mpi_comm = MPI.COMM_WORLD
 mpi_rank = mpi_comm.Get_rank()
 
-
 model_name = get_HOD_model_name(HOD_obj.args)
-save_fn= f"desi/fit_result_{model_name}_{HOD_obj.args['hcat']['sim_name']}_z{HOD_obj.args['hcat']['z_simu']}_{HOD_obj.args['fit_param']['fit_type']}.npy"
+save_fn= f"/global/homes/a/arocher/Code/postdoc/HOD/Dev/HODDIES/HODDIES/desi/fit_result_{model_name}_{HOD_obj.args['hcat']['sim_name']}_z{HOD_obj.args['hcat']['z_simu']}_{HOD_obj.args['fit_param']['fit_type']}.npy"
+print(save_fn, flush=True)
+minimizer_options = {"maxiter":5, "popsize":1000, 'xtol':1e-2, 'workers':mpi_comm.Get_size(),  'backend':'mpi'}
 
-minimizer_options = {"maxiter":200, "popsize": 100, 'xtol':1e-6, 'workers':mpi_comm.Get_size(),  'backend':'mpi'}
-
-init_params = np.load(save_fn, allow_pickle=True).item()['x']
+# init_params = np.load(save_fn, allow_pickle=True).item()['x']
+init_params = None  
 res = HOD_obj.run_minimizer(init_params=init_params, minimizer_options=minimizer_options, save_fn=save_fn, mpi_comm=mpi_comm)
-        
+print(f"Rank {mpi_rank} finished minimization with result: {res}", flush=True)
+
 if mpi_rank==0:
     from pathlib import Path
-    save_fn_fig = Path(save_fn)
-    save_fn_fig.rename(save_fn_fig.with_suffix('.png'))
-    fig = HOD_obj.plot_bf_data(save=save_fn_fig)
+    save_fn_fig = save_fn[:-3] + 'png'
+    # save_fn_fig.rename(save_fn_fig.with_suffix('.png'))
+    fig = HOD_obj.plot_bf_data(save=save_fn_fig, fix_seed=10)
     print(res, MPI.Wtime()/60, flush=True)
 
