@@ -240,7 +240,7 @@ class HOD:
             'save_fn': 'results_fit.npy', 'use_desi_data': True, 'zmin': 0.8, 'zmax': 1.1,
             'dir_data': '/global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP', 'region': 'GCcomb',
             'weights_type': 'pip_angular_bitwise', 'njack': 128, 'nran': 4, 'bin_type': 'log',
-            'load_cov_jk': False, 'corr_dir': '/global/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/',
+            'load_cov_jk': False, 'corr_dir': '/dvs_ro/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/',
             'nb_mocks': 1883,
             'priors': {}
         }
@@ -692,12 +692,12 @@ class HOD:
             
             if self.args[tracer]['satellites']:
                 ds = self.get_ds_fac(tracer, verbose=verbose)
-                if (hod_list_param_cen[0]*ds > 1) or (hod_list_param_cen[0]*ds > 1):
+                if (hod_list_param_cen[0]*ds > 1):
                     import warnings
-                    warnings.warn(f'Ac={hod_list_param_cen[0]} or As={hod_list_param_cen[0]} is > 1, the density is not fixed to {self.args[tracer]["density"]}')
+                    warnings.warn(f'Ac={hod_list_param_cen[0]} is > 1, the density is not fixed to {self.args[tracer]["density"]}')
                 else : 
                     hod_list_param_cen[0] *= ds
-                    hod_list_param_sat[0] *= ds
+                    hod_list_param_sat[0] *= 1 if self.args[tracer]['link_sat_to_central'] else ds
 
             if fix_seed is not None:
                 seed = rng.randint(0, 4294967295, self.args['nthreads'])
@@ -1382,11 +1382,58 @@ class HOD:
             handles +=[mlines.Line2D([], [], color='gray', label='inital HMF', ls='-')]
 
         plt.yscale('log')
-        plt.ylabel('$N_{gal}$')
+        plt.ylabel(r'd$N$/d$M_{h}$ [$h$/Mpc$^3$]')
         plt.xlabel('$\log(M_h\ [M_{\odot}])$')
         plt.legend(handles=handles, loc='upper right')
         plt.tight_layout()
         plt.show()
+
+    def plot_initial_HMF(self, save_fn=None, show=False):
+        """
+        Plot the inital Halo Mass Function (HMF) from the halo catalog.
+
+        This function generates a plot of the Halo Mass Function (HMF) using the halo mass values (`log10_Mh`) 
+        from the provided catalog(s). The plot can optionally include histograms for central and satellite galaxies,
+        and can display an initial HMF for comparison.
+
+        Parameters
+        ----------        
+        range : tuple, optional
+            The range for the satellite galaxy histogram. Default is (10.8, 15).
+        
+        Returns
+        -------
+        None
+            The function generates and displays the plot but does not return any value.
+        
+        Notes
+        -----
+        - The function uses different colors for each tracer: 'ELG' (deepskyblue), 'QSO' (seagreen), and 'LRG' (red).
+        - For satellite galaxies, the histograms are plotted with different line styles (`--` for centrals, `:` for satellites).
+        - The initial HMF (if provided) is plotted using a gray color.
+        - The y-axis is displayed on a logarithmic scale, and the x-axis represents the logarithm of the halo mass in solar masses.
+
+        Example
+        -------
+        plot_HMF()  # Plot HMF for the 'ELG' tracer with satellite galaxies.
+        """
+        import matplotlib.lines as mlines
+        import matplotlib.pyplot as plt
+
+        handles=[]
+        
+        plt.hist(self.hcat['log10_Mh'], histtype='step', bins=100, color='gray')
+        handles +=[mlines.Line2D([], [], color='gray', label='inital HMF', ls='-')]
+
+        plt.yscale('log')
+        plt.ylabel('$N_{h}$')
+        plt.xlabel('$\log(M_h\ [M_{\odot}])$')
+        plt.legend(handles=handles, loc='upper right')
+        plt.tight_layout()
+        if save_fn is not None: 
+            plt.savefig(save_fn)
+        if show: 
+            plt.show()
 
     @staticmethod
     def downsample_mock_cat(cat, ds_fac=0.1, mask=None):
@@ -2038,9 +2085,10 @@ class HOD:
                 print(f'Iteration {j} done, took {time.strftime("%H:%M:%S",time.gmtime(time.time()-time_compute_mcmc))}', flush=True)
 
     
-    def initialize_fit(self, data_vec=None, inv_cov2=None, add_poisson_noise=True, nmocks_std=20, **kwargs):
+    def initialize_fit(self, data_vec=None, inv_cov2=None, add_poisson_noise=True, nmocks_std=20, hartlap_fac=0, **kwargs):
 
         from .fits_functions import load_desi_data, get_corr_small_boxes
+        from pycorr import utils
 
         if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
             raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
@@ -2087,7 +2135,6 @@ class HOD:
                 std_poisson = np.zeros_like(sig_vec)
 
             if self.args['fit_param']['load_cov_jk']:
-                from pycorr import utils
                 std_2 = np.sqrt(np.diag(data_dic['cov_jk']) + std_poisson**2)
                 corr_jk = utils.cov_to_corrcoef(data_dic['cov_jk'])
                 inv_cov2 = np.linalg.inv(corr_jk*std_2*std_2[:,None])
@@ -2106,12 +2153,50 @@ class HOD:
                         inv_cov2[i, mm] = 0
                     data_vec = np.nan_to_num(data_vec, nan=0)
                     sig_vec = np.nan_to_num(sig_vec, nan=0)
+            self.data = data_vec
+            self.inv_cov2 = inv_cov2
+            self.sig = sig_vec
+            self.sig_model = std_poisson
+            self.name_params, self.priors = self.get_param_and_prior()
+            return 0
+
+        elif add_poisson_noise:
+            print('Compute poisson noise...', flush=True)
+
+            cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
+
+            result = {}
+            if 'wp' in self.args['fit_param']["fit_type"]:
+                result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+            if 'xi' in self.args['fit_param']["fit_type"]:
+                result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+
+            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+
+            comb_trs = result[stats[0]][0].keys() 
+            std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
+            print('Done', flush=True)
+            
+        else:
+            std_poisson = 0
 
 
+        mask = inv_cov2.diagonal() == 0
+        if mask.sum() != 0:
+            idx = mask.sum()
+            cov_re = np.linalg.inv(inv_cov2[idx:,idx:])
+            sig2 = np.zeros_like(inv_cov2.diagonal())
+            sig2[idx:] = cov_re.diagonal()
+            sig_vec = np.sqrt(sig2)
+            sig_all = np.sqrt(sig_vec**2 + std_poisson**2)
+            # Manque add poisson noise to cov +hartlap
+        else:
+            sig_vec = np.sqrt((np.linalg.inv(inv_cov2).diagonal()))
+
+        sig_all = np.sqrt(sig2**2 + std_poisson**2)
         if data_vec.size != inv_cov2.diagonal().size:
             raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
 
-        
 
         self.data = data_vec
         self.inv_cov2 = inv_cov2
