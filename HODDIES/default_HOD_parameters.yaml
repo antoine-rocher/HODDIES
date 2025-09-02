@@ -83,7 +83,7 @@ hcat:
   boxsize: null  # Simulation box size (to be set if path_to_sim is provided)
   path_to_sim: null  # Path to halo catalogs
   path_to_part: null  # Path to particle or subhalos data for satellites sampling
-  mass_cut: null  # Minimum halo mass cut
+  mass_cut: null  # Minimum halo mass cut in log10(Msun/h) e.g. 12 to cut M < 10**12
   z_simu: 0.95  # Redshift of simulation snapshot
   Abacus:
     sim_name: AbacusSummit_highbase_c000_ph100  # Specific to Abacus simulation
@@ -115,6 +115,7 @@ hcat:
 
 # Cosmology settings using Cosmoprimo API
 # H_0 is fixed at 100, h values is not used for distance computation
+# If AbacusSummit simulation is used the cosmology is automatically set for the simulation box
 cosmo:
   fiducial_cosmo: null  # Name of predefined cosmology (e.g., Planck2018FullFlatLCDM)
   engine: class  # Use CLASS backend for cosmology computations
@@ -133,7 +134,7 @@ seed: null  # Global random seed
 nthreads: 32  # Number of threads to use
 cm_relation: diemer19  # Concentration-mass relation model from colossus (used for pinnochio halos, https://bdiemer.bitbucket.io/colossus/index.html)
 mass_def: 200c  # Halo mass definition for colossus (e.g., 200 times critical density)
-assembly_bias: False  # Global flag to enable assembly bias
+use_assembly_bias: False  # Global flag to enable assembly bias
 use_particles: false  # Whether to use particle data to sample satellite galaxies
 
 #fitting settings
@@ -168,7 +169,7 @@ fit_param:
   # DESI specific settings. Ignore if use_desi_data is False
   zmin: 0.8
   zmax: 1.1
-  dir_data: /global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP
+  dir_data: /global/homes/a/arocher/users_arocher/Y3/loa-v1/v2/PIP/cosmo_0
   region: GCcomb
   weights_type: pip_angular_bitwise
   njack: 128

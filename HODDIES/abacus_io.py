@@ -71,7 +71,7 @@ def load_CompaSO(path_to_sim, usecols, mass_cut=None, halo_lc=False, use_particl
     usecols : list of str
         Fields to load from the catalog.
     mass_cut : float, optional
-        Minimum halo mass threshold (in Msun/h). Halos with smaller mass are excluded.
+        Minimum halo mass threshold in log10(Msun/h). Halos with smaller mass are excluded.
     halo_lc : bool, optional
         If True, load halo light cone catalogs from multiple redshifts.
     use_particles : bool, optional
@@ -104,7 +104,7 @@ def load_CompaSO(path_to_sim, usecols, mass_cut=None, halo_lc=False, use_particl
     
     part_subsamples = hcat.subsamples if use_particles else None
     n_p = 'N' if not halo_lc else 'N_interp'
-    N = mass_cut/header['ParticleMassHMsun'] if mass_cut is not None else 0
+    N = 10**mass_cut/header['ParticleMassHMsun'] if mass_cut is not None else 0
 
     return hcat_i[hcat_i[n_p] > N], header, part_subsamples
 
