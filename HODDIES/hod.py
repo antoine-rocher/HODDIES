@@ -153,7 +153,7 @@ class HOD:
             help(HOD_models)
             raise ValueError('{} not implemented in HOD models'.format(self.args['HOD_param']['HOD_model']))
                 
-        if self.args['assembly_bias']:
+        if self.args['use_assembly_bias']:
             self._compute_assembly_bias_columns()
         self.rng = np.random.RandomState(seed=self.args['seed'])
 
@@ -302,7 +302,7 @@ class HOD:
             },
 
             'seed': None, 'nthreads': 32, 'cm_relation': 'diemer19', 'mass_def': '200c',
-            'assembly_bias': False, 'use_particles': False,
+            'use_assembly_bias': False, 'use_particles': False,
 
         }
         return default_params
@@ -409,7 +409,7 @@ class HOD:
         if self.args[tracer]['satellites']:
             hod_list_param_sat = np.array([self.args[tracer]['As'], self.args[tracer]['M_0'], self.args[tracer]['M_1'], self.args[tracer]['alpha']], dtype='float64')
 
-        if self.args[tracer]['assembly_bias']:
+        if self.args['use_assembly_bias']:
             hod_param_ab = np.array(list(self.args[tracer]['assembly_bias'].values()), dtype='float64').T
 
         return np.float64(hod_list_param_cen), hod_list_param_sat, hod_param_ab
@@ -607,21 +607,10 @@ class HOD:
             raise ValueError(f'{col} not in halo catalog columns')
         
         print(f'Set value for assembly bias according to {col}...', flush=True)
+
+        self.hcat[f'ab_{col}'] = initialize_assembly_bias_value(self.hcat['log10_Mh'], self.hcat[col])
         
-        nb, mbins = np.histogram(self.hcat['log10_Mh'], bins=bins)
-        self.hcat[f'ab_{col}'] = np.zeros_like(self.hcat['log10_Mh'])
-        mask_bin_hcat = [(self.hcat['log10_Mh'] > b_inf-1e-6) &  (self.hcat['log10_Mh'] <= b_sup) for b_inf, b_sup in zip(mbins[:-1], mbins[1:])]
-        idx_sort_mbins = []
-        i = 1
-        for mask in mask_bin_hcat:
-            hcat_bin = self.hcat[mask]
-            f_c = np.zeros_like(hcat_bin['log10_Mh'])
-            idx_sort_mbins += [np.argsort(hcat_bin[col])[::-1]]
-            np.put(f_c, idx_sort_mbins[-1], np.linspace(-0.5, 0.5, len(hcat_bin[col])))
-            self.hcat[f'ab_{col}'][mask] = f_c
-            if i % 10 == 0:
-                print(f'{i*2}% done...', flush=True)
-            i += 1
+        print(f'Done !', flush=True)
 
     def make_mock_cat(self, tracers=None, fix_seed=None, verbose=True):
         """
@@ -677,7 +666,7 @@ class HOD:
         if verbose:
             print('Create mock catalog for {}'.format(tracers), flush=True)         
         
-        if self.args['assembly_bias']:
+        if self.args['use_assembly_bias']:
             self._compute_assembly_bias_columns()
 
         final_cat = {}
@@ -694,7 +683,7 @@ class HOD:
                 ds = self.get_ds_fac(tracer, verbose=verbose)
                 if (hod_list_param_cen[0]*ds > 1):
                     import warnings
-                    warnings.warn(f'Ac={hod_list_param_cen[0]} is > 1, the density is not fixed to {self.args[tracer]["density"]}')
+                    warnings.warn('Ac={} is > 1, the density is not fixed to {}'.format(hod_list_param_cen[0]*ds, self.args[tracer]["density"]))
                 else : 
                     hod_list_param_cen[0] *= ds
                     hod_list_param_sat[0] *= 1 if self.args[tracer]['link_sat_to_central'] else ds
@@ -704,7 +693,7 @@ class HOD:
             else:
                 seed = None
             
-            if self.args['assembly_bias'] & (hod_list_ab_param is not None):
+            if self.args['use_assembly_bias'] & (hod_list_ab_param is not None):
                 cols_ab =  ['ab_'+col for col in self.args[tracer]['assembly_bias'].keys()]
                 if np.all([col in self.hcat.columns() for col in cols_ab]):
                     ab_arr =  np.vstack([self.hcat[col] for col in cols_ab]).T
@@ -1501,7 +1490,7 @@ class HOD:
                 self.args[tr].update(dict(zip(name_param_tr[tr], new_p[tr_par][0])))
                 if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys():
                     for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
-                        self.args[tr]['assembly_bias'][var] = [new_p[f'ab_{var}_cen_{tr}'], new_p[f'ab_{var}_sat_{tr}']]
+                        self.args[tr]['assembly_bias'][var] = [new_p[f'ab_{var}_cen_{tr}'][0], new_p[f'ab_{var}_sat_{tr}'][0]]
                 if verbose:
                     print(f"# {tr} {[(var, self.args[tr][var]) for var in self.args['fit_param']['priors'][tr].keys()]}", flush=True)
 
@@ -2284,8 +2273,7 @@ class HOD:
         return result
 
 
-    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=0,
-                     max_sig = 5, fix_seed=None, **kwargs):
+    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=0, max_sig = 5, fix_seed=None, add_no_vsmear=False, **kwargs):
 
         from HODDIES.fits_functions import load_desi_data
         from matplotlib.gridspec import GridSpec
@@ -2299,6 +2287,16 @@ class HOD:
         stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
         comb_trs = list(result_bf[stats[0]].keys())
 
+        if add_no_vsmear and self.args['fit_param']['use_vsmear']:
+            tmp_vsmear = []
+            for tr in self._tracers():
+                tmp_vsmear += [self.args[tr]['vsmear']]
+                self.args[tr]['vsmear'] = 0
+            result_bf_no_vsmear = self.compute_bf_corr(fix_seed=fix_seed, add_no_vsmear**kwargs)
+            for ii,tr in enumerate(self._tracers()):
+                self.args[tr]['vsmear'] = tmp_vsmear[ii]
+        else:
+            result_bf_no_vsmear = None
         nb_tracers = len(comb_trs)
         ncols = len(data_dic[comb_trs[0]].keys())            
 
@@ -2337,6 +2335,8 @@ class HOD:
                 
                 sep_data, res_data, sig_data = data_dic[trs][corr]
                 sep_m, res_model = result_bf[corr][trs]
+                if result_bf_no_vsmear is not None:
+                    sep_nov, res_model_nov = result_bf_no_vsmear[corr][trs]
                 xlabel = '$s$ [Mpc/h]' if corr == 'xi' else '$r_p$ [Mpc/h]' if corr == 'wp' else None
                 ylabel = r'$s \cdot \xi_{{{:d}}}(s)$ [$\mathrm{{Mpc}}/h$]' if corr == 'xi' else r'$r_p \cdot w_p(r_p)$ [$\mathrm{{Mpc}}/h$]' if corr == 'wp' else None
 
@@ -2344,6 +2344,8 @@ class HOD:
                     res_data = [res_data]
                     sig_data = [sig_data]
                     res_model = [res_model]
+                    if result_bf_no_vsmear is not None:
+                        res_model_nov= [res_model_nov]
                 
                 panel_titles = ['Monopole', 'Quadrupole', 'Hexadecaople'] if corr == 'xi' else ['Projected clustering'] if corr == 'wp' else None
 
@@ -2352,6 +2354,9 @@ class HOD:
                     ax_main.errorbar(sep_data, sep_data**pow_sep*res+shift ,yerr= sep_data**pow_sep*sig,fmt='.',
                                     markerfacecolor='w', zorder=0, label=f'{trs} z{self.args["fit_param"]["zmin"]}-{self.args["fit_param"]["zmax"]}', color=color)
                     ax_main.plot(sep_m, sep_m**pow_sep*res_m, color=color, alpha=0.8, lw=1.2)
+                    if result_bf_no_vsmear is not None:
+                        ax_main.plot(sep_nov, sep_nov**pow_sep*res_model_nov[ill], color=color, alpha=0.8, lw=1.2, ls='--', label='No vsmear')
+                        
                     ax_main.set_ylabel(ylabel.format(ells[ill]), fontsize=fontsize)
                     
                 
@@ -2370,6 +2375,9 @@ class HOD:
 
                     ax_res = fig.add_subplot(gs[ii + 1, col], sharex=ax_main) if new_fig else axes[i_ax+1]
                     residual = (res_m - res) / sig
+                    if result_bf_no_vsmear is not None:
+                        residual_nov = (res_model_nov[ill] - res) / sig
+                        ax_res.plot(sep_nov, residual_nov, color=color, ls='--')
                     ax_res.axhspan(-2, 2, color='gray', alpha=0.2)
                     ax_res.axhline(0, color='black', linestyle='--')
                     ax_res.plot(sep_data, residual, color=color)
@@ -2396,3 +2404,31 @@ class HOD:
         if show:
             plt.show()
         return fig
+
+        
+        def get_lin_bias(self):
+            """
+               Compute the expected linear bias for a given HOD parameters set betwwen s [40-80] Mpc/h using scipy curve_fit method
+            """
+            
+            import scipy
+            from cosmoprimo import Fourier        
+            fo = Fourier(self.cosmo, engine='class')
+            pk = fo.pk_interpolator()
+            xi_lin = pk.to_xi()
+        
+            rsd_tmp = self.args['2PCF_settings']['rsd']
+            edges_smu_tmp = self.args['2PCF_settings']['edges_smu']
+            HOD_obj.args['2PCF_settings']['edges_smu'] = (np.linspace(40,80,41), np.linspace(-1,1,201))
+            cat_bf = self.make_mock_cat()
+            s, xi = self.get_2PCF(cat_bf, ells=0)
+            zsim = self.args['hcat']['z_simu']    
+            import scipy
+            def func(s, b):
+                return b**2*xi_lin(s,z=zsim)
+            bias, b_err = scipy.optimize.curve_fit(func, s, xi, p0=[2])
+        
+        
+            self.args['2PCF_settings']['rsd'] = rsd_tmp
+            self.args['2PCF_settings']['edges_smu'] = edges_smu_tmp
+            return bias
