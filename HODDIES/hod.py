@@ -2292,7 +2292,7 @@ class HOD:
             for tr in self._tracers():
                 tmp_vsmear += [self.args[tr]['vsmear']]
                 self.args[tr]['vsmear'] = 0
-            result_bf_no_vsmear = self.compute_bf_corr(fix_seed=fix_seed, add_no_vsmear**kwargs)
+            result_bf_no_vsmear = self.compute_bf_corr(fix_seed=fix_seed, add_no_vsmear=True, **kwargs)
             for ii,tr in enumerate(self._tracers()):
                 self.args[tr]['vsmear'] = tmp_vsmear[ii]
         else:
@@ -2406,29 +2406,29 @@ class HOD:
         return fig
 
         
-        def get_lin_bias(self):
-            """
-               Compute the expected linear bias for a given HOD parameters set betwwen s [40-80] Mpc/h using scipy curve_fit method
-            """
-            
-            import scipy
-            from cosmoprimo import Fourier        
-            fo = Fourier(self.cosmo, engine='class')
-            pk = fo.pk_interpolator()
-            xi_lin = pk.to_xi()
+    def get_lin_bias(self):
+        """
+            Compute the expected linear bias for a given HOD parameters set betwwen s [40-80] Mpc/h using scipy curve_fit method
+        """
         
-            rsd_tmp = self.args['2PCF_settings']['rsd']
-            edges_smu_tmp = self.args['2PCF_settings']['edges_smu']
-            HOD_obj.args['2PCF_settings']['edges_smu'] = (np.linspace(40,80,41), np.linspace(-1,1,201))
-            cat_bf = self.make_mock_cat()
-            s, xi = self.get_2PCF(cat_bf, ells=0)
-            zsim = self.args['hcat']['z_simu']    
-            import scipy
-            def func(s, b):
-                return b**2*xi_lin(s,z=zsim)
-            bias, b_err = scipy.optimize.curve_fit(func, s, xi, p0=[2])
-        
-        
-            self.args['2PCF_settings']['rsd'] = rsd_tmp
-            self.args['2PCF_settings']['edges_smu'] = edges_smu_tmp
-            return bias
+        import scipy
+        from cosmoprimo import Fourier        
+        fo = Fourier(self.cosmo, engine='class')
+        pk = fo.pk_interpolator()
+        xi_lin = pk.to_xi()
+    
+        rsd_tmp = self.args['2PCF_settings']['rsd']
+        edges_smu_tmp = self.args['2PCF_settings']['edges_smu']
+        HOD_obj.args['2PCF_settings']['edges_smu'] = (np.linspace(40,80,41), np.linspace(-1,1,201))
+        cat_bf = self.make_mock_cat()
+        s, xi = self.get_2PCF(cat_bf, ells=0)
+        zsim = self.args['hcat']['z_simu']    
+        import scipy
+        def func(s, b):
+            return b**2*xi_lin(s,z=zsim)
+        bias, b_err = scipy.optimize.curve_fit(func, s, xi, p0=[2])
+    
+    
+        self.args['2PCF_settings']['rsd'] = rsd_tmp
+        self.args['2PCF_settings']['edges_smu'] = edges_smu_tmp
+        return bias
