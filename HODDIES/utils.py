@@ -793,6 +793,95 @@ def compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, x_sat, y_sat, z_sat,
                 mask_nfw[cum_sum_sat[i]+npout[i]: cum_sum_sat[i+1]] = True
     return mask_nfw
 
+
+@njit(parallel=True)
+def _assign_bin_values(bin_idx, col, bins, out):
+    """
+    Assign scaled values to elements within each bin, in parallel.
+
+    Parameters
+    ----------
+    bin_idx : ndarray of shape (N,)
+        Integer array giving the bin index of each element.
+    col : ndarray of shape (N,)
+        Array of values used for sorting within each bin.
+    bins : ndarray of shape (nbins+1,)
+        The bin edges used to compute `bin_idx`.
+    out : ndarray of shape (N,)
+        Preallocated output array to be filled in place.
+
+    Notes
+    -----
+    - For each bin, elements are sorted by `col` in descending order.
+    - Within a bin of size `m`, values are assigned as
+      linspace(-0.5, 0.5, m).
+    - Runs in parallel across bins using `numba.prange`.
+    """
+    nbins = len(bins) - 1
+    n = len(col)
+
+    for b in numba.prange(nbins):
+        # collect indices of elements in this bin
+        idx_in_bin = []
+        for i in range(n):
+            if bin_idx[i] == b:
+                idx_in_bin.append(i)
+        if len(idx_in_bin) == 0:
+            continue
+
+        idx_in_bin = np.array(idx_in_bin)
+
+        # argsort by col descending
+        vals = col[idx_in_bin]
+        order = np.argsort(vals)[::-1]
+
+        # assign linspace
+        size = len(order)
+        step = 1.0 / (size - 1) if size > 1 else 0.0
+        for j in range(size):
+            out[idx_in_bin[order[j]]] = -0.5 + j * step
+
+
+def initialize_assembly_bias_value(logMh, col, bins=50):
+    """
+    Vectorized and parallelized version of binning + ranking.
+
+    Parameters
+    ----------
+    logMh : ndarray of shape (N,)
+        Array of values to be binned (e.g., log10 halo masses).
+    col : ndarray of shape (N,)
+        Values used for ranking within bins.
+    bins : int or array-like, optional (default=50)
+        If int, the number of bins. If array, explicit bin edges.
+
+    Returns
+    -------
+    out : ndarray of shape (N,)
+        Output array where each element has been assigned a value
+        in [-0.5, 0.5] based on its rank within its bin.
+
+    Notes
+    -----
+    - Uses `np.histogram_bin_edges` if `bins` is an integer.
+    - Bin assignment is done with `np.digitize`.
+    - The heavy computation is offloaded to `_assign_bin_values`
+      (Numba parallel kernel).
+    - Designed to scale to very large arrays (10^7–10^8 elements).
+    """
+    # ensure bins are edges
+    if np.isscalar(bins):
+        bins = np.histogram_bin_edges(logMh, bins=bins)
+
+    # assign bin indices
+    bin_idx = np.digitize(logMh, bins) - 1
+    out = np.zeros_like(logMh)
+
+    # fill in parallel
+    _assign_bin_values(bin_idx, col, bins, out)
+
+    return out
+
 # @njit(parallel=True, fastmath=True)
 # def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
 #                           x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, indexes_p,
@@ -948,5 +1037,7 @@ def compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, x_sat, y_sat, z_sat,
 #     ur = getPointsOnSphere_mpi(sat_cat.size, rng)
 #     uv = getPointsOnSphere_mpi(sat_cat.size, rng)
 #     return _rescale(ur, (etaVir*sat_cat["Rh"])), _rescale(uv, v)
+
+
 
 
