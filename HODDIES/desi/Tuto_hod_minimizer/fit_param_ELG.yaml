@@ -1,0 +1,150 @@
+# List of galaxy tracers used in the analysis
+tracers:
+  - ELG # tracer 2
+
+# HOD parameters for ELGs, similar to LRG with some changes
+ELG: # Name of tracer 2
+  Ac: 0.05
+  As: 0.11
+  HOD_model: mHMQ 
+  sat_HOD_model: Nsat_pow_law
+  M_0: 11.63
+  M_1: 11.7
+  Q: 100
+  alpha: 0.6
+  assembly_bias:
+    c:
+    - 0 
+    - 0
+    env:
+    - 0 
+    - 0
+  conformity_bias: false
+  density: 0.001
+  f_sigv: 1
+  gamma: 1
+  log_Mcent: 11.63
+  pmax: 0.1
+  satellites: true
+  sigma_M: 0.12
+  vel_sat: rd_normal
+  #Modified satellite profile parameter
+  exp_frac: 0 #If 0 use NFW
+  exp_scale: 1
+  nfw_rescale: 1
+  v_infall: 0
+  vsmear: 0
+
+# Halo catalog and simulation settings
+hcat:
+  boxsize: null  # Simulation box size (to be set if path_to_sim is provided)
+  path_to_sim: null  # Path to halo catalogs
+  path_to_part: null  # Path to particle or subhalos data for satellites sampling
+  mass_cut: null  # Minimum halo mass cut
+  z_simu: 0.95  # Redshift of simulation snapshot
+  Abacus:
+    sim_name: AbacusSummit_highbase_c000_ph100  # Specific to Abacus simulation
+    load_particles: false  # Whether to load particle data
+    halo_lc: False  # Use lightcone halo catalog
+  Pinnochio:
+    dir_sim: null  # Path to Pinocchio simulation
+
+# Two-point correlation function (2PCF) settings
+2PCF_settings:
+  rsd: True  # Use redshift-space distortions
+  bin_logscale: true  # Logarithmic binning in r
+  mu_max: 1  # Max mu for 2PCF (s,mu) correlation
+  n_mu_bins: 101  # Number of mu bins
+  multipole_index:
+    - 0  # Monopole
+    - 2  # Quadrupole
+  n_r_bins: 25  # Number of radial bins
+  n_rp_bins: 25  # Number of rp (projected separation) bins
+  rmax: 30  # Maximum r (Mpc/h)
+  rmin: 0.01  # Minimum r (Mpc/h)
+  rp_max: 30  # Maximum rp
+  rp_min: 0.01  # Minimum rp
+  edges_rppi: null  # Custom bin edges for rp-pi (if any, else computed from rp_min, rp_max, n_rp_bins, and -pimax, pimax with linear bins of 1 Mpc/h size)
+  edges_smu: null  # Custom bin edges for s-mu (if any, else computed from rmin, rmax, n_r_bins and -mu_max, mu_max, n_mu_bins)
+  los: z  # Line of sight direction
+  pimax: 40  # Max pi for wp integration
+
+# Cosmology settings using Cosmoprimo API
+# H_0 is fixed at 100, h values is not used for distance computation
+# If AbacusSummit simulation is used the cosmology is automatically set for the simulation box
+cosmo:
+  fiducial_cosmo: null  # Name of predefined cosmology (e.g., Planck2018FullFlatLCDM)
+  engine: class  # Use CLASS backend for cosmology computations
+  h: null  # Hubble parameter h
+  Omega_m: null  # Total matter density
+  Omega_cdm: null  # Cold dark matter density
+  Omega_L: null  # Dark energy density
+  Omega_b: null  # Baryon density
+  sigma_8: null  # Amplitude of fluctuations
+  n_s: null  # Scalar spectral index
+  w0_fdl: null  # Dark energy equation of state (w₀)
+  wa_fdl: null  # Dark energy equation of state (wa)
+
+# Global settings
+seed: null  # Global random seed
+nthreads: 32  # Number of threads to use
+cm_relation: diemer19  # Concentration-mass relation model from colossus (used for pinnochio halos, https://bdiemer.bitbucket.io/colossus/index.html)
+mass_def: 200c  # Halo mass definition for colossus (e.g., 200 times critical density)
+use_assembly_bias: False  # Global flag to enable assembly bias
+use_particles: false  # Whether to use particle data to sample satellite galaxies
+
+#fitting settings
+fit_param:
+
+  #Minimizer settings
+  use_desi_data: True 
+  save_fn: results_fit.npy
+  # DESI specific settings. Ignore if use_desi_data is False
+  zmin: 0.8
+  zmax: 1.1
+  dir_data: /global/cfs/cdirs/desi/users/arocher/Y3/loa-v1/v2/PIP/cosmo_0
+  region: GCcomb
+  weights_type: pip_angular_bitwise
+  njack: 128
+  nran: 4
+  bin_type: log
+  use_vsmear: False # Run the fits using DESI redshigt errors
+  
+  # if not provided used JK covaraince matrix
+  load_cov_jk: False  # Use JK covariance matrix
+  corr_dir: /global/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/  #root directory to find correlation matrices (to be rescaled by JK variances)
+  nb_mocks: 1883 # Nb of mocks used to compute the covariance
+
+  fit_type: wp+xi # Only wp or xi available at the moment
+
+  # Prior ranges for HOD parameters for each tracer
+  priors:  
+    # Example of prior ranges for LRG 
+    ELG:
+        As:
+        - 0.01
+        - 0.4
+        log_Mcent:
+        - 11.4
+        - 12.2
+        alpha:
+        - 0.3
+        - 1.5
+        f_sigv:
+        - 0.8
+        - 2.2
+        sigma_M:
+        - 0.05
+        - 1
+        gamma:
+        - 1
+        - 8
+        exp_scale:
+        - 0.9
+        - 10
+        exp_frac:
+        - 0
+        - 1.1
+        nfw_rescale:
+        - 0.1
+        - 2

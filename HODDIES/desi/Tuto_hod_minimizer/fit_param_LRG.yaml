@@ -1,0 +1,96 @@
+# List of galaxy tracers used in the analysis
+tracers:
+  - LRG 
+
+LRG: 
+  # Parameters for the central HOD model
+  HOD_model: SHOD  # Central galaxy HOD model. Choices: SHOD, GHOD, SFHOD, HMQ, mHMQ, LNHOD.
+
+  Ac: 1  # Normalization amplitude for central distribution
+  log_Mcent: 12.82  # Central galaxy cutoff mass (log scale) or mean value if gausaain distribution
+  sigma_M:  0.21  # Width of central galaxy mass distribution or stepness of the step function. 
+  gamma: 1  # Shape parameter controlling the asymetry of the central distribution.
+  assembly_bias: # Assembly bias parameters, only used if 'assembly_bias' is True in global settings
+    c:
+    - 0  # concentration based assembly bias parameters for central
+    - 0  # concentration based assembly bias parameters for satellite
+    env:
+    - 0  # Assembly bias parameters for environment for central
+    - 0  # Assembly bias parameters for environment for satelitte
+  # Parameters for the satellite HOD model
+  satellites: true  # Whether satellites are included
+  sat_HOD_model: Nsat_pow_law  # Satellite galaxy HOD model 
+  As: 1  # Normalization amplitude for satellite distribution
+  M_0: 12.72  # Minimum halo mass for satellites
+  M_1: 13.82  # Characteristic mass for satellites
+  alpha: 1  # Power-law slope of the satellite HOD
+  f_sigv: 0.87  # Scaling factor for velocity dispersion of satellites, only used if `vel_sat` is 'rd_normal'
+  vel_sat: rd_normal  # Velocity distribution model for satellites: 'rd_normal', 'NFW' or 'infall'
+  v_infall: 0  # Infall velocity offset, only used if `vel_sat` is 'infall'
+  conformity_bias: false  # Whether to include conformity bias
+    
+  density: 0.0007  # Fix the galaxy number density (if possible)
+  vsmear: 0  # Add redshift error by introducing gaussian smearing in km/s (default 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s. 
+#              To use DESI redshift error, set a list with [zmin,zmax] to genereate the vsmear distribution for each tracer.
+
+  
+# Halo catalog and simulation settings
+hcat:
+  boxsize: null  # Simulation box size (to be set if path_to_sim is provided)
+  path_to_sim: null  # Path to halo catalogs
+  path_to_part: null  # Path to particle or subhalos data for satellites sampling
+  mass_cut: 12  # Minimum halo mass cut in log10(Msun/h) eg 12 for 10**12
+  z_simu: 0.5  # Redshift of simulation snapshot
+  Abacus:
+    sim_name: AbacusSummit_base_c000_ph000  # Specific to Abacus simulation
+    load_particles: false  # Whether to load particle data
+    halo_lc: False  # Use lightcone halo catalog
+  Pinnochio:
+    dir_sim: null  # Path to Pinocchio simulation
+
+# Two-point correlation function (2PCF) settings
+2PCF_settings:
+  rsd: True  # Use redshift-space distortions
+  bin_logscale: true  # Logarithmic binning in r
+  multipole_index:
+    - 0  # Monopole
+    - 2  # Quadrupole
+  pimax: 40  # Max pi for wp integration
+
+# Global settings
+seed: 10  # Global random seed
+nthreads: 32  # Number of threads to use
+use_assembly_bias: False  # Global flag to enable assembly bias
+use_particles: false  # Whether to use particle data to sample satellite galaxies
+
+#fitting settings
+fit_param:
+ #Minimizer settings
+  use_desi_data: True 
+  save_fn: results_fit.npy
+  # DESI specific settings. Ignore if use_desi_data is False
+  zmin: 0.4
+  zmax: 0.6
+  dir_data: /global/cfs/cdirs/desi/users/arocher/Y3/loa-v1/v2/PIP/cosmo_0
+  region: GCcomb
+  weights_type: pip_angular_bitwise
+  njack: 128
+  nran: 4
+  bin_type: log
+  use_vsmear: True # Run the fits using DESI redshigt errors
+  
+  # if not provided used JK covaraince matrix
+  load_cov_jk: False  # Use JK covariance matrix
+  corr_dir: /global/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/  #root directory to find correlation matrices (to be rescaled by JK variances)
+  nb_mocks: 1883 # Nb of mocks used to compute the covariance
+
+  fit_type: wp+xi # Only wp or xi available at the moment
+
+  priors:  # Prior ranges for HOD parameters for each tracer
+    LRG:
+      M_0: [12.5, 13.5]
+      M_1: [13, 14.5]
+      alpha: [0.5, 1.5]
+      f_sigv: [0.5, 1.5]
+      log_Mcent: [12.4, 13.5]
+      sigma_M: [0.05, 1]
