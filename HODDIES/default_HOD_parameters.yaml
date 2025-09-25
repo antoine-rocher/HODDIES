@@ -84,12 +84,16 @@ hcat:
   path_to_sim: null  # Path to halo catalogs
   path_to_part: null  # Path to particle or subhalos data for satellites sampling
   mass_cut: null  # Minimum halo mass cut in log10(Msun/h) e.g. 12 to cut M < 10**12
-  z_simu: 0.95  # Redshift of simulation snapshot
+  z_simu: 0.95  # Redshift of simulation snapshot (list of redshifts from Abacus light cone shells.)
+                # Redshift available for Uchuu snapshot [0.43, 0.49, 0.56, 0.63, 0.70, 0.78, 0.86, 0.94, 1.03, 1.12, 1.22, 1.32, 1.43, 1.65]
   Abacus:
     sim_name: AbacusSummit_highbase_c000_ph100  # Specific to Abacus simulation
     load_particles: false  # Whether to load particle data
     halo_lc: False  # Use lightcone halo catalog
-    z_simu: 0.95 # Redshift of Abacus snapshot or list redhsifts from Abacus light cone shells.
+  Uchuu:
+    sim_name: Uchuu2Gpc  # Choices ['Planck18', 'Planck18_DDE', 'DESIY1_DEE', 'Uchuu2Gpc']    
+    path_to_sim: /pscratch/sd/a/arocher/Uchuu
+    load_subhalos: False 
   Pinnochio:
     dir_sim: null  # Path to Pinocchio simulation
 
@@ -180,7 +184,7 @@ fit_param:
   #root directory to find correlation matrices (to be rescaled by JK variances)
   corr_dir: /global/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/  #root directory to find correlation matrices (to be rescaled by JK variances)
   nb_mocks: 1883 # Nb of mocks used to compute the covariance
-
+  use_vsmear: True
   fit_type: wp+xi # Only wp or xi available at the moment
 
   # Prior ranges for HOD parameters for each tracer
