@@ -1,6 +1,7 @@
 """ Base HOD class """
 
 
+from HODDIES import read_uchuu
 from numba import njit, jit, numba
 import time 
 import os
@@ -17,7 +18,7 @@ class HOD:
 
     """Class with tools to generate HOD mock catalogs and plotting functions"""
 
-    def __init__(self, param_file=None, args=None, hcat_file=None, path_to_abacus_sim=None, read_pinnochio=None, subsample=None, **kwargs):
+    def __init__(self, param_file=None, args=None, hcat_file=None, path_to_abacus_sim=None, read_pinnochio=None, read_Uchuu=None, subsample=None, **kwargs):
         
         """
         Initialize :class:`HOD`. 
@@ -91,11 +92,22 @@ class HOD:
         self.part_subsamples = subsample
         
         self.__is_sim_abacus = False
-        if path_to_abacus_sim  is not None:
+        self.__is_sim_uchuu = False
+        if path_to_abacus_sim is not None:
             from .abacus_io import read_Abacus_hcat
             self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
             self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim)
             self.__is_sim_abacus = True
+
+        elif read_Uchuu is not None:
+            self.__is_sim_uchuu=True
+            from .read_uchuu import read_Uchuu
+            self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Uchuu']
+            start = time.time()
+            # (sim_name, z_snapshot, path_to_sim='/pscratch/sd/a/arocher/Uchuu/', nchuncks=32, load_subhalos=False, mass_cut=10.8)
+            self.hcat, self.part_subsamples = read_Uchuu(self.args['hcat']['sim_name'], self.args['hcat']['z_simu'], self.args['hcat']['path_to_sim'], self.args['nthreads'], self.args['hcat']['load_subhalos'], self.args['hcat']['mass_cut'])
+            self.boxsize = 2000
+            print('Done {:.2f}'.format(time.time()-start), flush=True)
                             
         elif read_pinnochio  is not None:
             from .pinnochio_io import read_pinnochio_hcat
@@ -283,12 +295,13 @@ class HOD:
         Returns a dictionary with the default HOD and analysis parameters.
         """
         default_params = {
-            'tracers': None,
+            'tracers': 'LRG',
 
             'hcat': {
                 'boxsize': None, 'path_to_sim': None, 'path_to_part': None, 'mass_cut': None, 'z_simu': 0.95,
-                'Abacus': {'sim_name': 'AbacusSummit_highbase_c000_ph100', 'load_particles': False, 'halo_lc': False, 'z_simu': 0.95},
-                'Pinnochio': {'dir_sim': None}
+                'Abacus': {'sim_name': 'AbacusSummit_highbase_c000_ph100', 'load_particles': False, 'halo_lc': False},
+                'Pinnochio': {'dir_sim': None}, 'Uchuu': {}, 
+                'Uchuu': {'sim_name': 'Uchuu2Gpc', 'load_subhalos': False, 'path_to_sim': '/pscratch/sd/a/arocher/Uchuu'}
             },
             '2PCF_settings': {
                 'rsd': True, 'bin_logscale': True, 'mu_max': 1, 'n_mu_bins': 101, 'multipole_index': [0, 2],
@@ -342,10 +355,16 @@ class HOD:
         """
 
         try: 
-            from cosmoprimo.fiducial import Cosmology, AbacusSummit
-            if "sim_name" in self.args["hcat"].keys():
+            if self.__is_sim_abacus:
+                from cosmoprimo.fiducial import AbacusSummit, Cosmology
                 print('Initialize Abacus c{} cosmology'.format(self.args['hcat']['sim_name'].split('_c')[-1][:3]))
-                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3], engine=self.args['cosmo']['engine'])   
+                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3], engine=self.args['cosmo']['engine'])    
+            elif self.__is_sim_uchuu:
+                from cosmoprimo.fiducial import UchuuPlanck2015
+                from .read_uchuu import UchuuPlanck2018, UchuuPlanck2018DDE, UchuuDESIY1DDE
+                DDE_sims = ['Planck18', 'Planck18_DDE', 'DESIY1_DDE', 'Uchuu2Gpc']
+                cosmo_= [UchuuPlanck2018, UchuuPlanck2018DDE, UchuuDESIY1DDE, UchuuPlanck2018]
+                self.cosmo =  dict(zip(DDE_sims, cosmo_))[self.args['hcat']['sim_name']](engine=self.args['cosmo']['engine'])
             else:
                 print('Initialize custom cosmology from the "cosmo" parameters', flush=True)
                 self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
@@ -2432,3 +2451,34 @@ class HOD:
         self.args['2PCF_settings']['rsd'] = rsd_tmp
         self.args['2PCF_settings']['edges_smu'] = edges_smu_tmp
         return bias
+
+    def plot_wp_xi(self, cat, tracers=None, fig=None, show=True):
+        import matplotlib.pyplot as plt
+        colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red'}
+        if isinstance(tracers, str):
+            tracers = [tracers]
+        elif tracers is None:
+            tracers = np.unique(cat['TRACER'])
+        if fig is None:
+            fig,ax = plt.subplots(1,1+len(self.args['2PCF_settings']['multipole_index']), figsize=(12,3))
+        else:
+            ax = fig.axes
+        for tr in tracers:
+            rp, wp = self.get_wp(cat, tracers=tr)
+            s, xi = self.get_2PCF(cat, tracers=tr)
+            
+
+            ax[0].semilogx(rp,rp*wp, color=colors[tr] if tr in colors.keys() else None)
+            ax[1].semilogx(s,s*xi[0], color=colors[tr] if tr in colors.keys() else None)
+            ax[2].semilogx(s,s*xi[1], color=colors[tr] if tr in colors.keys() else None, label=tr)
+
+            ax[0].set_xlabel('$r_p$ [Mpc/h]')
+            ax[1].set_xlabel('$s$ [Mpc/h]') 
+            ax[2].set_xlabel('$s$ [Mpc/h]')
+            ax[0].set_ylabel(r'$r_p \cdot w_p(r_p)$ [$\mathrm{{Mpc}}/h$]')
+            ax[1].set_ylabel(r'$s \cdot \xi_0(s)$ [$\mathrm{{Mpc}}/h$]')
+            ax[2].set_ylabel(r'$s \cdot \xi_2(s)$ [$\mathrm{{Mpc}}/h$]')
+            ax[2].legend()
+        if show: 
+            fig.show()
+        return fig
