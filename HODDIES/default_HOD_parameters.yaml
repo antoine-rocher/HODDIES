@@ -139,6 +139,7 @@ nthreads: 32  # Number of threads to use
 cm_relation: diemer19  # Concentration-mass relation model from colossus (used for pinnochio halos, https://bdiemer.bitbucket.io/colossus/index.html)
 mass_def: 200c  # Halo mass definition for colossus (e.g., 200 times critical density)
 use_assembly_bias: False  # Global flag to enable assembly bias
+path_to_density_mesh: /global/homes/a/arocher/users_arocher/HODDIES_data/environemental_quantities/Abacus #Path where local density and shear maps are stored from enviroment_func.py
 use_particles: false  # Whether to use particle data to sample satellite galaxies
 
 #fitting settings

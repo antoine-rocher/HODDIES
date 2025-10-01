@@ -1,6 +1,5 @@
 """ Base HOD class """
 
-
 from HODDIES import read_uchuu
 from numba import njit, jit, numba
 import time 
@@ -13,6 +12,8 @@ from mpytools import Catalog
 import collections.abc
 from .fits_functions import compute_chi2
 import numbers
+import numpy as np
+
 
 class HOD:
 
@@ -94,6 +95,7 @@ class HOD:
         self.__is_sim_abacus = False
         self.__is_sim_uchuu = False
         if path_to_abacus_sim is not None:
+            self._root_dir_abacus = path_to_abacus_sim
             from .abacus_io import read_Abacus_hcat
             self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
             self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim)
@@ -166,7 +168,7 @@ class HOD:
             raise ValueError('{} not implemented in HOD models'.format(self.args['HOD_param']['HOD_model']))
                 
         if self.args['use_assembly_bias']:
-            self._compute_assembly_bias_columns()
+                self._compute_assembly_bias_columns()
         self.rng = np.random.RandomState(seed=self.args['seed'])
 
     def _initialize_tracer_params(self, tracer):
@@ -195,7 +197,7 @@ class HOD:
                 'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 12.75, 'sigma_M': 0.5, 'gamma': 1, 'pmax': 1, 'Q': 100,
                 'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 12.5, 'M_1': 13.5, 'alpha': 1,
                 'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
-                'assembly_bias': {'c': [0, 0], 'env': [0, 0]},
+                'assembly_bias':{'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]},
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
                 'density': 0.0007, 'vsmear': 0
             },
@@ -203,7 +205,7 @@ class HOD:
                 'HOD_model': 'mHMQ', 'Ac': 0.05, 'log_Mcent': 11.63, 'sigma_M': 0.12, 'gamma':2, 'pmax': 1, 'Q': 100,
                 'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 0.11, 'M_0': 11.63, 'M_1': 11.7, 'alpha': 0.6,
                 'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
-                'assembly_bias': {'c': [0, 0]},
+                'assembly_bias': {'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]},
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
                 'density': 0.001, 'vsmear': 0
             },
@@ -211,7 +213,7 @@ class HOD:
                 'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 13.25, 'sigma_M': 0.6, 'gamma': 1, 'pmax': 1, 'Q': 100,
                 'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 13.25, 'M_1': 14.25, 'alpha': 1.3,
                 'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
-                'assembly_bias': {'c': [0, 0], 'env': [0, 0]},
+                'assembly_bias': {'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]},
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
                 'density': 0.0001, 'vsmear': 100
             }
@@ -264,11 +266,11 @@ class HOD:
             },
             'ELG': {
                 'M_0': [11.0, 12.5], 'M_1': [11.0, 12.5], 'alpha': [0.3, 1.2], 'f_sigv': [0.5, 1.5],
-                'log_Mcent': [11.0, 12.5], 'sigma_M': [0.05, 0.5]
+                'log_Mcent': [11.0, 12.5], 'sigma_M': [0.1, 1]
             },
             'QSO': {
                 'M_0': [12.5, 14.0], 'M_1': [13.5, 15.0], 'alpha': [0.8, 1.8], 'f_sigv': [0.5, 1.5],
-                'log_Mcent': [12.5, 14.0], 'sigma_M': [0.2, 1.0]
+                'log_Mcent': [12.5, 14.0], 'sigma_M': [0.1, 1.0]
             }
         }
         
@@ -315,7 +317,7 @@ class HOD:
             },
 
             'seed': None, 'nthreads': 32, 'cm_relation': 'diemer19', 'mass_def': '200c',
-            'use_assembly_bias': False, 'use_particles': False,
+            'use_assembly_bias': False, 'use_particles': False, 'path_to_density_mesh':None,
 
         }
         return default_params
@@ -435,6 +437,10 @@ class HOD:
 
     
     def _tracers(self):
+        """
+        Helper function to return the list of tracers defined in the parameter file
+        """
+
         if isinstance(self.args['tracers'], str):
             self.args['tracers'] = [self.args['tracers']]
         return self.args['tracers']
@@ -511,6 +517,7 @@ class HOD:
     def calc_env_factor(self, cellsize=5, resampler='cic'):
 
         """
+        Not used anymore
         Compute density around each halos on a mesh. Based on pypower CatalogMesh https://pypower.readthedocs.io/en/latest/api/api.html#pypower.mesh.CatalogMesh
 
         Parameters
@@ -569,12 +576,177 @@ class HOD:
         columns defined in `self.args[tracer]['assembly_bias']`, this method will iterate over all of them and create
         the corresponding assembly bias columns in the halo catalog.
         """
-
-        ab_proxy = np.unique([[l for l in ll] for ll in [list(self.args[tr]['assembly_bias'].keys()) for tr in self._tracers()]])
+        ab_proxy = []
+        for tr in self._tracers():
+            if self.args[tr].get('assembly_bias'):
+                ab_proxy += [list(self.args[tr]['assembly_bias'].keys())]
+        ab_proxy = list(set().union(*ab_proxy))
         for ab in ab_proxy:
             self.set_assembly_bias_values(ab)
 
-    def set_assembly_bias_values(self, col, bins=50):
+    def get_env_col(self, verbose: bool = True):
+        """
+        Interpolate environment-based quantities (density and shear) 
+        from precomputed meshes onto halo positions.
+
+        This function assigns two new columns to `self.hcat`:
+        - `'env'`: interpolated density environment value at each halo position.
+        - `'shear'`: interpolated shear value at each halo position.
+
+        Method
+        ------
+        - The halo positions (`x, y, z` in `self.hcat`) are normalized by the 
+        mesh cell size and mapped into grid indices.
+        - `scipy.interpolate.interpn` is used to interpolate values from 
+        `self.density_mesh` and `self.shear_mesh` at those halo positions.
+        - Periodic wrapping (`% N_dim`) is applied to positions to ensure 
+        indices lie within mesh bounds.
+
+        Parameters
+        ----------
+        verbose : bool, optional (default=True)
+            If True, prints progress messages to stdout. Set False for silent execution.
+
+        Notes
+        -----
+        - Requires `self.density_mesh` and `self.shear_mesh` to be already loaded.
+        - Modifies `self.hcat` in-place by adding two new columns.
+        """
+        from scipy.interpolate import interpn
+
+        N_dim = self.density_mesh.shape[0]
+        cell_size = self.boxsize / N_dim
+
+        # Halo positions in grid index space (apply periodic wrapping)
+        GroupPos = (
+            np.array([self.hcat['x'], self.hcat['y'], self.hcat['z']]).T / cell_size
+        ).astype(int) % N_dim
+
+        grid_axes = (np.arange(N_dim), np.arange(N_dim), np.arange(N_dim))
+
+        for name, mesh in [('env', self.density_mesh), ('shear', self.shear_mesh)]:
+            if verbose:
+                print(f"Initializing {name} column...", flush=True)
+            self.hcat[name] = interpn(grid_axes, mesh, GroupPos)
+            if verbose:
+                print("Done!", flush=True)
+
+
+
+    def load_env_based_properties(self):
+        """
+        Load environment-based properties (density and shear meshes) for HOD assembly bias modeling.
+
+        This method attaches density and shear information to the catalog for use in 
+        environment-based assembly bias models. It handles multiple cases:
+
+        1. **Abacus simulation (`self.__is_sim_abacus` is True)**:
+        - If `path_to_density_mesh` is a directory, attempts to construct a file path of the form:
+            `env_shear_map_<sim_name>_z<z_simu>.h5`.
+        - If that file exists, loads precomputed meshes using `Catalog.read`.
+        - Otherwise, attempts to compute meshes on the fly via 
+            `.environment_func.compute_env_shear_abacus`.
+        - If the redshift snapshot is not supported for particle outputs, issues a warning 
+            and removes environment-based assembly bias parameters.
+
+        2. **No mesh path provided (`path_to_density_mesh is None`)**:
+        - Issues a warning and removes 'env' and 'shear' assembly bias parameters 
+            from tracer and fit parameter dictionaries.
+
+        3. **Mesh file exists** (`os.path.exists(path_to_density_mesh)`):
+        - Reads meshes from file using `Catalog.read`.
+        - Assigns them to `self.density_mesh` and `self.shear_mesh`.
+        - Calls `self.get_env_col()` to attach environment columns to `self.hcat`.
+
+        4. **Invalid mesh path**:
+        - Issues a warning and removes 'env' and 'shear' assembly bias parameters.
+
+        Notes
+        -----
+        - This function modifies `self.args` in place by removing environment-based 
+        assembly bias entries if meshes cannot be loaded.
+        - If meshes are successfully loaded or computed, they are stored in 
+        `self.density_mesh` and `self.shear_mesh`, and `self.hcat` is updated with 
+        corresponding 'env' and 'shear' columns.
+        """
+
+        path = self.args.get('path_to_density_mesh', None)
+
+        def _remove_env_bias():
+            """Remove 'env' and 'shear' assembly bias parameters from all tracers."""
+            for tr in self._tracers():
+                for c in ['env', 'shear']:
+                    self.args.get(tr, {}).get('assembly_bias', {}).pop(c, None)
+                    self.args.get('fit_param', {}).get('priors', {}).get(tr, {}).get('assembly_bias', {}).pop(c, None)
+
+        # --- Case 1: Abacus simulation ---
+        if self.__is_sim_abacus:
+            if path and os.path.isdir(path):
+                path = os.path.join(
+                    path,
+                    f'env_shear_map_{self.args["hcat"]["sim_name"]}_z{self.args["hcat"]["z_simu"]:.3f}.h5'
+                )
+
+            if path and os.path.exists(path):
+                env_prop = Catalog.read(path)
+                self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
+                self.get_env_col()
+
+            else:
+                from .environment_func import compute_env_shear_abacus
+                valid_snapshots = [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 1.1, 1.4, 1.7, 2.0, 2.5, 3.0]
+                z_simu = self.args['hcat']['z_simu']
+
+                if z_simu not in valid_snapshots:
+                    import warnings
+                    warnings.warn(
+                        f"Redshift snapshot {z_simu:.3f} does not have particle outputs. "
+                        "Continuing without shear/environment-based assembly bias."
+                    )
+                    _remove_env_bias()
+                else:
+                    print('Compute density and shear from particle distributions...', flush=True)
+                    self.density_mesh, self.shear_mesh = compute_env_shear_abacus(
+                        self.args['hcat']['sim_name'],
+                        z_simu,
+                        cell_size=5,
+                        R=1.5,
+                        root_abacus_dir=self._root_dir_abacus,
+                        dir_to_save=None,
+                    )
+                    self.get_env_col()
+
+        # --- Case 2: No path provided ---
+        elif path is None:
+            import warnings
+            warnings.warn(
+                "Path to density/shear mesh not set. "
+                "To generate density and shear mesh for assembly bias HOD, use compute_env_shear.py. "
+                "Continuing without shear/environment-based assembly bias."
+            )
+            _remove_env_bias()
+
+        # --- Case 3: Mesh file exists ---
+        elif os.path.exists(path):
+            env_prop = Catalog.read(path)
+            self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
+            self.get_env_col()
+
+        # --- Case 4: Invalid path ---
+        else:
+            import warnings
+            warnings.warn(
+                f"Path to density/shear mesh not valid ({path}). "
+                "To generate density and shear mesh for assembly bias HOD, use compute_env_shear.py. "
+                "Continuing without shear/environment-based assembly bias."
+            )
+            _remove_env_bias()
+
+
+
+            
+
+    def set_assembly_bias_values(self, col):
 
         """
         Assign ranked values for assembly bias computation based on a specific column.
@@ -619,9 +791,15 @@ class HOD:
         if f'ab_{col}' in self.hcat.columns():
             return 0
         
-        if (col == 'env') & ('env' not in self.hcat.columns()):
-            self.calc_env_factor()
-
+        if ((col == 'env') & ('env' not in self.hcat.columns())) | ((col == 'shear') & ('shear' not in self.hcat.columns())):
+            self.load_env_based_properties()
+            if col not in self.hcat.columns():
+                return
+            else:
+                for col in ['env', 'shear']:
+                    print(f'Set value for assembly bias according to {col}...', flush=True)
+                    self.hcat[f'ab_{col}'] = initialize_assembly_bias_value(self.hcat['log10_Mh'], self.hcat[col])
+                return
         if col not in self.hcat.columns():
             raise ValueError(f'{col} not in halo catalog columns')
         
@@ -630,6 +808,7 @@ class HOD:
         self.hcat[f'ab_{col}'] = initialize_assembly_bias_value(self.hcat['log10_Mh'], self.hcat[col])
         
         print(f'Done !', flush=True)
+
 
     def make_mock_cat(self, tracers=None, fix_seed=None, verbose=True):
         """
@@ -1000,6 +1179,8 @@ class HOD:
 
         if tracers is None: 
             tracers = self._tracers()
+            if 'TRACER' in cats.colunms():
+                tracers = list(np.unique(cats['TRACER']))
         tracers = tracers if isinstance(tracers, list) else [tracers]
         
 
@@ -1081,6 +1262,8 @@ class HOD:
 
         if tracers is None: 
             tracers = self._tracers()
+            if 'TRACER' in cats.colunms():
+                tracers = list(np.unique(cats['TRACER']))
         tracers = tracers if isinstance(tracers, list) else [tracers]
 
         if self.args['2PCF_settings']['edges_rppi'] is None:
@@ -1492,7 +1675,9 @@ class HOD:
     
 
     def update_new_param(self, new_params, name_param, verbose=False):
-        
+        """
+        Helper function to update the parameters in the argument dictionary
+        """
         name_param_tr = {}
 
         if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
@@ -1515,6 +1700,9 @@ class HOD:
 
 
     def get_param_and_prior(self):
+        """
+        Helper function to return the list of parameters and their priors
+        """
         priors = {}
         priors_array = []
         for tr in self._tracers():
@@ -1532,6 +1720,9 @@ class HOD:
     
     @staticmethod
     def get_comb_tr_list(tracers):
+        """
+        Helper function to return the list of tracer combinations
+        """
         if isinstance(tracers, str):
             tracers = [tracers]
         return np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
@@ -2258,7 +2449,7 @@ class HOD:
 
     
 
-    def compute_bf_corr(self, bf_file=None, verbose=False, fix_seed=None, **kwargs):
+    def compute_bf_corr(self, bf_file=None, verbose=False, fix_seed=None, save_bf_cat=None, **kwargs):
 
         from HODDIES.fits_functions import compute_chi2
         name_param, priors_array = self.get_param_and_prior()
@@ -2288,11 +2479,18 @@ class HOD:
             comb_trs = result[stats[0]].keys() 
             res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][1])for stat in stats]) for comb_tr in comb_trs])
             result['chi2'] = compute_chi2(res, self.data, inv_Cov2=self.inv_cov2)
+        
+        if save_bf_cat is not None:
+            if self.args['fit_param']['use_vsmear']:
+                for tr in self._tracers():
+                    cat[f'vsmear_{tr}'] = self.get_vsmear(tr, cat.size, verbose=verbose)
+            cat.write(save_bf_cat)
+            print(f'Save best fit catalog to {save_bf_cat}', flush=True)
 
         return result
 
 
-    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=0, max_sig = 5, fix_seed=None, add_no_vsmear=False, **kwargs):
+    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=0, max_sig = 5, fix_seed=None, add_no_vsmear=False, save_bf_cat=None, **kwargs):
 
         from HODDIES.fits_functions import load_desi_data
         from matplotlib.gridspec import GridSpec
