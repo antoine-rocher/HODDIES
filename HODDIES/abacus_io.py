@@ -109,6 +109,41 @@ def load_CompaSO(path_to_sim, usecols, mass_cut=None, halo_lc=False, use_particl
     return hcat_i[hcat_i[n_p] > N], header, part_subsamples
 
 
+def load_CompaSO_particles(path_to_sim, ds_fac=1):
+    """
+    Load the CompaSO halo catalog from AbacusSummit simulations.
+
+    Parameters
+    ----------
+    path_to_sim : str or list
+        Path(s) to the simulation directory.
+    usecols : list of str
+        Fields to load from the catalog.
+    mass_cut : float, optional
+        Minimum halo mass threshold in log10(Msun/h). Halos with smaller mass are excluded.
+    halo_lc : bool, optional
+        If True, load halo light cone catalogs from multiple redshifts.
+    use_particles : bool, optional
+        Whether to load particle data or not.
+
+    Returns
+    -------
+    hcat_i : np.ndarray
+        Halo catalog array after applying mass cut.
+    header : dict
+        Metadata and simulation header.
+    part_subsamples : dict or None
+        Dictionary of particle subsamples if applicable.
+    """
+       
+
+    hcat = CompaSOHaloCatalog(path_to_sim, fields=None, subsamples=dict(A=True), cleaned=True)    
+    part_subsamples = hcat.subsamples if use_particles else None
+    n_p = 'N' if not halo_lc else 'N_interp'
+    N = 10**mass_cut/header['ParticleMassHMsun'] if mass_cut is not None else 0
+
+    return hcat_i[hcat_i[n_p] > N], header, part_subsamples
+
 
 
 @njit(parallel=True, fastmath=True)
@@ -230,3 +265,35 @@ def load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, halo_lc=False, Nthread=64
     
     return Catalog.from_dict(dic), part_subsamples, header["BoxSizeHMpc"], origin
     
+def get_boxsize_from_simname(sim_name_or_path: str) -> float:
+    """
+    Return the box size (in Mpc/h) given a simulation path or name.
+
+    Parameters
+    ----------
+    sim_name_or_path : str
+        The simulation name or path containing one of the keys.
+
+    Returns
+    -------
+    float
+        Box size in Mpc/h.
+    """
+    sim_name_or_path = sim_name_or_path.lower()
+
+    mapping = {
+        "high": 1000.0,        # 1 Gpc/h
+        "huge": 7500.0,     # ⚠ placeholder, confirm exact value
+        "hugebase": 2.0,    # 2 Gpc/h
+        "fixedbase": 1180.0,  # 1.18 Gpc/h
+        "small": 500.0,       # 0.5 Gpc/h
+        "pngbase": 2000.0,      # 2 Gpc/h
+        "base": 2000.0,        # standard size (2 Gpc/h)
+    }
+
+    # Match key in string
+    for key, size in mapping.items():
+        if key in sim_name_or_path:
+            return size
+
+    raise ValueError(f"Unknown simulation type in: {sim_name_or_path}")
