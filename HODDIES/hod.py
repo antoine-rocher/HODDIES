@@ -920,6 +920,7 @@ class HOD:
             if (not self.args[tracer]['satellites']) | (Nb_sat == 0):
                 Nb_sat=0
                 final_cat[tracer] = cent_cat
+                final_cat[tracer]['TRACER'] = [tracer]*final_cat[tracer].size
 
             else:
                 start = time.time()
@@ -2482,8 +2483,10 @@ class HOD:
         
         if save_bf_cat is not None:
             if self.args['fit_param']['use_vsmear']:
+                cat[f'vsmear'] = np.zeros(cat.size, dtype=np.float32)
                 for tr in self._tracers():
-                    cat[f'vsmear_{tr}'] = self.get_vsmear(tr, cat.size, verbose=verbose)
+                    mm = cat['TRACER'] == tr
+                    cat[f'vsmear'][mm] = self.get_vsmear(tr, mm.sum(), verbose=verbose)
             cat.write(save_bf_cat)
             print(f'Save best fit catalog to {save_bf_cat}', flush=True)
 
@@ -2500,7 +2503,7 @@ class HOD:
         data_dic = load_desi_data(self.args['fit_param'], self._tracers(), multipole_index=self.args['2PCF_settings']['multipole_index'], pimax=self.args['2PCF_settings']['pimax'],**kwargs)
         self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
         self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
-        result_bf = self.compute_bf_corr(fix_seed=fix_seed, **kwargs)
+        result_bf = self.compute_bf_corr(fix_seed=fix_seed, save_bf_cat=save_bf_cat, **kwargs)
         stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
         comb_trs = list(result_bf[stats[0]].keys())
 
