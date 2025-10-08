@@ -135,14 +135,55 @@ def multivariate_gelman_rubin(chains):
     return eigen.max()
 
 
+def values_in_boundaries(values, boundaries):
+    """
+    Check whether each value lies within any of the given boundary intervals.
+
+    Parameters
+    ----------
+    values : array-like of float
+        Values to test.
+
+    boundaries : array-like of shape (n_intervals, 2)
+        Each element is [low, high], defining an inclusive interval.
+        Example:
+            [[12.5, 13.5], [13, 14.5], [0.5, 1.5], [0.05, 1]]
+
+    Returns
+    -------
+    np.ndarray of bool
+        Boolean mask (len(values),) indicating whether each value lies
+        inside at least one interval.
+
+    Examples
+    --------
+    >>> vals = [0.8, 1.2, 13.1, 15]
+    >>> bounds = [[12.5, 13.5], [13, 14.5], [0.5, 1.5], [0.05, 1]]
+    >>> values_in_boundaries(vals, bounds)
+    False
+    """
+    values = np.asarray(values)
+    boundaries = np.asarray(boundaries, dtype=float)
+
+    if boundaries.ndim != 2 or boundaries.shape[1] != 2:
+        raise ValueError("boundaries must be an array of shape (n, 2) with [low, high] pairs")
+
+    lows = boundaries[:, 0]   # shape (n_intervals, 1)
+    highs = boundaries[:, 1] # shape (n_intervals, 1)
+    # Vectorized interval membership test
+    return  ((values >= lows) & (values <= highs)).all()
+
 
 def func_stochopy(new_params, HOD_obj, name_param, data, inv_cov2, fix_seed=10, verbose=False, **kwargs): 
 
     print(*zip(name_param, new_params), flush=True)
     new_params= np.array([new_params])
-    
+    if not values_in_boundaries(new_params, HOD_obj.get_param_and_prior()[1]):
+        print('param outside priors', new_params, flush=True)
+        return np.inf
     new_params.dtype = [(name, dt) for name, dt in zip(name_param, ['float64']*len(name_param))]
     HOD_obj.update_new_param(new_params, name_param)
+
     cats = HOD_obj.make_mock_cat(fix_seed=fix_seed, verbose=verbose) 
 
     result = {}
