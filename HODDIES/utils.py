@@ -198,7 +198,9 @@ def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32,
                     N_sat[i] *= Ncent[i]
                 if p_ab is not None:
                     N_sat[i] *= (1 + np.sum(p_ab[1] * ab_arr[i]))
-                if conformity:
+                if N_sat[i] <=0:
+                    proba_sat[i] = 0
+                elif conformity:
                     proba_sat[i] = np.random.poisson(N_sat[i]*cond_cent[i])
                 else :
                     proba_sat[i] = np.random.poisson(N_sat[i])
