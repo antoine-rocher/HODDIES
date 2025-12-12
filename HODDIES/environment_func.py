@@ -726,3 +726,24 @@ def compute_env_shear_abacus(sim_name, zsim, cell_size=5, R=1.5, dir_to_save='/g
                 data=shear,
                 **hdf5plugin.Blosc(cname="zstd", clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE))
     return dsmo, shear
+
+def compute_env_shear_from_particles(partpos, Lbox, cell_size=5, R=1.5, path_to_save=None):
+    import hdf5plugin
+    import h5py    
+    
+    dsmo = calc_env(partpos, Lbox, cell_size=cell_size, R=R) 
+    shear = calc_shear_from_dsmo(dsmo, Lbox, cell_size=cell_size, R=R, workers=-1) 
+    
+    if path_to_save is not None:
+        print(f'Save to {path_to_save}')
+        with h5py.File(path_to_save, "w") as f:
+            f.create_dataset(
+                'density',
+                data=dsmo,
+                **hdf5plugin.Blosc(cname="zstd", clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE))
+                
+            f.create_dataset(
+                'shear',
+                data=shear,
+                **hdf5plugin.Blosc(cname="zstd", clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE))
+    return dsmo, shear
