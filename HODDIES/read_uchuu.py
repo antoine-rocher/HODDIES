@@ -134,6 +134,8 @@ def get_DDE_snapshot_file(z):
         raise ValueError(f"Redshift {z} not available. Valid redshifts are: {valid}")
 
 def get_Uchuu_snapshot_file(z):
+    if isinstance(z, float):
+        z = f'{z:.3f}'
     Uchuu_snapshot_redshifts = {
         "13.960": 1,
         "12.690": 2,
@@ -187,7 +189,7 @@ def get_Uchuu_snapshot_file(z):
         "0.000": 50
     }
     if z in Uchuu_snapshot_redshifts:
-        return f'halodir_{str(Uchuu_snapshot_redshifts[z]).zfill(3)}'
+        return Uchuu_snapshot_redshifts[z]
     else:
         valid = ", ".join(map(str, Uchuu_snapshot_redshifts.keys()))
         raise ValueError(f"Redshift {z} not available. Valid redshifts are: {valid}")
@@ -198,7 +200,7 @@ def read_Uchuu(sim_name, z_snapshot, path_to_sim='/pscratch/sd/a/arocher/Uchuu/'
     DDE_sims = ['Planck18', 'Planck18_DDE', 'DESIY1_DDE', 'Uchuu2Gpc']
     if sim_name not in DDE_sims:
         raise ValueError(f"Uchuu DDE simulation names {sim_name} not available. Valid names are: {DDE_sims}")
-    dirname_hcat = os.path.join(path_to_sim, 'Uchuu_halo_catalogs', get_Uchuu_snapshot_file('{:.3f}'.format(z_snapshot)), '*') if sim_name=='Uchuu2Gpc' else os.path.join(path_to_sim,'DDE', sim_name, get_DDE_snapshot_file(z_snapshot))
+    dirname_hcat = os.path.join(path_to_sim, 'Uchuu_halo_catalogs', f'halodir_{get_Uchuu_snapshot_file(z_snapshot):03d}', '*') if sim_name=='Uchuu2Gpc' else os.path.join(path_to_sim,'DDE', sim_name, get_DDE_snapshot_file(z_snapshot))
     
     if mass_cut is not None:
         print(f'Apply mass cut at 10^{mass_cut} M_sol/h', flush=True)
@@ -257,15 +259,16 @@ def read_Uchuu(sim_name, z_snapshot, path_to_sim='/pscratch/sd/a/arocher/Uchuu/'
     
 
 
-def UchuuPlanck2018(engine=None, extra_params=None, **params):
+def Uchuu(name='Planck2018', engine=None, extra_params=None, **params):
     """
-    Initialize :class:`Cosmology` based on Table 4 Planck2015 TT,TE,EE+lowP+lensing.
-    
+    Initialize :class:`Cosmology` for Uchuu simulations.
+
     Parameters
     ----------
+    name : string, default='2018'
+        One of 'Planck2015', 'Planck2018', 'Planck2018DDE', 'DESIY1DDE'.
     engine : string, default=None
-        Engine name, one of ['class', 'camb', 'eisenstein_hu', 'eisenstein_hu_no
-wiggle', 'bbks'].
+        Engine name, one of ['class', 'camb', 'eisenstein_hu', 'eisenstein_hu_nowiggle', 'bbks'].
         If ``None``, returns current :attr:`Cosmology.engine`.
 
     extra_params : dict, default=None
@@ -279,62 +282,15 @@ wiggle', 'bbks'].
     cosmology : Cosmology
     """
     from cosmoprimo import constants
-    default_params = dict(h=0.6766, Omega_b=0.048975, Omega_k=0., sigma8=0.8102, k_pivot=0.05, n_s=0.9665, 
-                          m_ncdm=[0.06], neutrino_hierarchy=None, T_ncdm_over_cmb=constants.TNCDM_OVER_CMB, N_eff=constants.NEFF, 
-                          tau_reio=0.063, A_L=1.0, w0_fld=-1., wa_fld=0.)
-    return Cosmology(engine=engine, extra_params=extra_params, **default_params).clone(**params)
-
-
-def UchuuPlanck2018DDE(engine=None, extra_params=None, **params):
-    """
-    Initialize :class:`Cosmology` based on Table 4 Planck2015 TT,TE,EE+lowP+lensing.
-    
-    Parameters
-    ----------
-    engine : string, default=None
-        Engine name, one of ['class', 'camb', 'eisenstein_hu', 'eisenstein_hu_no
-wiggle', 'bbks'].
-        If ``None``, returns current :attr:`Cosmology.engine`.
-
-    extra_params : dict, default=None
-        Extra engine parameters, typically precision parameters.
-
-    params : dict
-        Cosmological and calculation parameters which take priority over the default ones.
-
-    Returns
-    -------
-    cosmology : Cosmology
-    """
-    from cosmoprimo import constants
-    default_params = dict(h=0.6766, Omega_b=0.048975, Omega_k=0., sigma8=0.8102, k_pivot=0.05, n_s=0.9665,
-                          m_ncdm=[0.06], neutrino_hierarchy=None, T_ncdm_over_cmb=constants.TNCDM_OVER_CMB, N_eff=constants.NEFF, 
-                          tau_reio=0.063, A_L=1.0, w0_fld=-0.45, wa_fld=-1.79)
-    return Cosmology(engine=engine, extra_params=extra_params, **default_params).clone(**params)
-
-def UchuuDESIY1DDE(engine=None, extra_params=None, **params):
-    """
-    Initialize :class:`Cosmology` based on Table 4 Planck2015 TT,TE,EE+lowP+lensing.
-    
-    Parameters
-    ----------
-    engine : string, default=None
-        Engine name, one of ['class', 'camb', 'eisenstein_hu', 'eisenstein_hu_no
-wiggle', 'bbks'].
-        If ``None``, returns current :attr:`Cosmology.engine`.
-
-    extra_params : dict, default=None
-        Extra engine parameters, typically precision parameters.
-
-    params : dict
-        Cosmological and calculation parameters which take priority over the default ones.
-
-    Returns
-    -------
-    cosmology : Cosmology
-    """
-    from cosmoprimo import constants
-    default_params = dict(h=0.6470, Omega_m=0.3440, Omega_b=0.048975 , Omega_k=0., sigma8=0.8102, k_pivot=0.05, n_s=0.9665, 
-                          m_ncdm=[0.06], neutrino_hierarchy=None, T_ncdm_over_cmb=constants.TNCDM_OVER_CMB, N_eff=constants.NEFF, 
-                          tau_reio=0.063, A_L=1.0, w0_fld=-0.45, wa_fld=-1.79)
+    common = dict(Omega_k=0., m_ncdm=[0.06], neutrino_hierarchy=None, T_ncdm_over_cmb=constants.TNCDM_OVER_CMB, N_eff=constants.NEFF, A_L=1.0, k_pivot=0.05)
+    if name == 'Planck2015':
+        default_params = dict(h=0.6774, Omega_m=0.3089, Omega_Lambda=0.6911, omega_b=0.0486, sigma8=0.8159, n_s=0.9667, tau_reio=0.063, **common)
+    elif name == 'Planck2018':
+        default_params = dict(h=0.6766, Omega_b=0.048975, sigma8=0.8102, n_s=0.9665, tau_reio=0.063, **common)
+    elif name == 'Planck2018DDE':
+        default_params = dict(h=0.6766, Omega_b=0.048975, sigma8=0.8102, n_s=0.9665, tau_reio=0.063, w0_fld=-0.45, wa_fld=-1.79, **common)
+    elif name == 'DESIY1DDE':
+        default_params = dict(h=0.6470, Omega_m=0.3440, Omega_b=0.048975, sigma8=0.8102,  n_s=0.9665, tau_reio=0.063, w0_fld=-0.45, wa_fld=-1.79, **common)
+    else:
+        raise NotImplementedError('Uchuu cosmology {} not implemented available cosmologie [Planck2015, Planck2018, Planck2018DDE, DESIDDE]')
     return Cosmology(engine=engine, extra_params=extra_params, **default_params).clone(**params)
