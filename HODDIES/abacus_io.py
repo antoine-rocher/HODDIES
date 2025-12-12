@@ -32,6 +32,7 @@ def read_Abacus_hcat(args, dir_sim, use_L2=True):
         Origin(s) of light cone if halo_lc is True, otherwise None.
     """
 
+    check_redshift_available(args['hcat']["z_simu"])
     if use_L2:
         Lsuff = 'L2'
     else : 
@@ -51,9 +52,8 @@ def read_Abacus_hcat(args, dir_sim, use_L2=True):
         path_to_sim = os.path.join(dir_sim, 
                                     args['hcat']['sim_name'], "halos",  "z{:.3f}".format(args['hcat']["z_simu"]))
     tt = time.time()
-
     hcat, part_subsamples, boxsize, origin = load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, args['hcat']['halo_lc'], Nthread=args['nthreads'],  
-                                                                   mass_cut=args['hcat']['mass_cut'], use_particles=args['hcat']['load_particles'])
+                                                                   mass_cut=args['hcat']['mass_cut'], use_particles=args['use_particles'])
     print(f'{args["hcat"]["sim_name"]} at {args["hcat"]["z_simu"]} loaded, took {time.strftime("%H:%M:%S",time.gmtime(time.time() - tt))}', flush=True)
 
     return hcat, part_subsamples, boxsize, origin
@@ -232,7 +232,6 @@ def load_hcat_from_Abacus(path_to_sim, usecols, Lsuff, halo_lc=False, Nthread=64
         start = time.time()
         ld_part = 'with particles' if use_particles else ''
         print(f"Load Compaso cat from {path_to_sim} {ld_part}...")
-
     hcat, header, part_subsamples = load_CompaSO(path_to_sim, mass_cut=mass_cut, usecols=usecols, halo_lc=halo_lc, use_particles=use_particles)
     if verbose :
         print(f"Done took", time.strftime("%H:%M:%S",time.gmtime(time.time() - start)), flush=True)
@@ -297,3 +296,37 @@ def get_boxsize_from_simname(sim_name_or_path: str) -> float:
             return size
 
     raise ValueError(f"Unknown simulation type in: {sim_name_or_path}")
+
+
+def check_particles_available(z_simu):
+    """
+    Check if particles are available at the requested redshift.
+
+    Parameters
+    ----------
+    z_simu : float or list of float
+        Redshift(s) at which to check particle availability.
+
+    Returns
+    -------
+    bool
+        True if particles are available at all given redshift(s), False otherwise.
+    """
+    
+    available_redshifts = [3.0, 2.5, 2.0, 1.7, 1.4, 1.1, 0.8, 0.5, 0.4, 0.3, 0.2, 0.1]
+    
+    if z_simu in available_redshifts:
+        return True
+    else:
+        import warnings
+        warnings.warn(
+            f"Particles are not available at redshift z={z_simu}. "
+        )
+        return False
+    
+def check_redshift_available(z_simu):
+    available_z = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.575, 0.65, 0.725, 0.8, 0.875, 0.95, 1.025, 1.1, 1.175, 1.25, 1.325, 1.4, 1.475, 1.55, 1.625, 1.7, 1.85, 2.0, 2.25, 2.5, 2.75, 3.0, 5.0, 8.0]
+    if z_simu in available_z:
+        return True
+    else:  
+        raise ValueError(f"Redshift z={z_simu} not available. Available redshifts are: {available_z}")
