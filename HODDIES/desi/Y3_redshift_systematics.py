@@ -257,7 +257,7 @@ def vsmear_modelling_slitless_internal(zmin,zmax,dvfn='./',desired_catas=0.05):
         """
     return
 
-def vsmear(tracer,zmin,zmax,Ngal,dvmode='obs',seed=42,verbose=False):
+def vsmear(tracer,zmin,zmax,Ngal,dvmode='obs',seed=42,verbose=False, dtype=np.float32):
     """
     vsmear function:
 
@@ -336,4 +336,4 @@ def vsmear(tracer,zmin,zmax,Ngal,dvmode='obs',seed=42,verbose=False):
     np.random.shuffle(dv) # shuffle dv to get random positive and negative dv
     if Ngal%2 ==1:
         dv = dv[1:]
-    return dv
+    return dv.astype(dtype)
