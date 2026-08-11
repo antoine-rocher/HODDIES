@@ -1,20 +1,9 @@
 import numpy as np
-try:
-    from pycorr import TwoPointCorrelationFunction, project_to_multipoles, project_to_wp
-
-except ImportError:
-    import warnings
-    warnings.warn(
-        'Could not import pycorr. Install pycorr with ' \
-        '"python -m pip install git+https://github.com/cosmodesi/pycorr#egg=pycorr[corrfunc]".' \
-        'pycorr currently use a branch of Corrfunc, uninstall previous Corrfunc version (if any): "pip uninstall Corrfunc"'\
-        '' 
-    )
-
 from numba import njit, numba
 import os
-# import mpytools as mpy
 import scipy
+from scipy.special import gammaln  # log(n!)
+import math 
 
 def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
 
@@ -49,86 +38,265 @@ def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
     return pos_rsd
     
     
-def compute_2PCF(pos1, edges, boxsize, ells=(0, 2), los='z', nthreads=32, R1R2=None, pos2=None, mpicomm=None):
+# def compute_2PCF(pos1, edges, boxsize, ells=(0, 2), los='z', nthreads=32, R1R2=None, pos2=None, mpicomm=None):
 
-    """
-    Compute the 2-point correlation function multipoles for a periodic box.
+#     """
+#     Compute the 2-point correlation function multipoles for a periodic box.
 
-    Parameters
-    ----------
-    pos1 : array-like
-        Positions of sample 1 (e.g., galaxies or halos).
-    edges : list of arrays
-        Bin edges in separation (s, mu).
-    boxsize : float
-        Size of the simulation box.
-    ells : tuple of int, optional
-        Multipoles to project onto. Default is (0, 2).
-    los : {'x', 'y', 'z'}, optional
-        Line-of-sight direction. Default is 'z'.
-    nthreads : int, optional
-        Number of threads for parallel computation. Default is 32.
-    R1R2 : array-like, optional
-        Precomputed RR counts for normalization. Default is None.
-    pos2 : array-like, optional
-        Positions of sample 2 (for cross-correlations). Default is None.
-    mpicomm : object, optional
-        MPI communicator. Default is None.
+#     Parameters
+#     ----------
+#     pos1 : array-like
+#         Positions of sample 1 (e.g., galaxies or halos).
+#     edges : list of arrays
+#         Bin edges in separation (s, mu).
+#     boxsize : float
+#         Size of the simulation box.
+#     ells : tuple of int, optional
+#         Multipoles to project onto. Default is (0, 2).
+#     los : {'x', 'y', 'z'}, optional
+#         Line-of-sight direction. Default is 'z'.
+#     nthreads : int, optional
+#         Number of threads for parallel computation. Default is 32.
+#     R1R2 : array-like, optional
+#         Precomputed RR counts for normalization. Default is None.
+#     pos2 : array-like, optional
+#         Positions of sample 2 (for cross-correlations). Default is None.
+#     mpicomm : object, optional
+#         MPI communicator. Default is None.
 
-    Returns
-    -------
-    s, (multipoles) : tuple(array, ndarray)
-        Average separation for each s bin and computed multipoles of the 2PCF.
-    """    
+#     Returns
+#     -------
+#     s, (multipoles) : tuple(array, ndarray)
+#         Average separation for each s bin and computed multipoles of the 2PCF.
+#     """    
 
-    result = TwoPointCorrelationFunction('smu', edges, 
-                                            data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
-                                            boxsize=boxsize, los=los, nthreads=nthreads, R1R2=R1R2, mpicomm=mpicomm)
+#     result = TwoPointCorrelationFunction('smu', edges, 
+#                                             data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
+#                                             boxsize=boxsize, los=los, nthreads=nthreads, R1R2=R1R2, mpicomm=mpicomm)
     
-    return project_to_multipoles(result, ells=ells)
+#     return project_to_multipoles(result, ells=ells)
 
     
-def compute_wp(pos1, edges, boxsize, pimax=40, los='z', nthreads=32, R1R2=None, pos2=None, mpicomm=None):
-    """
-    Compute the projected correlation function w_p(r_p).
+# def compute_wp(pos1, edges, boxsize, pimax=40, los='z', nthreads=32, R1R2=None, pos2=None, mpicomm=None):
+#     """
+#     Compute the projected correlation function w_p(r_p).
 
-    Parameters
-    ----------
-    pos1 : array-like
-        Positions of sample 1 (e.g., galaxies or halos).
-    edges : list of arrays
-        Bin edges for projected separation (r_p, pi).
-    boxsize : float
-        Size of the simulation box.
-    pimax : float, optional
-        Maximum line-of-sight separation for integration.
-    los : {'x', 'y', 'z'}, optional
-        Line-of-sight direction. Default is 'z'.
-    nthreads : int, optional
-        Number of threads for parallel computation. Default is 32.
-    R1R2 : array-like, optional
-        Precomputed RR counts for normalization. Default is None.
-    pos2 : array-like, optional
-        Positions of sample 2 for cross-correlations. Default is None.
-    mpicomm : object, optional
-        MPI communicator. Default is None.
+#     Parameters
+#     ----------
+#     pos1 : array-like
+#         Positions of sample 1 (e.g., galaxies or halos).
+#     edges : list of arrays
+#         Bin edges for projected separation (r_p, pi).
+#     boxsize : float
+#         Size of the simulation box.
+#     pimax : float, optional
+#         Maximum line-of-sight separation for integration.
+#     los : {'x', 'y', 'z'}, optional
+#         Line-of-sight direction. Default is 'z'.
+#     nthreads : int, optional
+#         Number of threads for parallel computation. Default is 32.
+#     R1R2 : array-like, optional
+#         Precomputed RR counts for normalization. Default is None.
+#     pos2 : array-like, optional
+#         Positions of sample 2 for cross-correlations. Default is None.
+#     mpicomm : object, optional
+#         MPI communicator. Default is None.
 
-    Returns
-    -------
-    rp, wp : tuple(array, array)
-        Seperation and projected correlation function.
-    """
+#     Returns
+#     -------
+#     rp, wp : tuple(array, array)
+#         Seperation and projected correlation function.
+#     """
 
-        
-    result = TwoPointCorrelationFunction('rppi', edges, 
-                                         data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
-                                         boxsize=boxsize, los=los, nthreads=nthreads, R1R2=R1R2, mpicomm=mpicomm)
+#     result = TwoPointCorrelationFunction('rppi', edges, 
+#                                          data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
+#                                          boxsize=boxsize, los=los, nthreads=nthreads, R1R2=R1R2, mpicomm=mpicomm)
     
-    return project_to_wp(result, pimax=pimax)
+#     return project_to_wp(result, pimax=pimax)
+
+
+# def compute_delta_sigma(
+#     pos_lens,   
+#     pos_particles,
+#     rbins,
+#     boxsize,
+#     rho_m,
+#     los='z',
+#     pimax=30,
+#     nthreads=32,
+# ):
+#     """
+#     Compute excess surface density ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2] 
+#     using rp–π pair counts and fast vectorized Gauss–Legendre integration.
+
+#     Parameters
+#     ----------
+#     pos_lens : (N_lens, 3) array
+#         Lens positions.
+#     pos_particles : (N_part, 3) array
+#         Particle positions.
+#     rbins : array
+#         Projected-radius bin edges.
+#     boxsize : float
+#         Periodic-box size [Mpc/h].
+#     rho_m : float
+#         Mean matter density [Msun/h / (Mpc/h)^3].
+#     pimax : float
+#         Maximum LOS half-depth for Σ(R).
+#     los : str
+#         LOS axis for Corrfunc 'x', 'y' or 'z'. Default 'z'.
+#     nthreads : int
+#         number of threads to use for Corrfunc.
+
+#     Returns
+#     -------
+#     delta_sigma : array
+#         ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2].
+#     """
+
+#     # --- 1) rp–pi bins
+#     rpbins = np.geomspace(0.001, rbins.max(), 100)
+#     pibins = np.linspace(-pimax, pimax, 2 * pimax + 1)
+
+#     # --- 2) Measure ξ(rp,pi)
+#     rp, wp = TwoPointCorrelationFunction(
+#         "rppi",
+#         edges=[rpbins, pibins],
+#         data_positions1=pos_lens,
+#         data_positions2=pos_particles,
+#         boxsize=boxsize,
+#         los=los,
+#         nthreads=nthreads
+#     )(return_sep=True, pimax=pimax)
+
+#     # --- 4) Sigma(R) = rho_m * w_p(R)
+#     Sigma = rho_m * wp
+
+#     # --- 5) Compute Σ(<R)
+#     spline_S = interp1d(rp, Sigma, kind="cubic",
+#                         bounds_error=False, fill_value="extrapolate")
+
+#     def integrand(r):
+#         return r * spline_S(r)
+
+#     Sigma_mean = np.array([2.0 / R**2 * quad(integrand, 0, R, limit=200)[0] for R in rp])
+
+#     # --- 6) Excess surface density
+#     DeltaSigma = (Sigma_mean - Sigma) /1e12 
+#     spline_Dsigma = interp1d(rp, DeltaSigma) 
+#     rp_cent = 0.5 * (rbins[1:] + rbins[:-1])
+
+#     return rp_cent, spline_Dsigma(rp_cent)
+
+
+
+
+TAB_GAMMA_LN = scipy.special.gammaln(np.arange(1000001, dtype=np.float64))
+
+@njit(fastmath=True)
+def log_factorial(x):
+    return TAB_GAMMA_LN[x + 1]
+
+
+@njit(fastmath=True)
+def cmp_logZ(lam, nu, max_x=1000):
+    x = np.arange(max_x + 1)
+    log_terms = x * np.log(lam) - nu * log_factorial(x)
+    m = np.max(log_terms)          # log-sum-exp trick
+    return m + np.log(np.sum(np.exp(log_terms - m)))
+
+@njit(fastmath=True)
+def cmp_pmf_vec(x, lam, nu, logZ=None, max_x=1000):
+    x = np.asarray(x)
+    if logZ is None:
+        logZ = cmp_logZ(lam, nu, max_x)
+
+    log_p = x * np.log(lam) - nu * log_factorial(x) - logZ
+    return np.exp(log_p)
+
+@njit(fastmath=True, cache=True)
+def get_max_x(lam):
+    if lam < 15:
+        return 50
+    elif lam < 100:
+        return 200
+    elif lam < 700:
+        return 1000
+    elif lam < 4000:
+        return 5000
+    else:
+        return int(lam*1.1)
+
+@njit(fastmath=True, cache=True)
+def cmp_lambda_small_mu(mu, nu):
+    """
+    Inverse of small-lambda CMP mean expansion
+    up to O(mu^4).
+    """
+
+    a2 = 2.0**(-nu)
+    a3 = 6.0**(-nu) 
+    a4 = 24.0**(-nu)
+
+    A = 2*a2 - 1
+    B = 3*a3 - 3*a2 + 1
+    C = 4*a4 - 4*a3 - 2*a2*a2 + 4*a2 - 1
+
+    return (
+        mu
+        - A*mu**2
+        + (2*A*A - B)*mu**3
+        + (-5*A**3 + 5*A*B - C)*mu**4
+    )
+
+@njit(fastmath=True, cache=True)
+def cmp_lambda_from_mean(mu, nu):
+    """Rescale λ so CMP mean ≈ mu (Poisson mean)."""
+    return (mu + (nu - 1) / (2 * nu)) ** nu
+
+
+@njit(fastmath=True, cache=True)
+def cmp_lambda_from_mu_allscale(mu, nu, sig=0.2):
+    """Use small-lambda approximation for small mu, otherwise use large-lambda."""
+    # Threshold for switching between approximations
+    threshold = 0.8  # Adjust this value as needed
+
+    #  ---------- Adaptive blending ----------
+    w = 0.5*(math.erf((mu - threshold)/sig)+1)
+    mu_small = cmp_lambda_small_mu(mu, nu)
+    mu_large = cmp_lambda_from_mean(mu, nu) if mu > 0.5 else 0 #np.nan_to_num does not work in numba!
+    mu = (1-w)*mu_small + w*mu_large
+    return mu
+
+
+@njit(fastmath=True)
+def cmp_sample(N_sat, nu): 
+    lam_cmp = cmp_lambda_from_mu_allscale(N_sat, nu)
+    max_x = get_max_x(N_sat)
+    x = np.arange(max_x + 1) 
+    logZ = cmp_logZ(lam_cmp, nu, max_x=max(300, int(max_x*1.1))) 
+    pmf = cmp_pmf_vec(x, lam_cmp, nu, logZ) 
+    cdf = np.cumsum(pmf) 
+    cdf /= cdf[-1] 
+    u = np.random.rand() 
+    return (cdf < u).sum()
+
+
+# @njit(fastmath=True)
+# def cmp_lambda_from_mu_allscale(mu, nu):
+#     """Use small-lambda approximation for small mu, otherwise use large-lambda."""
+#     # Threshold for switching between approximations
+#     threshold = 0.8  # Adjust this value as needed
+
+#     # If mu is small, use the small-mu approximation
+#     if mu < threshold:
+#         return cmp_lambda_small_mu(mu, nu)
+#     else:
+#         return cmp_lambda_from_mean(mu, nu)
 
 
 @njit(parallel=True, fastmath=True)
-def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32, ab_arr=None, conformity=False, link_sat_to_central=False, seed=None):
+def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, nu=1, p_ab=None, Nthread=32, ab_arr=None, weight=None, conformity=False, link_sat_to_central=False, seed=None):
     """
     Compute the number of central and satellite galaxies in a halo using a HOD (Halo Occupation Distribution) model.
 
@@ -165,50 +333,44 @@ def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32,
             Sampled number of satellites per halo.
     """
 
-    
-    numba.set_num_threads(Nthread)
     # starting index of each thread
+    # numba.set_num_threads(Nthread)
     hstart = np.rint(np.linspace(0, len(log10_Mh), Nthread + 1))
-    Ncent = np.empty_like(log10_Mh)
-    cond_cent = np.empty_like(log10_Mh)
-    N_sat = np.empty_like(log10_Mh)
+    cond_cent = np.zeros(log10_Mh.size, dtype=np.bool_)
     proba_sat = np.empty_like(log10_Mh, dtype=np.int64)
-    
+    Nb_sat = 0
+
     # figuring out the number of halos kept for each thread
     for tid in numba.prange(Nthread):
         if seed is not None:
             np.random.seed(seed[tid])
         for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-            M_0 = p_sat[1]
-            Ncent[i] = fun_cHOD(log10_Mh[i], p_cen)
+            Ncent = fun_cHOD(log10_Mh[i], p_cen)
             if p_ab is not None:
-                Ncent[i] *= (1 + np.sum(p_ab[0] * ab_arr[i])*(1-Ncent[i]))
-            cond_cent[i] = Ncent[i] - np.random.uniform(0, 1) > 0
+                Ncent *= (1 + np.sum(p_ab[0] * ab_arr[i])*(1-Ncent))
+            cond_cent[i] = Ncent * weight[i] - np.random.uniform(0, 1) > 0
             if p_sat is not None :
-                M_0 = p_sat[1]
-                if log10_Mh[i] <= M_0:
-                    N_sat[i] = 0
-                elif np.abs(log10_Mh[i]- M_0) < -0.001:
-                    p_sat[1] += 0.001
-                    N_sat[i] = fun_sHOD(log10_Mh[i], p_sat)
-                    p_sat[1] -= 0.001
-                else:
-                    N_sat[i] = fun_sHOD(log10_Mh[i], p_sat)
+                N_sat = fun_sHOD(log10_Mh[i], p_sat)
                 if link_sat_to_central:
-                    N_sat[i] *= Ncent[i]
+                    N_sat *= Ncent
                 if p_ab is not None:
-                    N_sat[i] *= (1 + np.sum(p_ab[1] * ab_arr[i]))
-                if N_sat[i] <=0:
+                    N_sat *= (1 + np.sum(p_ab[1] * ab_arr[i]))
+                if N_sat <=0:
                     proba_sat[i] = 0
                 elif conformity:
-                    proba_sat[i] = np.random.poisson(N_sat[i]*cond_cent[i])
+                    proba_sat[i] = np.random.poisson(N_sat*cond_cent[i])
                 else :
-                    proba_sat[i] = np.random.poisson(N_sat[i])
-                
-    return Ncent, N_sat, cond_cent, proba_sat
+                    if nu == 1:
+                        proba_sat[i] = np.random.poisson(N_sat)
+                    else:
+                        proba_sat[i] = cmp_sample(N_sat, nu)
+                if proba_sat[i] > 0:
+                    Nb_sat += proba_sat[i]
+                    
+    return cond_cent, proba_sat, Nb_sat
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def _f_nfw(x):
     """
     NFW profile helper function.
@@ -225,25 +387,8 @@ def _f_nfw(x):
     return np.log(1.+x)-x/(1.+x)
 
 
-@njit(fastmath=True)
-def _rescale(a, b):
-    """
-    Rescale vectors by another vector using broadcasting.
 
-    Parameters:
-        a : ndarray
-            Input array to be scaled.
-        b : ndarray
-            Scaling array.
-
-    Returns:
-        ndarray
-            Scaled array.
-    """
-
-    return np.transpose(np.multiply(np.transpose(a), np.transpose(b)))
-
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def getPointsOnSphere_jit(nPoints, Nthread=32, seed=None):
     """
     Generate random points on a sphere surface using numba jit.
@@ -261,7 +406,7 @@ def getPointsOnSphere_jit(nPoints, Nthread=32, seed=None):
             Array of shape (nPoints, 3) with unit vectors uniformly distributed on a sphere.
     """
 
-    numba.set_num_threads(Nthread)
+    # numba.set_num_threads(Nthread)
     ind = min(Nthread, nPoints)
     # starting index of each thread
     hstart = np.rint(np.linspace(0, nPoints, ind+1))
@@ -284,72 +429,7 @@ def getPointsOnSphere_jit(nPoints, Nthread=32, seed=None):
 
 
 
-def rd_draw_NFW(nPoints, burn_in=100000):
-    """
-    Draw random samples from a 3D NFW profile using the Metropolis-Hastings algorithm.
-
-    Parameters:
-        nPoints : int
-            Total number of samples to generate.
-        nPoints : int, optional
-            Number of point to remove from the Metropolis-Hastings algorithm. Default is 100000.
-
-    Returns:
-        ndarray
-            Random samples from the NFW profile.
-    """
-
-    
-    if nPoints <= burn_in:
-        raise ValueError (f'Error : NPoints must be above {burn_in}')
-    epsilon = 0.3
-    previousX = 0.3
-
-    def NFWprofile(x):
-        # multiply by x^2 to get P(r) and not rho(r)
-        return 1./(x*(1+x)**2)
-    previousP = NFWprofile(previousX)
-    data = np.zeros(nPoints)
-    i = 0
-    for step in np.arange(nPoints)+1:
-        evalX = previousX+2.*(np.random.uniform()-0.5)*epsilon
-        evalP = NFWprofile(evalX)
-        if evalX < 0.:
-            evalP = 0.
-        elif evalX < 0.01:
-            evalP = NFWprofile(0.01)
-        else:
-            pass
-        R = evalP/previousP
-        if R >= 1:
-            previousX = evalX*1.
-            previousP = evalP*1.
-        else:
-            if np.random.uniform() < R:
-                previousX = evalX*1.
-                previousP = evalP*1.
-        data[i] = previousX*1.
-        i += 1
-        # if step%100000==0 and step>1000 :
-        #     print (step)
-        #     print (np.max(data))
-        #     x=np.linspace(0.,40.,1000)
-        #     h,e=np.histogram(data[data>0],bins=1000,range=(0.,40.))
-        #     plt.plot(x,h)
-        #     x=np.linspace(0.,40.,1000)
-        #     plt.plot(x,21000.*4.*NFWprofile(x))       #Normalisation a revoir mais profile OK
-        #     plt.xscale('log')
-        #     plt.yscale('log')
-        #     plt.show()
-    dataPruned = data[burn_in:]
-    np.random.shuffle(dataPruned)
-    os.makedirs('data', exist_ok=True)
-    np.save('data/nfw.npy', dataPruned)
-    return dataPruned
-
-
-
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, conformity=False, link_sat_to_central=False):
     """
     Compute total number of galaxies and satellite fraction from a given HOD parameter set.
@@ -371,54 +451,50 @@ def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, confo
             Use conformity when calculating satellites. Default is False.
 
     Returns:
-        tuple(float, float)
-            Total number of galaxies, and satellite fraction.
+        tuple(float, float, float)
+            Total number of galaxies, satellite fraction, and mean halo mass of the sample.
     """
 
+    # numba.set_num_threads(Nthread)
     nbinsM, logbinM = np.histogram(log10_Mh, bins=100)[:2]
-    LogM = np.zeros(len(logbinM)-1)
-    dM = np.diff(logbinM)[0]
-    ngal_c = 0
-    ngal_sat = 0 
-    # starting index of each thread
-    hstart = np.rint(np.linspace(0, len(logbinM)-1, Nthread + 1))
-    #p_sat=None
+    ngal_c = np.empty_like(nbinsM, dtype=np.float64)
+    ngal_sat = np.empty_like(nbinsM, dtype=np.float64)
+    mass_b = np.empty_like(nbinsM, dtype=np.float64)
     if p_sat is not None :
-        for tid in numba.prange(Nthread):
-            for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-                LogM = ((logbinM[i]+logbinM[i+1])*0.5)
-                Ncent = fun_cHOD(LogM, p_cen)
-                if Ncent < 0:
-                    Ncent = 0
-                if LogM < p_sat[1]:
-                    N_sat = 0
-                else:
-                    N_sat = fun_sHOD(LogM, p_sat)
-                ngal_c += (nbinsM[i]/dM * Ncent*dM)
-                ngal_sat += (nbinsM[i]/dM * Ncent*N_sat*dM) if conformity | link_sat_to_central else (nbinsM[i]/dM * N_sat*dM)
-        ngal_tot = ngal_c+ngal_sat
-        return ngal_tot, ngal_sat/ngal_tot
-    else : 
-        for tid in numba.prange(Nthread):
-            for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-                LogM = ((logbinM[i]+logbinM[i+1])*0.5)
-                Ncent = fun_cHOD(LogM, p_cen)
-                if Ncent < 0:
-                    Ncent = 0
-                ngal_c += (nbinsM[i]/dM * Ncent*dM)
-        
-        return ngal_c, 0
-    
-"""Interpolation of lambertw function for NFW computation"""
+        for i in numba.prange(len(logbinM)):
+            LogM = ((logbinM[i]+logbinM[i+1])*0.5)
+            Ncent = fun_cHOD(LogM, p_cen)
+            if Ncent < 0:
+                Ncent = 0
+            if LogM < p_sat[1]:
+                N_sat = 0
+            else:
+                N_sat = fun_sHOD(LogM, p_sat)
+            ngal_c[i] = (nbinsM[i] * Ncent)
+            ngal_sat[i] = (nbinsM[i]* Ncent*N_sat) if conformity | link_sat_to_central else (nbinsM[i] * N_sat)
+            mass_b[i] = (ngal_c[i]+ngal_sat[i])*10**LogM
+        ngal_tot = ngal_c.sum()+ngal_sat.sum()
+        return ngal_tot, ngal_sat.sum()/ngal_tot, mass_b.sum()/ngal_tot
+    else: 
+        for i in numba.prange(len(logbinM)):
+            LogM = ((logbinM[i]+logbinM[i+1])*0.5)
+            Ncent = fun_cHOD(LogM, p_cen)
+            if Ncent < 0:
+                Ncent = 0
+            ngal_c[i] = (nbinsM[i] * Ncent)
+            mass_b[i] = (ngal_c[i]*10**LogM)
+        return ngal_c.sum(), 0, mass_b.sum()/(ngal_c.sum())
+
+"""Interpolation of lambertW function for NFW computation"""
 xt = np.linspace(-1,0,1000000)
 ft = np.real(scipy.special.lambertw(xt, k=0))
-interp_lambertw= njit(parallel=True, fastmath=True)(lambda x: np.interp(x, xt, ft))
+interp_lambertw= njit(fastmath=True)(lambda x: np.interp(x, xt, ft))
 
 @njit(fastmath=True)
 def get_etavir_nfw(c): 
     """
     Draw a normalized NFW radius using inversion sampling of the cumulative mass profile.
-
+    This use analytic description of the NFW profile from https://arxiv.org/pdf/1805.09550
     Parameters:
         c : float
             Concentration parameter of the NFW profile.
@@ -428,7 +504,7 @@ def get_etavir_nfw(c):
             Normalized radius (r/Rvir).
     """
 
-    rd_u = np.random.uniform() * (np.log(1.0 + c)-c/(1.0 + c))
+    rd_u = np.random.uniform() * (np.log(1.0 + c)-c/(1.0 + c))  
     return (-(1.0/interp_lambertw(-np.exp(-rd_u-1)))-1)/c
 
 @njit(parallel=True, fastmath=True)
@@ -475,9 +551,11 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
     """
 
     
-    numba.set_num_threads(Nthread)
+    # numba.set_num_threads(Nthread)
     G = 4.302e-6  # in kpc/Msol (km.s)^2
-    # figuring out the number of halos kept for each thread
+    # Validate vel_sat once, before the prange loop. Keeping the raise inside the
+    # loop gives it a second exit path, which prevents Numba from parallelizing it.
+    
     x_sat = np.empty_like(x_h)
     y_sat = np.empty_like(y_h)
     z_sat = np.empty_like(z_h)
@@ -491,10 +569,6 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
         if seed is not None:
             np.random.seed(seed[tid])
         for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-            # ind = i
-            #while (NFW_draw[ind] > c[i]):
-            #    ind = np.random.randint(0, len(NFW_draw))
-            #etaVir = NFW_draw[ind]/c[i]  # =r/rvir
             if np.random.uniform(0,1) < exp_frac:
                 tt = np.random.exponential(scale=exp_scale)
                 etaVir = tt/c[i]
@@ -511,20 +585,18 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
                 vx_sat[i] = vx_h[i] + rd_vel[i, 0] * v *f_sigv
                 vy_sat[i] = vy_h[i] + rd_vel[i, 1] * v *f_sigv
                 vz_sat[i] = vz_h[i] + rd_vel[i, 2] * v *f_sigv
-            elif (vel_sat == 'rd_normal') | (vel_sat=='infall'):
+            elif (vel_sat == 'rd_normal'):
                 sig = vrms_h[i]*0.577*f_sigv
                 vx_sat[i] = np.random.normal(loc=vx_h[i], scale=sig)
                 vy_sat[i] = np.random.normal(loc=vy_h[i], scale=sig)
                 vz_sat[i] = np.random.normal(loc=vz_h[i], scale=sig)
-                if vel_sat=='infall':
-                    norm = np.sqrt((x_h[i] - x_sat[i])**2 + (y_h[i] - y_sat[i])**2 + (z_h[i] -z_sat[i])**2)
-                    v_r = np.random.normal(loc=v_infall, scale=sig)
-                    vx_sat[i] += (x_h[i] - x_sat[i])/norm * v_r
-                    vy_sat[i] += (y_h[i] - y_sat[i])/norm * v_r
-                    vz_sat[i] += (z_h[i] - z_sat[i])/norm * v_r
-            else:
-                raise ValueError(
-                    'Wrong vel_sat argument only "rd_normal", "infall", "NFW"')
+            else:  # vel_sat == 'infall' (validated before the loop)
+                sig = vrms_h[i]*0.577
+                norm = np.sqrt((x_h[i] - x_sat[i])**2 + (y_h[i] - y_sat[i])**2 + (z_h[i] -z_sat[i])**2)
+                v_r = np.random.normal(loc=v_infall, scale=sig)
+                vx_sat[i] = np.random.normal(loc=vx_h[i], scale=sig) + ((x_h[i] - x_sat[i])/norm * v_r)
+                vy_sat[i] = np.random.normal(loc=vy_h[i], scale=sig) + ((y_h[i] - y_sat[i])/norm * v_r)
+                vz_sat[i] = np.random.normal(loc=vz_h[i], scale=sig) + ((z_h[i] - z_sat[i])/norm * v_r)
     return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat
 
 
@@ -589,457 +661,234 @@ def plot_HOD(p_cen, p_sat, fun_cHOD, fun_sHOD, logM = np.linspace(10.8,15,100), 
     return fig
 
 
-def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256, resampler='tsc', interlacing=2, ells=(0, 2), mpicomm=None):
+
+
+import time
+from numba import objmode
+@njit(parallel=True, fastmath=True, cache=True)
+def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
     """
-    Compute the power spectrum multipoles from a catalog using FFT-based methods.
+    Build a CSR-style index mapping each halo_id to all corresponding particle indices. (AI based code)
 
     Parameters
     ----------
-    pos1 : array-like
-        Positions of catalog 1.
-    boxsize : float
-        Size of the simulation box.
-    kedges : tuple
-        k-bin edges for the power spectrum.
-    pos2 : array-like, optional
-        Positions of catalog 2 (for cross-spectrum).
-    los : array-like, optional
-        Line-of-sight direction.
-    nmesh : int, optional
-        Number of mesh cells per dimension. Default is 256.
-    resampler : str, optional
-        Mass assignment scheme. Default is 'tsc'.
-    interlacing : int, optional
-        Interlacing order for FFT. Default is 2.
-    ells : tuple of int, optional
-        Multipoles to compute. Default is (0, 2, 4).
-    mpicomm : object, optional
-        MPI communicator.
+    particle_halo_id : ndarray[int64]
+        Array of shape (N_particles,). For each particle, gives the host halo ID.
+        May contain repeated halo IDs.
+
+    halo_id_list : ndarray[int64]
+        Array of unique halo IDs for which to retrieve particle indices.
+        Order is preserved in the output (CSR corresponds to this order).
 
     Returns
     -------
-    array
-        Power spectrum multipoles.
+    flat : ndarray[int64]
+        Flattened array of all particle indices corresponding to each halo ID
+        (concatenated CSR style).
+
+    offsets : ndarray[int64]
+        Array of shape (len(halo_id_list) + 1,). For halo `i`,
+        particle indices are in `flat[offsets[i]:offsets[i+1]]`.
+    Nthread : int, optional
+        Number of threads for parallel computation. Default is 32.
+
+    Notes
+    -----
+    - Works efficiently for >100M particles.
+    - Memory-efficient (no dense array indexed by max ID).
+    - Fully deterministic (stable sorting).
+    - Parallelized with `numba.prange`.
+
+    Example
+    -------
+    >>> Np = 10_000_000
+    >>> halo_id_list = np.arange(100_000, dtype=np.int64)
+    >>> particle_halo_id = np.random.choice(halo_id_list, Np)
+    >>> flat, offsets = halo_to_particle_indices(particle_halo_id, halo_id_list, Nthread=32)
+    >>> # indices for first halo
+    >>> flat[offsets[0]:offsets[1]]
     """
-    from pypower import CatalogFFTPower
+    # numba.set_num_threads(Nthread)
+    Np = len(sorted_hid)
+    Nh = len(halo_id_list)
 
-    result = CatalogFFTPower(
-        data_positions1=pos1, data_positions2=pos2,
-        boxsize=boxsize, nmesh=nmesh, kedges=kedges,
-        los=los, resampler=resampler,
-        interlacing=interlacing,
-        position_type='pos', ells=ells,
-        mpicomm=mpicomm
-    )
-    return result.poles
+    # === Phase 2: identify group boundaries for unique halo IDs
+    with objmode(st='f8'):
+        st = time.perf_counter()
+    uniq_hid = []
+    start_pos = []
+    last_val = sorted_hid[0]
+    uniq_hid.append(last_val)
+    start_pos.append(0)
+    for i in range(1, Np):
+        val = sorted_hid[i]
+        if val != last_val:
+            uniq_hid.append(val)
+            start_pos.append(i)
+            last_val = val
+    start_pos.append(Np)
 
+    uniq_hid = np.array(uniq_hid, dtype=np.int64)
+    start_pos = np.array(start_pos, dtype=np.int64)
+    Nuniq = len(uniq_hid)
+    with objmode():
+        print('Grouping time (s):', time.perf_counter()-st, flush=True)
 
-@njit(parallel=True)
-def find_indices(part_id, sat_id, Nthread):
-    numba.set_num_threads(Nthread)
-    n = len(part_id)
-    m = len(sat_id)
+    # === Phase 3: binary search each target halo_id in uniq_hid
+    with objmode(st='f8'):
+        st = time.perf_counter()
+    start_match = np.full(Nh, -1, dtype=np.int64)
+    end_match = np.full(Nh, -1, dtype=np.int64)
 
-    # Phase 1 — index inverse (hash simplifié pour matching rapide)
-    val_map = dict()
-    for i in range(m):
-        val_map[sat_id[i]] = i
-    val_index = np.full(np.max(part_id) + 1, -1, dtype=np.int64)
-    for i in range(m):
-        val_index[sat_id[i]] = i
+    for i in numba.prange(Nh):
+        v = halo_id_list[i]
+        lo = 0
+        hi = Nuniq - 1
+        found = -1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if uniq_hid[mid] == v:
+                found = mid
+                break
+            elif uniq_hid[mid] < v:
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        if found != -1:
+            start_match[i] = start_pos[found]
+            end_match[i] = start_pos[found + 1]
+    with objmode():
+        print('Matching time (s):', time.perf_counter()-st, flush=True)
+    # === Phase 4: compute offsets (CSR)
+    with objmode(st='f8'):
+        st = time.perf_counter()
+    offsets = np.empty(Nh + 1, dtype=np.int64)
+    offsets[0] = 0
+    for i in range(Nh):
+        if start_match[i] != -1:
+            count = end_match[i] - start_match[i]
+        else:
+            count = 0
+        offsets[i + 1] = offsets[i] + count
+    with objmode():
+        print('Offsets time (s):', time.perf_counter()-st, flush=True)
+    # === Phase 5: fill flat array
 
-    # Phase 2 — compteur par valeur
-    counts = np.zeros(m, dtype=np.int64)
-    for i in numba.prange(n):
-        v = part_id[i]
-        if v < val_index.size:
-            j = val_index[v]
-            if j != -1:
-                counts[j] += 1
-
-    # Phase 3 — calcul des offsets (CSR-style)
-    offsets = np.zeros(m + 1, dtype=np.int64)
-    for i in range(m):
-        offsets[i + 1] = offsets[i] + counts[i]
-
-    # Phase 4 — allocation et remplissage
+    with objmode(st='f8'):
+        st = time.perf_counter()
     flat = np.empty(offsets[-1], dtype=np.int64)
-    current = offsets[:-1].copy()
-
-    for i in numba.prange(n):
-        v = part_id[i]
-        if v < val_index.size:
-            j = val_index[v]
-            if j != -1:
-                idx = current[j]
-                flat[idx] = i
-                current[j] += 1
-
+    for i in numba.prange(Nh):
+        if start_match[i] != -1:
+            start = start_match[i]
+            end = end_match[i]
+            out_start = offsets[i]
+            out_end = offsets[i + 1]
+            flat[out_start:out_end] = order_idx[start:end]
+    with objmode():
+        print('Filling time (s):', time.perf_counter()-st, flush=True)
     return flat, offsets
 
 
-
-@njit(parallel=True, fastmath=True)
-def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
-                          indexes_p,
-                          nb_sat, cum_sum_sat, Nthread, seed=None):
-    
+@njit(fastmath=True, parallel=True)
+def sample_satellites_from_particles(xp, yp, zp, vxp, vyp, vzp,
+                                     flat, offsets,
+                                     nb_sat, Nthread, seed=None):
     """
-    --- Compute  positions and velocities for satelitte galaxies
+    Randomly sample satellite positions and velocities from particle data
+    using precomputed CSR-style halo-to-particle mapping.
+
+    Parameters
+    ----------
+    xp, yp, zp : ndarray
+        Particle positions.
+    vxp, vyp, vzp : ndarray
+        Particle velocities.
+    flat, offsets : ndarray[int64]
+        CSR structure giving the indices of particles per halo.
+        For halo i: flat[offsets[i]:offsets[i+1]] gives its particle indices.
+    nb_sat : ndarray[int64]
+        Number of satellites to draw per halo.
+    seed : ndarray[int64], optional
+        Global random seed for reproducibility.
+
+    Returns
+    -------
+    x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat : ndarray[float64]
+        Positions and velocities of all selected satellites (flattened).
+        Length = sum(nb_sat)
+    mask_missing : ndarray[bool]
+        Boolean mask of length sum(nb_sat), True if the corresponding
+        satellite needs to be generated artificially (not enough particles).
+
+    Notes
+    -----
+    - Parallelized across halos.
+    - If a halo has fewer particles than nb_sat[i], existing particles are
+      all used and the remainder are marked as missing.
+    - Designed for 100M+ particles and 10M+ halos.
     """
 
-    numba.set_num_threads(Nthread)
-    mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
-    hstart = np.rint(np.linspace(0, nb_sat.sum(), Nthread + 1))
-    x_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
-    y_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
-    z_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
-    vx_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
-    vy_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
-    vz_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
-    print('ok', vz_sat.size)
-    for tid in numba.prange(Nthread):
+    # numba.set_num_threads(Nthread)
+    Nh = len(nb_sat)
+    Nsat_total = np.sum(nb_sat)
+
+    mask_nfw = np.zeros(Nsat_total, dtype=np.bool_)
+    x_sat = np.empty(Nsat_total, dtype=np.float32)
+    y_sat = np.empty(Nsat_total, dtype=np.float32)
+    z_sat = np.empty(Nsat_total, dtype=np.float32)
+    vx_sat = np.empty(Nsat_total, dtype=np.float32)
+    vy_sat = np.empty(Nsat_total, dtype=np.float32)
+    vz_sat = np.empty(Nsat_total, dtype=np.float32)
+
+    # Build cumulative sum to know where to write per halo
+    cum_sum = np.zeros(Nh + 1, dtype=np.int64)
+    for i in range(Nh):
+        cum_sum[i + 1] = cum_sum[i] + nb_sat[i]
+
+    for i in numba.prange(Nh):
+        start_p = offsets[i]
+        end_p = offsets[i + 1]
+        n_p = end_p - start_p  # number of particles for this halo
+        n_s = nb_sat[i]        # number of satellites to sample
+        out_start = cum_sum[i]
+        out_end = cum_sum[i + 1]
+
+        if n_p == 0:
+            # No particles in this halo — all satellites missing
+            mask_nfw[out_start:out_end] = True
+            continue
+        # Seed RNG per halo for reproducibility
         if seed is not None:
-            np.random.seed(seed[tid])
+            np.random.seed(seed[i])
+        if n_p >= n_s:
+            # Enough particles — draw without replacement
+            idx_local = np.random.choice(n_p, n_s, replace=False)
+            indices = flat[start_p:end_p][idx_local]
+        else:
+            # Not enough particles — take all, fill rest as missing
+            indices = flat[start_p:end_p]
+            mask_nfw[out_start + n_p:out_end] = True
 
-        for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-            nb_sub = indexes_p[i].size
-            if nb_sub==0:
-                mask_nfw[cum_sum_sat[i]: cum_sum_sat[i+1]] = True
+        # Fill in selected satellites
+        n_fill = min(n_p, n_s)
+        x_sat[out_start:out_start + n_fill] = xp[indices[:n_fill]]
+        y_sat[out_start:out_start + n_fill] = yp[indices[:n_fill]]
+        z_sat[out_start:out_start + n_fill] = zp[indices[:n_fill]]
+        vx_sat[out_start:out_start + n_fill] = vxp[indices[:n_fill]]
+        vy_sat[out_start:out_start + n_fill] = vyp[indices[:n_fill]]
+        vz_sat[out_start:out_start + n_fill] = vzp[indices[:n_fill]]
 
-            elif nb_sat[i] <= nb_sub:
-                index = np.random.choice(indexes_p[i], nb_sat[i], replace=False)
-                x_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = xp[index]
-                y_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = yp[index]
-                z_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = zp[index]
-                vx_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vxp[index]
-                vy_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vyp[index]
-                vz_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vzp[index]
-                #id_parts[cum_sum_sat[i]: cum_sum_sat[i+1]] = tt + npstart[i]            
-            else:
-                x_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = xp[indexes_p[i]]
-                y_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = yp[indexes_p[i]]
-                z_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = zp[indexes_p[i]]
-                vx_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = vxp[indexes_p[i]]
-                vy_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = vyp[indexes_p[i]]
-                vz_sat[cum_sum_sat[i]: cum_sum_sat[i] + nb_sub] = vzp[indexes_p[i]]
-                
-                mask_nfw[cum_sum_sat[i]+nb_sub: cum_sum_sat[i+1]] = True
     return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw
 
 
-@njit(parallel=True, fastmath=True)
-def compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, x_sat, y_sat, z_sat, 
-                                 vx_sat, vy_sat, vz_sat, npout, npstart, nb_sat, 
-                                 cum_sum_sat, Nthread, seed=None):
-    
+def update_dic(d, u):
     """
-    Sample satellite galaxy positions and velocities from Abacus particle subsamples.
-
-    Parameters
-    ----------
-    xp, yp, zp : arrays
-        Particle positions in each axis.
-    vxp, vyp, vzp : arrays
-        Particle velocities in each axis.
-    x_sat, y_sat, z_sat : arrays
-        Host halo positions in each axis.
-    vx_sat, vy_sat, vz_sat : arrays
-        Host halo velocities in each axis.
-    npout : array
-        Number of available particles for each halo.
-    npstart : array
-        Starting index in the global particle array for each halo.
-    nb_sat : array
-        Number of satellites to assign per halo.
-    cum_sum_sat : array
-        Cumulative sum array to locate output indices.
-    Nthread : int
-        Number of threads to use in parallel loop.
-    seed : array, optional
-        Array of seeds for reproducible random sampling across threads.
-
-    Returns
-    -------
-    mask_nfw : array
-        Boolean mask identifying entries with no enough particles (to be filled using NFW).
+    Update a nested dictionary `d` with another dictionary `u`, merging values recursively.
     """
-
-    numba.set_num_threads(Nthread)
-    mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
-    hstart = np.rint(np.linspace(0, npout.size, Nthread + 1))
-    for tid in numba.prange(Nthread):
-        if seed is not None:
-            np.random.seed(seed[tid])
-
-        for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-            if nb_sat[i] < npout[i]:
-                tt = np.random.choice(npout[i], nb_sat[i], replace=False) + npstart[i]
-                x_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = xp[tt]
-                y_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = yp[tt]
-                z_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = zp[tt]
-                vx_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vxp[tt]
-                vy_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vyp[tt]
-                vz_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vzp[tt]
-                #id_parts[cum_sum_sat[i]: cum_sum_sat[i+1]] = tt + npstart[i]            
-            else:
-                if npout[i] > 0:
-                    tt = np.arange(npout[i]) + npstart[i]
-                    x_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = xp[tt]
-                    y_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = yp[tt]
-                    z_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = zp[tt]
-                    vx_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vxp[tt]
-                    vy_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vyp[tt]
-                    vz_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vzp[tt]
-                
-                mask_nfw[cum_sum_sat[i]+npout[i]: cum_sum_sat[i+1]] = True
-    return mask_nfw
-
-
-@njit(parallel=True)
-def _assign_bin_values(bin_idx, col, bins, out):
-    """
-    Assign scaled values to elements within each bin, in parallel.
-
-    Parameters
-    ----------
-    bin_idx : ndarray of shape (N,)
-        Integer array giving the bin index of each element.
-    col : ndarray of shape (N,)
-        Array of values used for sorting within each bin.
-    bins : ndarray of shape (nbins+1,)
-        The bin edges used to compute `bin_idx`.
-    out : ndarray of shape (N,)
-        Preallocated output array to be filled in place.
-
-    Notes
-    -----
-    - For each bin, elements are sorted by `col` in descending order.
-    - Within a bin of size `m`, values are assigned as
-      linspace(-0.5, 0.5, m).
-    - Runs in parallel across bins using `numba.prange`.
-    """
-    nbins = len(bins) - 1
-    n = len(col)
-
-    for b in numba.prange(nbins):
-        # collect indices of elements in this bin
-        idx_in_bin = []
-        for i in range(n):
-            if bin_idx[i] == b:
-                idx_in_bin.append(i)
-        if len(idx_in_bin) == 0:
-            continue
-
-        idx_in_bin = np.array(idx_in_bin)
-
-        # argsort by col descending
-        vals = col[idx_in_bin]
-        order = np.argsort(vals)[::-1]
-
-        # assign linspace
-        size = len(order)
-        step = 1.0 / (size - 1) if size > 1 else 0.0
-        for j in range(size):
-            out[idx_in_bin[order[j]]] = -0.5 + j * step
-
-
-def initialize_assembly_bias_value(logMh, col, bins=50):
-    """
-    Vectorized and parallelized version of binning + ranking.
-
-    Parameters
-    ----------
-    logMh : ndarray of shape (N,)
-        Array of values to be binned (e.g., log10 halo masses).
-    col : ndarray of shape (N,)
-        Values used for ranking within bins.
-    bins : int or array-like, optional (default=50)
-        If int, the number of bins. If array, explicit bin edges.
-
-    Returns
-    -------
-    out : ndarray of shape (N,)
-        Output array where each element has been assigned a value
-        in [-0.5, 0.5] based on its rank within its bin.
-
-    Notes
-    -----
-    - Uses `np.histogram_bin_edges` if `bins` is an integer.
-    - Bin assignment is done with `np.digitize`.
-    - The heavy computation is offloaded to `_assign_bin_values`
-      (Numba parallel kernel).
-    - Designed to scale to very large arrays (10^7–10^8 elements).
-    """
-    # ensure bins are edges
-    if np.isscalar(bins):
-        bins = np.histogram_bin_edges(logMh, bins=bins)
-
-    # assign bin indices
-    bin_idx = np.digitize(logMh, bins) - 1
-    out = np.zeros_like(logMh)
-
-    # fill in parallel
-    _assign_bin_values(bin_idx, col, bins, out)
-
-    return out
-
-# @njit(parallel=True, fastmath=True)
-# def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
-#                           x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, indexes_p,
-#                           nb_sat, cum_sum_sat, Nthread, seed=None):
-    
-#     """
-#     --- Compute  positions and velocities for satelitte galaxies
-#     """
-
-#     numba.set_num_threads(Nthread)
-#     mask_nfw = np.zeros(nb_sat.sum(), dtype=np.int32)
-#     hstart = np.rint(np.linspace(0, x_sat.size, Nthread + 1))
-    
-#     for tid in numba.prange(Nthread):
-#         if seed is not None:
-#             np.random.seed(seed[tid])
-#         for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-#             nb_sub = indexes_p[i].size
-#             start = cum_sum_sat[i]
-#             stop = cum_sum_sat[i + 1]
-#             num_sat = nb_sat[i]
-#             if nb_sub==0:
-#                 for k in range(start, stop):
-#                     mask_nfw[k] = 1
-#             else:
-#                 if num_sat <= nb_sub:
-#                     indexes = indexes_p[i][np.random.permutation(nb_sub)]
-#                 else:
-#                     for k in range(nb_sub, num_sat):
-#                         mask_nfw[start + k] = 1
-#                     indexes = indexes_p[i]
-
-#                 for k, idx in enumerate(indexes):
-#                     x_sat[start + k] = xp[idx]
-#                     y_sat[start + k] = yp[idx]
-#                     z_sat[start + k] = zp[idx]
-#                     vx_sat[start + k] = vxp[idx]
-#                     vy_sat[start + k] = vyp[idx]
-#                     vz_sat[start + k] = vzp[idx]
-#     return mask_nfw
-
-
-
-
-
-# #### MPI FUNCTIONS
-# Need to be tested
-
-# def compute_ngal_mpi(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None):
-#     """
-#     --- Compute the number of galaxy and the satelitte fraction form HOD parameters
-#     """
-    
-#     nbinsM, logbinM = np.histogram(log10_Mh, bins=100, range=(10, 16))[:2]
-#     dM = np.diff(logbinM)[0]
-#     LogM = 0.5*(logbinM[:-1]+logbinM[1:])
-
-#     Ncent = fun_cHOD(LogM, p_cen)
-#     Ncent[Ncent < 0] = 0
-#     ngal_c = (nbinsM/dM * Ncent*dM).sum()
-
-#     if p_sat is not None:
-#         M_0 = p_sat[1]
-#         Nsat = np.zeros(100)
-#         Nsat[LogM > M_0] = fun_sHOD(LogM[LogM > M_0], p_sat)
-#         ngal_sat = (nbinsM/dM * Nsat*dM).sum()
-#     else:
-#         ngal_sat = 0
-#     return ngal_c, ngal_sat
-
-
-# def compute_N_mpi(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None, p_ab=None, ab_arr=None):
-
-#     """
-#     --- Compute the probability N for central galaxies given a HOD model
-#     """
-    
-#     Ncent = fun_cHOD(log10_Mh, p_cen)
-#     if p_ab is not None:
-#         Ncent *= (1 + np.sum(p_ab[0] * ab_arr)*(1-Ncent))
-#     if p_sat is None:
-#         return Ncent, 0
-#     M_0 = p_sat[1]
-#     N_sat = np.zeros_like(log10_Mh)
-#     N_sat[log10_Mh > M_0] = fun_sHOD(log10_Mh[log10_Mh > M_0], p_sat)
-#     if p_ab is not None:
-#         N_sat *= (1 + np.sum(p_ab[1] * ab_arr)*(1-N_sat))
-#     return Ncent, N_sat
-
-
-
-
-# def getPointsOnSphere_mpi(nPoints, rng):
-#         u1, u2 = rng.uniform(low=0, high=1), rng.uniform(low=0, high=1)
-#         cmin = -1
-#         cmax = +1
-#         ra = 0 + u1*(2*np.pi-0)
-#         dec = np.pi - (np.arccos(cmin+u2*(cmax-cmin)))
-#         ur = np.zeros((nPoints, 3))
-#         ur[:, 0] = np.sin(dec) * np.cos(ra)
-#         ur[:, 1] = np.sin(dec) * np.sin(ra)
-#         ur[:, 2] = np.cos(dec)
-#         return ur
-
-
-# def shuffle(array, seed=None):
-#     '''MARCHE PAS'''
-#     rng_= mpy.random.MPIRandomState(array.size, seed=seed)
-#     idx = rng_.choice(np.arange(0,array.size,1))
-
-#     return array[idx]
-
-
-# def NFW_mpi(sat_cat, Nb_sat, NFW, rng, seed=None):
-
-#     """
-#         --- Compute NFW postion and velocity shifts for satelittes galaxies non multithread method (used for fitting)
-#     """
-
-#     if len(NFW) > Nb_sat:
-#         np.random.shuffle(NFW)
-#         eta = NFW[:Nb_sat]
-#     else:
-#         eta = NFW[rng.randint(0, len(NFW))]
-
-#     a = 0
-#     while len(eta[eta > sat_cat['c']]) > 1:
-#         temp = len(eta[eta > sat_cat['c']])
-#         if a == temp:
-#             break
-#         a = temp
-#         rng_= mpy.random.MPIRandomState(a, seed=seed)
-#         eta[eta > sat_cat['c']] = NFW[rng_.randint(
-#             0, high=len(NFW))]
-    
-#     tet = np.zeros(len(eta[eta > sat_cat['c']]))
-#     for i in range(len(eta[eta > sat_cat['c']])):
-#         a = eta[sat_cat['c'][eta > sat_cat['c']][i] > eta]
-#         tet[i] = a[np.random.randint(len(a))]
-#     eta[eta > sat_cat['c']] = tet
-#     del tet
-
-#     etaVir = eta/sat_cat['c']  # =r/rvir
-
-#     def f(x):
-#         return np.log(1.+x)-x/(1.+x)
-#     G = 4.302e-6  # in kpc/Msol (km.s)^2
-#     vVir = np.sqrt(G*sat_cat["Mh"]/sat_cat["Rh"])
-#     v = vVir * np.sqrt(f(sat_cat['c'] * etaVir)
-#                        / (etaVir * f(sat_cat['c'])))
-
-    
-#     ur = getPointsOnSphere_mpi(sat_cat.size, rng)
-#     uv = getPointsOnSphere_mpi(sat_cat.size, rng)
-#     return _rescale(ur, (etaVir*sat_cat["Rh"])), _rescale(uv, v)
-
-
-
-
+    import collections.abc
+    for k, v in u.items():
+        if isinstance(v, collections.abc.Mapping):
+            d[k] = update_dic(d.get(k, {}), v)
+        else:
+            d[k] = v
+    return d

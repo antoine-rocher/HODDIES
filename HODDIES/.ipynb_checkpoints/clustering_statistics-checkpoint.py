@@ -1,0 +1,284 @@
+import numpy as np
+try:
+    from pycorr import TwoPointCorrelationFunction
+
+except ImportError:
+    import warnings
+    warnings.warn(
+        'Could not import pycorr. Install pycorr with ' \
+        '"python -m pip install git+https://github.com/cosmodesi/pycorr#egg=pycorr[corrfunc]".' \
+        'pycorr currently use a branch of Corrfunc, uninstall previous Corrfunc version (if any): "pip uninstall Corrfunc"'\
+        '' 
+    )
+
+from scipy.interpolate import interp1d
+from scipy.integrate import quad
+from numba import njit, prange
+
+LIST_STAT = ['xi_smu', 'xi_rppi', 'delta_sigma']
+
+def get_list_stat():
+    '''
+    Return a dictionary mapping clustering statistic names to their corresponding computation functions.
+    The supported statistics are:
+    - 'xi_smu': 2D correlation function in (s, mu) space.
+    - 'xi_rppi': 2D correlation function in (r_p, pi) space.
+    - 'delta_sigma': Excess surface density.
+    '''
+    
+    return LIST_STAT
+    
+
+
+def compute_twopoint(pos1, mode, edges, boxsize=None, los='z', nthreads=32, ells=None, pimax=None, R1R2=None, pos2=None, **kwargs):
+    """
+    Compute the projected correlation function w_p(r_p).
+
+    Parameters
+    ----------
+    pos1 : array-like
+        Positions of sample 1 (e.g., galaxies or halos).
+    edges : list of arrays
+        Bin edges for projected separation (r_p, pi).
+    boxsize : float
+        Size of the simulation box.
+    pimax : float, optional
+        Maximum line-of-sight separation for integration.
+    los : {'x', 'y', 'z'}, optional
+        Line-of-sight direction. Default is 'z'.
+    nthreads : int, optional
+        Number of threads for parallel computation. Default is 32.
+    R1R2 : array-like, optional
+        Precomputed RR counts for normalization. Default is None.
+    pos2 : array-like, optional
+        Positions of sample 2 for cross-correlations. Default is None.
+    mpicomm : object, optional
+        MPI communicator. Default is None.
+
+    Returns
+    -------
+    rp, wp : tuple(array, array)
+        Seperation and projected correlation function.
+    """
+
+    result = TwoPointCorrelationFunction(mode, edges, data_positions1=pos1, data_positions2=pos2, engine='corrfunc', 
+                                         boxsize=boxsize, los=los, nthreads=nthreads, **kwargs)
+    if ells is not None:
+        result = result(return_sep=True, ells=ells)
+    if pimax is not None:
+        result = result(return_sep=True, pimax=pimax)
+    return result
+
+
+
+def compute_delta_sigma(
+    pos_lens,   
+    pos_particles,
+    rbins,
+    boxsize,
+    rho_m,
+    los='z',
+    pimax=30,
+    nthreads=32,
+):
+    """
+    Compute excess surface density ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2] 
+    using rp–π pair counts and fast vectorized Gauss–Legendre integration.
+
+    Parameters
+    ----------
+    pos_lens : (N_lens, 3) array
+        Lens positions.
+    pos_particles : (N_part, 3) array
+        Particle positions.
+    rbins : array
+        Projected-radius bin edges.
+    boxsize : float
+        Periodic-box size [Mpc/h].
+    rho_m : float
+        Mean matter density [Msun/h / (Mpc/h)^3].
+    pimax : float
+        Maximum LOS half-depth for Σ(R).
+    los : str
+        LOS axis for Corrfunc 'x', 'y' or 'z'. Default 'z'.
+    nthreads : int
+        number of threads to use for Corrfunc.
+
+    Returns
+    -------
+    delta_sigma : array
+        ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2].
+    """
+
+    # --- 1) rp–pi bins
+    rpbins = np.geomspace(0.001, rbins.max(), 100)
+    pibins = np.linspace(-pimax, pimax, 2 * pimax + 1)
+
+    # --- 2) Measure ξ(rp,pi)
+    rp, wp = TwoPointCorrelationFunction(
+        "rppi",
+        edges=[rpbins, pibins],
+        data_positions1=pos_lens,
+        data_positions2=pos_particles,
+        boxsize=boxsize,
+        los=los,
+        nthreads=nthreads
+    )(return_sep=True, pimax=pimax)
+
+    # --- 4) Sigma(R) = rho_m * w_p(R)
+    Sigma = rho_m * wp
+
+    # --- 5) Compute Σ(<R)
+    spline_S = interp1d(rp, Sigma, kind="cubic",
+                        bounds_error=False, fill_value="extrapolate")
+
+    def integrand(r):
+        return r * spline_S(r)
+
+    Sigma_mean = np.array([2.0 / R**2 * quad(integrand, 0, R, limit=200)[0] for R in rp])
+
+    # --- 6) Excess surface density
+    DeltaSigma = (Sigma_mean - Sigma) /1e12 
+    spline_Dsigma = interp1d(rp, DeltaSigma) 
+    rp_cent = 0.5 * (rbins[1:] + rbins[:-1])
+
+    return rp_cent, spline_Dsigma(rp_cent)
+
+def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256, resampler='tsc', interlacing=2, ells=(0, 2), mpicomm=None):
+    """
+    Compute the power spectrum multipoles from a catalog using FFT-based methods.
+
+    Parameters
+    ----------
+    pos1 : array-like
+        Positions of catalog 1.
+    boxsize : float
+        Size of the simulation box.
+    kedges : tuple
+        k-bin edges for the power spectrum.
+    pos2 : array-like, optional
+        Positions of catalog 2 (for cross-spectrum).
+    los : array-like, optional
+        Line-of-sight direction.
+    nmesh : int, optional
+        Number of mesh cells per dimension. Default is 256.
+    resampler : str, optional
+        Mass assignment scheme. Default is 'tsc'.
+    interlacing : int, optional
+        Interlacing order for FFT. Default is 2.
+    ells : tuple of int, optional
+        Multipoles to compute. Default is (0, 2, 4).
+    mpicomm : object, optional
+        MPI communicator.
+
+    Returns
+    -------
+    array
+        Power spectrum multipoles.
+    """
+    from pypower import CatalogFFTPower
+
+    result = CatalogFFTPower(
+        data_positions1=pos1, data_positions2=pos2,
+        boxsize=boxsize, nmesh=nmesh, kedges=kedges,
+        los=los, resampler=resampler,
+        interlacing=interlacing,
+        position_type='pos', ells=ells,
+        mpicomm=mpicomm
+    )
+    return result.poles
+
+
+
+@njit(fastmath=True)
+def build_linked_list(X, Y, Z, boxsize, cell_size):
+    N = len(X)
+    ncell = int(boxsize / cell_size)
+
+    head = -1 * np.ones((ncell, ncell, ncell), dtype=np.int64)
+    linked = -1 * np.ones(N, dtype=np.int64)
+
+    for i in range(N):
+        ix = int(X[i] / cell_size) % ncell
+        iy = int(Y[i] / cell_size) % ncell
+        iz = int(Z[i] / cell_size) % ncell
+
+        linked[i] = head[ix, iy, iz]
+        head[ix, iy, iz] = i
+
+    return head, linked, ncell
+
+
+@njit(parallel=True)
+def count_in_cylinder(X, Y, Z, boxsize,
+                          R_max, pi_max,
+                          head, linked, ncell, cell_size):
+
+    N = len(X)
+    counts = np.zeros(N, dtype=np.int32)
+    R2 = R_max * R_max
+
+    for i in prange(N):
+        xi, yi, zi = X[i], Y[i], Z[i]
+
+        ix = int(xi / cell_size) % ncell
+        iy = int(yi / cell_size) % ncell
+        iz = int(zi / cell_size) % ncell
+
+        c = 0
+        dz_cells = int(pi_max / cell_size) + 1
+        # loop over neighbor cells in XY only
+        for dx_cell in (-1, 0, 1):
+            for dy_cell in (-1, 0, 1):
+
+                jx = (ix + dx_cell) % ncell
+                jy = (iy + dy_cell) % ncell
+
+                # loop over ALL z cells (needed for pi cut)
+
+                for dz_cell in range(-dz_cells, dz_cells + 1):
+                    jz = (iz + dz_cell) % ncell
+
+                    j = head[jx, jy, jz]
+
+                    while j != -1:
+
+                        if j != i:
+                            dx = X[j] - xi
+                            dy = Y[j] - yi
+                            dz = Z[j] - zi
+
+                            # periodic wrapping
+                            dx -= boxsize * np.round(dx / boxsize)
+                            dy -= boxsize * np.round(dy / boxsize)
+                            dz -= boxsize * np.round(dz / boxsize)
+
+                            rp2 = dx*dx + dy*dy
+
+                            if rp2 <= R2 and abs(dz) <= pi_max:
+                                c += 1
+
+                        j = linked[j]
+
+        counts[i] = c
+
+    return counts
+
+
+def compute_CIC(X, Y, Z, boxsize, R_max, pi_max):
+    """
+    Numba grid-based counts-in-cylinder.
+    """
+
+    # optimal cell size ~ R_max
+    cell_size = R_max
+
+    head, linked, ncell = build_linked_list(
+        X, Y, Z, boxsize, cell_size
+    )
+
+    return count_in_cylinder(
+        X, Y, Z, boxsize,
+        R_max, pi_max,
+        head, linked, ncell, cell_size
+    )   

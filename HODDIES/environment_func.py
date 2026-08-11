@@ -7,6 +7,7 @@ from scipy.fft import irfftn, rfftn
 from scipy.ndimage import gaussian_filter
 import timeit
 import warnings
+import logging
 
 """
 Originally written by Boryana Hadzhiyska for the ancient: https://arxiv.org/abs/1512.03402.
@@ -15,6 +16,8 @@ Originally written by Boryana Hadzhiyska for the ancient: https://arxiv.org/abs/
 
 
 __all__ = ['tsc_parallel', 'partition_parallel']
+
+logger = logging.getLogger('environment_func')
 
 
 def tsc_parallel(
@@ -109,7 +112,7 @@ def tsc_parallel(
     if nthread < 0:
         nthread = numba.config.NUMBA_NUM_THREADS
     if verbose:
-        print(f'nthread={nthread}')
+        logger.debug(f'nthread={nthread}')
 
     numba.set_num_threads(nthread)
     if isinstance(densgrid, (int, np.integer)):
@@ -144,7 +147,7 @@ def tsc_parallel(
     if npartition > 1 and npartition % 2 != 0 and nthread > 1:
         raise ValueError(f'npartition {npartition} not divisible by 2')
     if verbose and nthread > 1 and npartition < 2 * nthread:
-        print(
+        logger.warning(
             f'npartition {npartition} not large enough to use'
             f' all {nthread} threads; should be 2*nthread',
             stacklevel=2,
@@ -163,7 +166,7 @@ def tsc_parallel(
         _check_dtype(weights, 'weights')
 
     if verbose:
-        print(f'npartition={npartition}')
+        logger.debug(f'npartition={npartition}')
 
     wraptime = -timeit.default_timer()
     if wrap:
@@ -171,7 +174,7 @@ def tsc_parallel(
         _wrap_inplace(pos, box)
     wraptime += timeit.default_timer()
     if verbose:
-        print(f'Wrap time: {wraptime:.4g} sec')
+        logger.debug(f'Wrap time: {wraptime:.4g} sec')
 
     if npartition > 1:
         parttime = -timeit.default_timer()
@@ -186,7 +189,7 @@ def tsc_parallel(
         )
         parttime += timeit.default_timer()
         if verbose:
-            print(f'Partition time: {parttime:.4g} sec')
+            logger.debug(f'Partition time: {parttime:.4g} sec')
     else:
         ppart = pos
         wpart = weights
@@ -197,14 +200,14 @@ def tsc_parallel(
     tsctime += timeit.default_timer()
 
     if verbose:
-        print(f'TSC time: {tsctime:.4g} sec')
+        logger.debug(f'TSC time: {tsctime:.4g} sec')
 
     if user_supplied_grid:
         return None
     return densgrid
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, fastmath=True, cache=True)
 def _zeros_parallel(shape, dtype=np.float32):
     arr = np.empty(shape, dtype=dtype)
 
@@ -214,7 +217,7 @@ def _zeros_parallel(shape, dtype=np.float32):
     return arr
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, fastmath=True, cache=True)
 def _wrap_inplace(pos, box):
     for i in numba.prange(len(pos)):
         for j in range(3):
@@ -224,7 +227,7 @@ def _wrap_inplace(pos, box):
                 pos[i, j] += box
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, fastmath=True, cache=True)
 def _tsc_parallel(ppart, starts, dens, box, weights, offset):
     npartition = len(starts) - 1
     for i in numba.prange((npartition + 1) // 2):
@@ -254,7 +257,7 @@ def _tsc_parallel(ppart, starts, dens, box, weights, offset):
             )
 
 
-@numba.njit(parallel=True, fastmath=True)
+@numba.njit(parallel=True, fastmath=True, cache=True)
 def partition_parallel(
     pos,
     npartition,
@@ -382,14 +385,14 @@ def partition_parallel(
     return psort, starts, wsort
 
 
-@numba.njit
+@numba.njit(fastmath=True, cache=True)  
 def _rightwrap(x, L):
     if x >= L:
         return x - L
     return x
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, cache=True)
 def _tsc_scatter(positions, density, boxsize, weights=None, offset=0.0):
     """
     TSC worker function. Expects particles in domain [0,boxsize).
@@ -506,6 +509,7 @@ def _tsc_scatter(positions, density, boxsize, weights=None, offset=0.0):
 
 
 
+@numba.njit(fastmath=True, cache=True)
 def smooth_density(D, R, N_dim, Lbox):
     # cell size
     cell = Lbox / N_dim
@@ -516,7 +520,7 @@ def smooth_density(D, R, N_dim, Lbox):
 
 
 # tophat
-@numba.njit
+@numba.njit(fastmath=True, cache=True)
 def Wth(ksq, r):
     k = np.sqrt(ksq)
     w = 3 * (np.sin(k * r) - k * r * np.cos(k * r)) / (k * r) ** 3
@@ -524,12 +528,12 @@ def Wth(ksq, r):
 
 
 # gaussian
-@numba.njit
+@numba.njit(fastmath=True, cache=True)
 def Wg(k, r):
     return np.exp(-k * r * r / 2.0)
 
 
-@numba.njit(parallel=False, fastmath=True)  # parallel=True gives seg fault
+@numba.njit(fastmath=True, cache=True)  # parallel=True gives seg fault
 def get_tidal(dfour, karr, N_dim, R, dtype=np.float32):
     # initialize array
     tfour = np.zeros((N_dim, N_dim, N_dim // 2 + 1, 6), dtype=np.complex64)
@@ -560,7 +564,7 @@ def get_tidal(dfour, karr, N_dim, R, dtype=np.float32):
     return tfour
 
 
-@numba.njit(parallel=False, fastmath=True)
+@numba.njit(fastmath=True, cache=True) 
 def get_shear_nb(tidr, N_dim):
     shear = np.zeros(shape=(N_dim, N_dim, N_dim), dtype=np.float32)
     tensor = np.zeros((3, 3), dtype=np.float32)
@@ -594,10 +598,10 @@ def calc_shear_from_part(pos_parts, Lbox, cell_size=5, R=1.5, workers=-1, dtype=
         pos_parts=pos_parts.T
     N_dim = int(Lbox/cell_size)
     dens = tsc_parallel(pos_parts, N_dim, Lbox)
-    print('finished TSC, took time', time.time() - start)
+    logger.info(f'Finished TSC in {time.time() - start:.2f} sec')
     start = time.time()
     dsmo = smooth_density(dens, R, N_dim, Lbox)
-    print('finished smoothing, took time', time.time() - start)
+    logger.info(f'Finished smoothing in {time.time() - start:.2f} sec')
     start = time.time()
     if isinstance(dsmo, str):
         dsmo = np.load(dsmo)
@@ -616,20 +620,20 @@ def calc_shear_from_part(pos_parts, Lbox, cell_size=5, R=1.5, workers=-1, dtype=
     tfour = get_tidal(dfour, karr, N_dim, R)
     del dfour
     gc.collect()
-    print('finished fourier tidal, took time', time.time() - start)
+    logger.info(f'Finished fourier tidal in {time.time() - start:.2f} sec')
 
     # compute real tidal
     start = time.time()
     tidr = irfftn(tfour, axes=(0, 1, 2), workers=workers).real
     del tfour
     gc.collect()
-    print('finished tidal, took time', time.time() - start)
+    logger.info(f'Finished tidal in {time.time() - start:.2f} sec')
     # compute shear
     start = time.time()
     shear = get_shear_nb(tidr, N_dim)
     del tidr
     gc.collect()
-    print('finished shear, took time', time.time() - start)
+    logger.info(f'Finished shear in {time.time() - start:.2f} sec')
     return shear
 
 def calc_env(pos_parts, Lbox, cell_size=5, R=1.5):
@@ -639,10 +643,10 @@ def calc_env(pos_parts, Lbox, cell_size=5, R=1.5):
         pos_parts=pos_parts.T
     N_dim = int(Lbox/cell_size)
     dens = tsc_parallel(pos_parts, N_dim, Lbox)
-    print('finished TSC, took time', time.time() - start)
+    logger.info(f'Finished TSC in {time.time() - start:.2f} sec')
     start = time.time()
     dsmo = smooth_density(dens, R, N_dim, Lbox)
-    print('finished smoothing, took time', time.time() - start)
+    logger.info(f'Finished smoothing in {time.time() - start:.2f} sec')
     return dsmo
 
 
@@ -663,69 +667,22 @@ def calc_shear_from_dsmo(dsmo, Lbox, cell_size=5, R=1.5, workers=-1, dtype=np.fl
     tfour = get_tidal(dfour, karr, N_dim, R)
     del dfour
     gc.collect()
-    print('finished fourier tidal, took time', time.time() - start)
+    logger.info(f'Finished fourier tidal in {time.time() - start:.2f} sec')
 
     # compute real tidal
     start = time.time()
     tidr = irfftn(tfour, axes=(0, 1, 2), workers=workers).real
     del tfour
     gc.collect()
-    print('finished tidal, took time', time.time() - start)
+    logger.info(f'Finished tidal in {time.time() - start:.2f} sec')
     # compute shear
     start = time.time()
     shear = get_shear_nb(tidr, N_dim)
     del tidr
     gc.collect()
-    print('finished shear, took time', time.time() - start)
+    logger.info(f'Finished shear in {time.time() - start:.2f} sec')
     return shear
 
-
-def compute_env_shear_abacus(sim_name, zsim, cell_size=5, R=1.5, dir_to_save='/global/homes/a/arocher/users_arocher/HODDIES_data/environemental_quantities/Abacus', root_abacus_dir='/dvs_ro/cfs/cdirs/desi/cosmosim/Abacus'):
-    import os
-    import glob 
-    from abacusnbody.data.read_abacus import read_asdf
-    from HODDIES.abacus_io import get_boxsize_from_simname
-    import hdf5plugin
-    import h5py    
-
-    path = os.path.join(root_abacus_dir, sim_name, 'halos', f'z{zsim:.3f}')
-    if not os.path.exists(path):
-        raise NameError(f'Wrong simulation path: {path}')
-    if zsim not in [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 1.1, 1.4, 1.7, 2.0, 2.5, 3.0]:
-        raise NameError(f'Redhsift snapshot {zsim} does not have particles outputs')
-
-    
-
-
-    fns = glob.glob(os.path.join(path, 'field_rv_A/*asdf')) + glob.glob(os.path.join(path, 'halo_rv_A/*asdf'))
-    start = time.time()
-
-    partpos = []
-    for efn in fns:
-        print(efn)
-        ecat = read_asdf(efn, load=['pos'])
-        partpos += [ecat['pos']]
-    partpos = np.concatenate(partpos)
-    print('compiled all particles', len(partpos), 'took time', time.time() - start)
-
-    Lbox = get_boxsize_from_simname(path)
-    dsmo = calc_env(partpos, Lbox, cell_size=cell_size, R=R) 
-    shear = calc_shear_from_dsmo(dsmo, Lbox, cell_size=cell_size, R=R, workers=-1) 
-    
-    if dir_to_save is not None:
-        path_to_save = os.path.join(dir_to_save, f'env_shear_map_{sim_name}_z{zsim:.3f}.h5')
-        print(f'Save to {path_to_save}')
-        with h5py.File(path_to_save, "w") as f:
-            f.create_dataset(
-                'density',
-                data=dsmo,
-                **hdf5plugin.Blosc(cname="zstd", clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE))
-                
-            f.create_dataset(
-                'shear',
-                data=shear,
-                **hdf5plugin.Blosc(cname="zstd", clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE))
-    return dsmo, shear
 
 def compute_env_shear_from_particles(partpos, Lbox, cell_size=5, R=1.5, path_to_save=None):
     import hdf5plugin
@@ -735,7 +692,7 @@ def compute_env_shear_from_particles(partpos, Lbox, cell_size=5, R=1.5, path_to_
     shear = calc_shear_from_dsmo(dsmo, Lbox, cell_size=cell_size, R=R, workers=-1) 
     
     if path_to_save is not None:
-        print(f'Save to {path_to_save}')
+        logger.info(f'Save to {path_to_save}')
         with h5py.File(path_to_save, "w") as f:
             f.create_dataset(
                 'density',

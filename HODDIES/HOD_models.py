@@ -3,7 +3,31 @@ import math
 from numba import njit
 
 
-@njit(fastmath=True)
+def hod_model(param_names):
+    """
+    Decorator tagging an HOD wrapper function (``_<model>``) with the ordered list
+    of parameter names it reads from the tracer dictionary (``self.args[tracer]``),
+    in the same order its parameter array (``p_cen`` / ``p_sat``) is unpacked.
+
+    This is the single source of truth for a model's parameters: tagging a model
+    here is all that is needed for ``hod.py`` to load and validate it, so adding a
+    new HOD model requires no change in ``hod.py``.
+
+    Example
+    -------
+    >>> @hod_model(['Ac', 'log_Mcent', 'sigma_M'])
+    ... @njit(fastmath=True)
+    ... def _SHOD(log10_Mh, p_cen):
+    ...     Ac, Mc, sigM = p_cen
+    ...     return SHOD(log10_Mh, Ac, Mc, sigM)
+    """
+    def decorate(func):
+        func.hod_param_names = list(param_names)
+        return func
+    return decorate
+
+
+@njit(fastmath=True, cache=True)
 def HMQ(log10_Mh, Ac, Mc, sig_M, gamma, Q, pmax):
 
     """
@@ -40,7 +64,7 @@ def HMQ(log10_Mh, Ac, Mc, sig_M, gamma, Q, pmax):
     A = (pmax - 1/Q)
     return Ac * (2 * A * phi_x * PHI_gamma_x + 0.5 / Q * (1 + math.erf((log10_Mh - Mc) / 0.01)))
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def mHMQ(log10_Mh, Ac, Mc, sig_M, gamma):
 
     """
@@ -72,7 +96,7 @@ def mHMQ(log10_Mh, Ac, Mc, sig_M, gamma):
     PHI_gamma_x = 0.5 * (1 + math.erf(gamma * (log10_Mh - Mc) / (sig_M * np.sqrt(2))))
     return Ac * 2 * phi_x * PHI_gamma_x
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def GHOD(log10_Mh, Ac, Mc, sig_M):
 
     """
@@ -98,7 +122,7 @@ def GHOD(log10_Mh, Ac, Mc, sig_M):
 
     return Ac / (np.sqrt(2 * np.pi) * sig_M) * np.exp(-(log10_Mh - Mc)**2 / (2 * sig_M**2))
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def LNHOD(log10_Mh, Ac, Mc, sig_M):
 
     """
@@ -128,7 +152,7 @@ def LNHOD(log10_Mh, Ac, Mc, sig_M):
     val = Ac * np.exp(-(np.log(x))**2 / (2 * sig_M**2)) / (x * sig_M * np.sqrt(2 * np.pi))
     return val
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def SFHOD(log10_Mh, Ac, Mc, sig_M, gamma):
 
     """
@@ -160,7 +184,7 @@ def SFHOD(log10_Mh, Ac, Mc, sig_M, gamma):
     else:
         return norm * (10**log10_Mh / 10**Mc)**gamma
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def SHOD(log10_Mh, Ac, Mc, sig_M):
 
     """
@@ -185,7 +209,7 @@ def SHOD(log10_Mh, Ac, Mc, sig_M):
 
     return Ac * 0.5 * (1 + math.erf((log10_Mh - Mc) / sig_M))
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def Nsat_pow_law(log10_Mh, As, M_0, M_1, alpha):
 
     """
@@ -210,11 +234,16 @@ def Nsat_pow_law(log10_Mh, As, M_0, M_1, alpha):
         Expected number of satellite galaxies in a halo of mass log10_Mh.
 
     """
-
-    N_sat = As * ((10**log10_Mh - 10**M_0) / 10**M_1)**alpha
+    if log10_Mh < M_0:
+        return 0.0
+    elif log10_Mh - M_0 < 0.001:
+        N_sat = As * ((10**log10_Mh - 10**(M_0+0.001)) / 10**M_1)**alpha
+    else:
+        N_sat = As * ((10**log10_Mh - 10**M_0) / 10**M_1)**alpha    
     return N_sat
 
-@njit(fastmath=True)
+@hod_model(['As', 'M_0', 'M_1', 'alpha'])
+@njit(fastmath=True, cache=True)
 def _Nsat_pow_law(log10_Mh, p_sat):
     """
     Wrapper for Nsat_pow_law using parameter array.
@@ -235,7 +264,8 @@ def _Nsat_pow_law(log10_Mh, p_sat):
     As, M_0, M_1, alpha = p_sat
     return Nsat_pow_law(log10_Mh, As, M_0, M_1, alpha)
 
-@njit(fastmath=True)
+@hod_model(['Ac', 'log_Mcent', 'sigma_M'])
+@njit(fastmath=True, cache=True)
 def _SHOD(log10_Mh, p_cen):
     """
     Wrapper for SHOD using parameter array.
@@ -256,7 +286,8 @@ def _SHOD(log10_Mh, p_cen):
     Ac, Mc, sigM = p_cen
     return SHOD(log10_Mh, Ac, Mc, sigM)
 
-@njit(fastmath=True)
+@hod_model(['Ac', 'log_Mcent', 'sigma_M'])
+@njit(fastmath=True, cache=True)
 def _GHOD(log10_Mh, p_cen):
     """
     Wrapper for GHOD using parameter array.
@@ -277,7 +308,8 @@ def _GHOD(log10_Mh, p_cen):
     Ac, Mc, sigM = p_cen
     return GHOD(log10_Mh, Ac, Mc, sigM)
 
-@njit(fastmath=True)
+@hod_model(['Ac', 'log_Mcent', 'sigma_M'])
+@njit(fastmath=True, cache=True)
 def _LNHOD(log10_Mh, p_cen):
     """
     Wrapper for LNHOD using parameter array.
@@ -298,7 +330,8 @@ def _LNHOD(log10_Mh, p_cen):
     Ac, Mc, sigM = p_cen
     return LNHOD(log10_Mh, Ac, Mc, sigM)
 
-@njit(fastmath=True)
+@hod_model(['Ac', 'log_Mcent', 'sigma_M', 'gamma'])
+@njit(fastmath=True, cache=True)
 def _SFHOD(log10_Mh, p_cen):
     """
     Wrapper for SFHOD using parameter array.
@@ -319,7 +352,8 @@ def _SFHOD(log10_Mh, p_cen):
     Ac, Mc, sigM, gamma = p_cen
     return SFHOD(log10_Mh, Ac, Mc, sigM, gamma)
 
-@njit(fastmath=True)
+@hod_model(['Ac', 'log_Mcent', 'sigma_M', 'gamma', 'Q', 'pmax'])
+@njit(fastmath=True, cache=True)
 def _HMQ(log10_Mh, p_cen):
     """
     Wrapper for HMQ using parameter array.
@@ -340,7 +374,8 @@ def _HMQ(log10_Mh, p_cen):
     Ac, Mc, sig_M, gamma, Q, pmax = p_cen
     return HMQ(log10_Mh, Ac, Mc, sig_M, gamma, Q, pmax)
 
-@njit(fastmath=True)
+@hod_model(['Ac', 'log_Mcent', 'sigma_M', 'gamma'])
+@njit(fastmath=True, cache=True)
 def _mHMQ(log10_Mh, p_cen):
     """
     Wrapper for mHMQ using parameter array.

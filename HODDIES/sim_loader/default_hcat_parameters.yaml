@@ -1,0 +1,24 @@
+# List of galaxy tracers used in the analysis
+
+hcat:
+  boxsize: null  # Simulation box size (to be set if path_to_sim is provided)
+  path_to_sim: /home/antoine/Bureau/Transfert/postdoc/Abacus_sim  # Path to halo catalogs
+  path_to_part: null  # Path to particle or subhalos data for satellites sampling
+  mass_cut: null  # Minimum halo mass cut in log10(Msun/h) e.g. 12 to cut M < 10**12
+  z_simu: 0.95  # Redshift of simulation snapshot
+  load_particles: false  # Whether to load particle/subhalos data
+
+# Cosmology settings using Cosmoprimo API
+# H_0 is fixed at 100, h values is not used for distance computation
+# For AbacusSummit and Uchuu simulation are used the cosmology is automatically set 
+cosmo:
+  fiducial_cosmo: null  # Name of predefined cosmology (e.g., Planck2018FullFlatLCDM)
+  engine: class  # Use CLASS backend for cosmology computations
+  Omega_m: null  # Total matter density
+  Omega_cdm: null  # Cold dark matter density
+  Omega_L: null  # Dark energy density
+  Omega_b: null  # Baryon density
+  sigma_8: null  # Amplitude of fluctuations
+  n_s: null  # Scalar spectral index
+  w0_fdl: null  # Dark energy equation of state (w₀)
+  wa_fdl: null  # Dark energy equation of state (wa)

@@ -3,7 +3,7 @@ tracers:
   - LRG # tracer 1
   - ELG # tracer 2
 
-# HOD (Halo Occupation Distribution) parameters for LRGs 
+# HOD (Halo Occupation Distribution) parameters, one list per tracer 
 LRG: # Name of tracer 1
 
   # Parameters for the central HOD model
@@ -153,8 +153,8 @@ fit_param:
   fit_type: wp+xi  # Type of 2PCF(s) used in fitting: wp = projected, xi = multipoles
   generate_training_sample: True  # Whether to generate a new training sample using sampling_type
   sampling_type: Hammersley  # Sampling method for generating initial training points. Choices: LHS or Hammersley 
-  N_trainning_points: 800  # Number of training points to generate
-  seed_trainning: 18  # Random seed for reproducibility of LHS sampling
+  N_training_points: 800  # Number of training points to generate
+  seed_training: 18  # Random seed for reproducibility of LHS sampling
   n_calls: 800  # Number of GP iterations (total number of sampling steps)
   logchi2: True  # Use log(chi²) instead of raw chi² in GP modeling (recommended)
 

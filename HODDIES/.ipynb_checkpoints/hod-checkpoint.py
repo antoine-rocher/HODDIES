@@ -1,41 +1,67 @@
-import matplotlib.pyplot as plt 
-import matplotlib.lines as mlines
+""" Base HOD class """
+
+from HODDIES import read_uchuu
 from numba import njit, jit, numba
 import time 
-import fitsio
 import os
-import sys
-from cosmoprimo.fiducial import AbacusSummit, Planck2018FullFlatLCDM, Cosmology
-from utils import *
-from HOD_models import _SHOD, _GHOD, _SFHOD, _SHOD, _LNHOD, _HMQ, _mHMQ, _Nsat_pow_law
-from abacus_func import *
+from .utils import *
+from .clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat
+from .HOD_models import _SHOD, _GHOD, _SFHOD, _SHOD, _LNHOD, _HMQ, _mHMQ, _Nsat_pow_law
 import yaml 
-import socket
-from pinnochio_io import *
-from pypower import CatalogMesh
-from mpi4py import MPI
 import glob
-from fits_functions import *
-import pandas as pd
-import emcee 
-#import zeus
-import sklearn.gaussian_process as skg
-from scipy.stats import norm
-from multiprocessing import Pool
 from mpytools import Catalog
 import collections.abc
+from .fits_functions import compute_chi2
+import numbers
+import numpy as np
+
 
 class HOD:
-    """
-    --- HOD code 
-    """
 
-    def __init__(self, param_file=None, args=None, hcat=None, usecols=None, read_Abacus=False, read_pinnochio=False, read_Abacus_mpi=False):
+    """Class with tools to generate HOD mock catalogs and plotting functions"""
+
+    def __init__(self, param_file=None, args=None, hcat_file=None, path_to_abacus_sim=None, read_pinnochio=None, read_Uchuu=None, subsample=None, **kwargs):
+        
         """
-        ---
+        Initialize :class:`HOD`. 
+
+        Parameters
+        ----------
+        param_file : str, default=None
+            Input parameter file to initialize the HOD class. If None, the default parameter file 'default_HOD_parameters.yaml' is used.
+
+        args : dict, default=None
+            Optional
+            Input dictonary to initialize  the HOD class. Carefull ``args`` is prefered against ``param_file``. 
+        hcat_file : dict, ndarray, Catalog, default=None
+            Optional
+            Input halo catalog. The halo catalog must have at least these columns names: ['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'c', 'Vrms', 'halo_id']. 
+            'x', 'y', 'z', and 'vx', 'vy', 'vz' are halo positions and velocities. 
+            Mh and Rh are halo mass and radius (most of the time consider as Mvir and Rvir). 
+            'c' is the halo concentration, 'Vrms' is the velocity dispersion of the halo particles (used for NFW satellites). 
+            'halo_id' is a unique integer to identify each halo.
+        boxsize : int, default = None
+            Simulation box size, to be set if hcat is provide. Prefered if boxsize value is also provided in the parameter file.
+
+        path_to_abacus_sim : str, default=None
+            Optional,
+            Path to Abacus simulation directory. In this case, it automatically load the Abacus box/LC at the corresponding redshift snapshots and initialze boxsize and cosmology.
+
+        read_pinnochio : bool, default=None
+            Optional, load Pinnochio simulation catalog. Need to provide the path in the input parameter file.
+
+        subsample : dict, ndarray, Catalog, default=None
+            Optional, Not yet ready!
+            Input of particles or subhalo catalog. The subsample catalog must have at least these columns names: ['x', 'y', 'z', 'vx', 'vy', 'vz', 'halo_id']. 
+        kwargs : dict
+            Optional arguments that can be added that will replace the one provided in the parameter file.
+
         """
-        self.mpicomm = MPI.COMM_WORLD
-        self.args = yaml.load(open('parameters_HODdefaults.yaml'), Loader=yaml.FullLoader)      
+        
+        # self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
+        self.args = self._get_default_parameters()
+        self.cosmo = None
+        self.H_0 = 100 # H_0 is always set to 100 km/s/Mpc
 
         def update_dic(d, u):
             for k, v in u.items():
@@ -44,114 +70,483 @@ class HOD:
                 else:
                     d[k] = v
             return d
-            
-        new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else args if args is not None else self.args
-        update_dic(self.args, new_args)
         
-        #if args is not None:
-        #    self.args.update(args)
+        new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else args if args is not None else self.args
+        # if new_args['fit_param'].get('priors') is not None:
+        #     self.args['fit_param'].pop('priors')
+        # if kwargs.get('fit_param') is not None:
+        #     if kwargs['fit_param'].get('priors') is not None:
+        #         self.args['fit_param'].pop('priors')
+
+        update_dic(self.args, new_args)
+        update_dic(self.args, kwargs)
+        
+        # if 'tracers' not in self.args:
+        #     raise(ValueError('need to provide tracer names'))
+
+        self._initialize_tracer_params(self.args['tracers'])
+        self._initialize_fit_params(self.args['tracers'])
+
+        self.boxsize = self.args['hcat']['boxsize']
+
         self.args['nthreads'] = min(numba.get_num_threads(), self.args['nthreads'])
-        print('Set number of threads to {}'.format(self.args['nthreads']))
+        print('Set number of threads to {}'.format(self.args['nthreads']), flush=True)
+        self.part_subsamples = subsample
+        
+        self.__is_sim_abacus = False
+        self.__is_sim_uchuu = False
+        if path_to_abacus_sim is not None:
+            self._root_dir_abacus = path_to_abacus_sim
+            from .abacus_io import read_Abacus_hcat, check_particles_available
+            self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
+            if self.args['use_particles']:
+                self.args['use_particles'] = check_particles_available(self.args['hcat']["z_simu"])
+            self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim)
+            self.__is_sim_abacus = True
 
-        if 'halo_lc' not in self.args['hcat'].keys():      
-            self.args['hcat']['halo_lc'] = False
+        elif read_Uchuu is not None:
+            self.__is_sim_uchuu=True
+            from .read_uchuu import read_Uchuu
+            self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Uchuu']
+            start = time.time()
+            # (sim_name, z_snapshot, path_to_sim='/pscratch/sd/a/arocher/Uchuu/', nchuncks=32, load_subhalos=False, mass_cut=10.8)
+            self.hcat, self.part_subsamples = read_Uchuu(self.args['hcat']['sim_name'], self.args['hcat']['z_simu'], self.args['hcat']['path_to_sim'], self.args['nthreads'], self.args['hcat']['load_subhalos'], self.args['hcat']['mass_cut'])
+            self.boxsize = 2000
+            print('Done {:.2f}'.format(time.time()-start), flush=True)
+                            
+        elif read_pinnochio  is not None:
+            from .pinnochio_io import read_pinnochio_hcat
+            print('Read Pinnochio simulation', flush=True)
+            start = time.time()
+            self.hcat, self.boxsize, self.cosmo = read_pinnochio_hcat(self.args)
+            print('Done {:.2f}'.format(time.time()-start), flush=True)  
+        
+        elif hcat_file is not None:
+            init_cols = ['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'c', 'Vrms', 'halo_id']
 
-        if hcat is not None:
-            if isinstance(hcat, Catalog):
-                self.hcat = hcat
-            elif isinstance(hcat, dict):
-                self.hcat = Catalog.from_dict(hcat)
-            else:
-                raise ValueError ('halo catalog is not a dictionary')
-            self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
-            
-        else:
-            if read_Abacus:
-                self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, halo_lc=self.args['hcat']['halo_lc'])
-                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine'])               
+            if isinstance(hcat_file, str):
+                self.hcat = Catalog.read(hcat_file)
 
-            elif read_Abacus_mpi:
-                print('Attention MODIF')
-                #self.hcat, self.boxsize = read_Abacus_hcat(self.args)
-                self.hcat = Catalog.load('/pscratch/sd/a/arocher/test_abacus_cat_mpi.fits', mpicomm=self.mpicomm)
-                self.boxsize=1000
-                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3]).get_background(engine=self.args['cosmo']['engine']) 
-                
-            elif read_pinnochio:
-                print('Read Pinnochio', flush=True)
-                start = time.time()
-                self.hcat, self.boxsize, self.cosmo = read_pinnochio_hcat(self.args)
-                print('Done {:.2f}'.format(time.time()-start), flush=True)
-            else: 
-                self.hcat = Catalog.read(args['hcat'][['path_to_sim']])            
-        self.H_0 = 100
+            elif isinstance(hcat_file, Catalog):
+                self.hcat = hcat_file
+
+            elif isinstance(hcat_file, dict):
+                self.hcat = Catalog.from_dict(hcat_file)
+
+            elif isinstance(hcat_file, np.ndarray):
+                if hcat_file.dtype.names is None:
+                    raise TypeError(f'Halo catalog must be a structured ndarray with field {init_cols}')
+                self.hcat = Catalog.from_array(hcat_file)
+
+        else: 
+            if self.args['hcat']['path_to_sim'] is None:
+                raise FileNotFoundError('Provide a halo catalog or a filename to read it')
+            if not os.path.exists(self.args['hcat']['path_to_sim']): 
+                raise FileNotFoundError('{} not found'.format(self.args['hcat']['path_to_sim']))
+            self.hcat = Catalog.read(self.args['hcat'][['path_to_sim']]) 
+
+        if self.boxsize is None: raise ValueError('Boxsize not provided')
+
+        # init cosmology 
+        if self.cosmo is None:
+            self.init_cosmology()
+
+        if 'log10_Mh' not in self.hcat.columns(): 
+            self.hcat['log10_Mh'] = np.log10(self.hcat['Mh'])
+        
 
         if 'c' not in self.hcat.columns():
-            print('Concentration column "c" is not provided. The concentration is computed from mass-concentration relation of {} using {} as mass definition'.format(self.args['cm_relation'], self.args['mass_def']))
-            self.hcat['c'] = get_concentration(self.hcat['Mvir'], cosmo=self.cosmo, mdef=self.args['mass_def'], cmrelation=self.args['cm_relation'])
+            print('Concentration column "c" is not provided. The concentration is computed from colossus package using mass-concentration relation of {} with {} as mass definition'.format(self.args['cm_relation'], self.args['mass_def']), flush=True)
+            from pinnochio_io import get_concentration
+            self.hcat['c'] = get_concentration(self.hcat['Mh'], cosmo=self.cosmo, mdef=self.args['mass_def'], cmrelation=self.args['cm_relation'], z=self.args['hcat']['z_simu'])
         
         try :
             self._fun_cHOD, self._fun_sHOD = {}, {}
-            for tr in self.args['tracers']:
+            for tr in self._tracers():
                 self._fun_cHOD[tr] = globals()['_'+self.args[tr]['HOD_model']]
                 self._fun_sHOD[tr] = globals()['_'+self.args[tr]['sat_HOD_model']]
         except :
-            import HOD_models 
+            from . import HOD_models 
             help(HOD_models)
             raise ValueError('{} not implemented in HOD models'.format(self.args['HOD_param']['HOD_model']))
-        
+                
+        if self.args['use_assembly_bias']:
+                self._compute_assembly_bias_columns()
         self.rng = np.random.RandomState(seed=self.args['seed'])
+
+    def _initialize_tracer_params(self, tracer):
+        """
+        Initializes HOD parameters for one or more tracers in-place,
+        using the default LRG parameters as a template.
+
+        This function sets the default HOD parameters for the given tracer(s)
+        by updating the main `self.args` dictionary. If a tracer's configuration
+        does not exist in `self.args`, it will be created.
+
+        Parameters
+        ----------
+        tracer : str or list of str
+            The name(s) of the tracer(s) to initialize.
+
+        Raises
+        ------
+        TypeError
+            If the tracer is not a string or a list of strings, or if elements
+            in the list are not strings.
+        """
         
-        if self.args['assembly_bias']:
-            self._compute_assembly_bias_columns()
-    
-    
-    def __init_hod_param(self, tracer):
-            '''
-            --- Init hod list parameters
-            '''
+        tracer_templates = {
+            'LRG': {
+                'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 12.75, 'sigma_M': 0.5, 'gamma': 1, 'pmax': 1, 'Q': 100,
+                'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 12.5, 'M_1': 13.5, 'alpha': 1,
+                'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
+                'assembly_bias':{'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
+                'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
+                'density': 0.0007, 'vsmear': 0
+            },
+            'ELG': {
+                'HOD_model': 'mHMQ', 'Ac': 0.05, 'log_Mcent': 11.63, 'sigma_M': 0.12, 'gamma':2, 'pmax': 1, 'Q': 100,
+                'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 0.11, 'M_0': 11.63, 'M_1': 11.7, 'alpha': 0.6,
+                'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
+                'assembly_bias': {'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
+                'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
+                'density': 0.001, 'vsmear': 0
+            },
+            'QSO': {
+                'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 13.25, 'sigma_M': 0.6, 'gamma': 1, 'pmax': 1, 'Q': 100,
+                'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 13.25, 'M_1': 14.25, 'alpha': 1.3,
+                'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
+                'assembly_bias': {'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
+                'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
+                'density': 0.0001, 'vsmear': 100
+            }
+        }
+        
+        tracers = tracer
+        if isinstance(tracer, str):
+            tracers = [tracer]
 
-            hod_list_param_sat, hod_param_ab = None, None
-            if self.args[tracer]['HOD_model'] == 'HMQ':
-                hod_list_param_cen = [self.args[tracer]['Ac'], self.args[tracer]['log_Mcent'], self.args[tracer]['sigma_M'], self.args[tracer]['gamma'], self.args[tracer]['Q'], self.args[tracer]['pmax']]               
-            elif ('GHOD' in self.args[tracer]['HOD_model']) | ('LNHOD' in self.args[tracer]['HOD_model']) | ('SHOD' in self.args[tracer]['HOD_model']):
-                hod_list_param_cen = [self.args[tracer]['Ac'], self.args[tracer]['log_Mcent'], self.args[tracer]['sigma_M']]
-            elif ('SFHOD' in self.args[tracer]['HOD_model']) | ('mHMQ' in self.args[tracer]['HOD_model']):
-                hod_list_param_cen = [self.args[tracer]['Ac'], self.args[tracer]['log_Mcent'], self.args[tracer]['sigma_M'], self.args[tracer]['gamma']]
-            else: 
-                raise ValueError('{} not implemented in HOD models'.format(self.args['HOD_param']['HOD_model']))
+        if not isinstance(tracers, list) or not all(isinstance(t, str) for t in tracers):
+            raise TypeError(f"Tracer must be a string or a list of strings, but got {type(tracer)}")
+
+        for t in tracers:
+            if t not in self.args:
+                self.args[t] = {}
             
-            if self.args[tracer]['satellites']:
-                hod_list_param_sat = np.array([self.args[tracer]['As'], self.args[tracer]['M_0'], self.args[tracer]['M_1'], self.args[tracer]['alpha']], dtype='float64')
+            template = tracer_templates.get(t, tracer_templates['LRG'])
+            
+            # Create a copy to avoid modifying the template dictionary
+            params_to_set = template.copy()
+            
+            # Update with existing values to preserve them
+            params_to_set.update(self.args[t])
+            
+            # Set the merged parameters
+            self.args[t] = params_to_set
 
-            if self.args[tracer]['assembly_bias']:
-                hod_param_ab = np.array(list(self.args[tracer]['assembly_bias'].values()), dtype='float64').T
+    def _initialize_fit_params(self, tracer):
+        """
+        Initializes HOD fit parameters for one or more tracers in-place.
+        """
+        fit_param_template = {
+            'nb_real': 20, 'fit_name': 'myhodfit', 'path_to_training_point': None, 'dir_output_fit': 'path_to_save_fit_outputs',
+            'fit_type': 'wp+xi', 'generate_training_sample': True, 'sampling_type': 'Hammersley',
+            'N_training_points': 800, 'seed_training': 18, 'n_calls': 800, 'logchi2': True,
+            'sampler': 'emcee', 'n_iter': 10000, 'nwalkers': 20, 'func_aq': 'EI',
+            'length_scale_bounds': [0.001, 10], 'length_scale': False, 'kernel_gp': 'Matern_52',
+            'save_fn': 'results_fit.npy', 'use_desi_data': True, 'zmin': 0.8, 'zmax': 1.1,
+            'dir_data': '/global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP', 'region': 'GCcomb',
+            'weights_type': 'pip_angular_bitwise', 'njack': 128, 'nran': 4, 'bin_type': 'log',
+            'load_cov_jk': False, 'corr_dir': '/dvs_ro/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/',
+            'nb_mocks': 1883,
+            'priors': {}
+        }
 
-            return np.float64(hod_list_param_cen), hod_list_param_sat, hod_param_ab
-       
+        priors_templates = {
+            'LRG': {
+                'M_0': [12.5, 13.5], 'M_1': [13, 14.5], 'alpha': [0.5, 1.5], 'f_sigv': [0.5, 1.5],
+                'log_Mcent': [12.4, 13.5], 'sigma_M': [0.05, 1]
+            },
+            'ELG': {
+                'M_0': [11.0, 12.5], 'M_1': [11.0, 12.5], 'alpha': [0.3, 1.2], 'f_sigv': [0.5, 1.5],
+                'log_Mcent': [11.0, 12.5], 'sigma_M': [0.1, 1]
+            },
+            'QSO': {
+                'M_0': [12.5, 14.0], 'M_1': [13.5, 15.0], 'alpha': [0.8, 1.8], 'f_sigv': [0.5, 1.5],
+                'log_Mcent': [12.5, 14.0], 'sigma_M': [0.1, 1.0]
+            }
+        }
+        
+
+        if 'fit_param' not in self.args:
+            self.args['fit_param'] = {}
+        
+        params_to_set = fit_param_template.copy()
+        params_to_set.update(self.args['fit_param'])
+        self.args['fit_param'] = params_to_set
+        
+        tracers = tracer
+        if isinstance(tracer, str):
+            tracers = [tracer]
+        
+        for t in tracers:
+            if t not in self.args['fit_param']['priors']:
+                # a default prior is assigned if the tracer is not defined
+                template = priors_templates.get(t, priors_templates['LRG'])
+                self.args['fit_param']['priors'][t] = template.copy()
+
+    def _get_default_parameters(self):
+        """
+        Returns a dictionary with the default HOD and analysis parameters.
+        """
+        default_params = {
+            'tracers': 'LRG',
+
+            'hcat': {
+                'boxsize': None, 'path_to_sim': None, 'path_to_part': None, 'mass_cut': None, 'z_simu': 0.95,
+                'Abacus': {'sim_name': 'AbacusSummit_highbase_c000_ph100', 'load_particles': False, 'halo_lc': False},
+                'Pinnochio': {'dir_sim': None}, 'Uchuu': {}, 
+                'Uchuu': {'sim_name': 'Uchuu2Gpc', 'load_subhalos': False, 'path_to_sim': '/pscratch/sd/a/arocher/Uchuu'}
+            },
+            '2PCF_settings': {
+                'rsd': True, 'bin_logscale': True, 'mu_max': 1, 'n_mu_bins': 101, 'multipole_index': [0, 2],
+                'n_r_bins': 25, 'n_rp_bins': 25, 'rmax': 30, 'rmin': 0.01, 'rp_max': 30, 'rp_min': 0.01,
+                'edges_rppi': None, 'edges_smu': None, 'los': 'z', 'pimax': 40
+            },
+            'Dsigma_settings': {
+                'bin_logscale': True, 'n_rp_bins': 25, 'rp_max': 30, 'rp_min': 0.1,
+                'los': 'z', 'pimax': 30
+            },
+
+            'cosmo': {
+                'fiducial_cosmo': None, 'engine': 'class', 'h': None, 'Omega_m': None, 'Omega_cdm': None,
+                'Omega_L': None, 'Omega_b': None, 'sigma_8': None, 'n_s': None, 'w0_fdl': None, 'wa_fdl': None
+            },
+
+            'seed': None, 'nthreads': 32, 'cm_relation': 'diemer19', 'mass_def': '200c',
+            'use_assembly_bias': False, 'use_particles': False, 'path_to_density_mesh':None,
+
+        }
+        return default_params
+
+
+    def init_cosmology(self):
+        """
+        Initialize the cosmology model using Cosmoprimo.
+
+        This method attempts to set the `self.cosmo` attribute using cosmological parameters
+        defined in the input configuration (`self.args['cosmo']`). It supports loading:
+        
+        - AbacusSummit cosmologies if the simulation name (`sim_name`) is present
+        - Custom cosmology from provided parameters if no Abacus name is specified
+
+        It uses the `cosmoprimo` package to construct the cosmology and raises a warning if
+        the library is not available.
+
+        Returns
+        -------
+        None
+            Sets the `self.cosmo` attribute to an instance of `cosmoprimo.Cosmology`
+            or leaves it as `None` if the initialization fails.
+
+        Raises
+        ------
+        ImportWarning
+            If `cosmoprimo` is not installed, a warning is issued and no cosmology is set.
+
+        Notes
+        -----
+        - Required fields in `self.args['cosmo']` are passed as keyword arguments to
+        `cosmoprimo.fiducial.Cosmology`.
+        - For AbacusSummit cosmologies, the cosmology identifier is extracted from
+        the `sim_name` string.
+        - Cosmology is used later for computing RSD and distance-based statistics.
+        """
+
+        try: 
+            if self.__is_sim_abacus:
+                from cosmoprimo.fiducial import AbacusSummit
+                print('Initialize Abacus c{} cosmology'.format(self.args['hcat']['sim_name'].split('_c')[-1][:3]))
+                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3], engine=self.args['cosmo']['engine'])    
+            elif self.__is_sim_uchuu:
+                from .read_uchuu import Uchuu
+                DDE_sims = ['Planck18', 'Planck18_DDE', 'DESIY1_DDE', 'Uchuu2Gpc']
+                cosmo_name= 'Planck2018' if self.args['hcat']['sim_name'] == 'Planck18' else 'Planck2018DDE' if self.args['hcat']['sim_name'] == 'Planck18_DDE' else 'DESIY1DDE' if self.args['hcat']['sim_name'] == 'DESIY1_DDE' else 'Planck2015'
+                print('Initialize Uchuu {} cosmology'.format(cosmo_name), flush=True)
+                self.cosmo =  Uchuu(cosmo_name, engine=self.args['cosmo']['engine'])
+            elif self.args['cosmo']['fiducial_cosmo'] is not None:
+                import cosmoprimo.fiducial
+                fd_cosmo = getattr(cosmoprimo.fiducial, self.args['cosmo']['fiducial_cosmo'])
+                self.cosmo = fd_cosmo(self.args['hcat']['sim_name'].split('_c')[-1][:3], engine=self.args['cosmo']['engine'])    
+            else:
+                from cosmoprimo.fiducial import Cosmology
+                print('Initialize custom cosmology from the "cosmo" parameters', flush=True)
+                self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
+        except ImportError:
+            import warnings
+            warnings.warn('Could not import cosmoprimo. Install cosmoprimo with "python -m pip install git+https://github.com/cosmodesi/cosmoprimo[class,camb,extras]".\n'\
+                  'Cosmology needed to apply RSD when computing correlations. No cosmology set.')
+            self.cosmo = None
+
+    def __init_hod_param(self, tracer):
+
+        """
+        Initialize the HOD (Halo Occupation Distribution) parameters for mock galaxy creation based on the selected HOD model.
+
+        Parameters
+        ----------
+        tracer : str
+            The key identifying the specific tracer (e.g., galaxy type) for which the HOD parameters will be initialized. Need to be in self.tracers
+        
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - np.float64 array of central galaxy parameters (hod_list_param_cen).
+            - np.array of satellite galaxy parameters if applicable (hod_list_param_sat).
+            - np.array of assembly bias parameters if applicable (hod_param_ab).
+
+        Raises
+        ------
+        ValueError
+            If the provided HOD model is not recognized or supported.
+        
+        Notes
+        -----
+        The function handles the following HOD models:
+            - 'HMQ': Central galaxy parameters with specific components.
+            - 'GHOD', 'LNHOD', 'SHOD': Central galaxy parameters with different components.
+            - 'SFHOD', 'mHMQ': Central galaxy parameters with a 'gamma' component.
+        
+        Satellite galaxy parameters are initialized if 'satellites' is set to True, 
+        and assembly bias parameters are initialized if 'assembly_bias' is provided.
+
+        Example
+        -------
+        For a given 'tracer' (e.g., 'galaxy'), the function might initialize:
+        - Central parameters: [Ac, log_Mcent, sigma_M, gamma, Q, pmax]
+        - Satellite parameters: [As, M_0, M_1, alpha]
+        - Assembly bias parameters: List derived from the 'assembly_bias' dictionary.
+        """
+
+        hod_list_param_sat, hod_param_ab = None, None
+        if self.args[tracer]['HOD_model'] == 'HMQ':
+            hod_list_param_cen = [self.args[tracer]['Ac'], self.args[tracer]['log_Mcent'], self.args[tracer]['sigma_M'], self.args[tracer]['gamma'], self.args[tracer]['Q'], self.args[tracer]['pmax']]               
+        elif ('GHOD' in self.args[tracer]['HOD_model']) | ('LNHOD' in self.args[tracer]['HOD_model']) | ('SHOD' in self.args[tracer]['HOD_model']):
+            hod_list_param_cen = [self.args[tracer]['Ac'], self.args[tracer]['log_Mcent'], self.args[tracer]['sigma_M']]
+        elif ('SFHOD' in self.args[tracer]['HOD_model']) | ('mHMQ' in self.args[tracer]['HOD_model']):
+            hod_list_param_cen = [self.args[tracer]['Ac'], self.args[tracer]['log_Mcent'], self.args[tracer]['sigma_M'], self.args[tracer]['gamma']]
+        else: 
+            raise ValueError('{} not implemented in HOD models'.format(self.args['HOD_param']['HOD_model']))
+        
+        if self.args[tracer]['satellites']:
+            hod_list_param_sat = np.array([self.args[tracer]['As'], self.args[tracer]['M_0'], self.args[tracer]['M_1'], self.args[tracer]['alpha']], dtype='float64')
+
+        if self.args['use_assembly_bias']:
+            hod_param_ab = np.array(list(self.args[tracer]['assembly_bias'].values()), dtype='float64').T
+
+        return np.float64(hod_list_param_cen), hod_list_param_sat, hod_param_ab
+
+    
+    def _tracers(self):
+        """
+        Helper function to return the list of tracers defined in the parameter file
+        """
+
+        if isinstance(self.args['tracers'], str):
+            self.args['tracers'] = [self.args['tracers']]
+        return self.args['tracers']
+
+
+
     def get_ds_fac(self, tracer, verbose=False):
+        """
+        Calculate the density scaling factor based on the specified tracer and density value.
+
+        Parameters
+        ----------
+        tracer : str
+            The key identifying the specific tracer (e.g., galaxy type) for which the density scaling factor is calculated.
+        verbose : bool, optionalAB_c_cen
+            If True, prints information about the density and scaling factor. Default is False.
+
+        Returns
+        -------
+        float
+            The density scaling factor. If no density is set, returns 1.
+
+        Notes
+        -----
+        This function uses the density specified in `self.args[tracer]['density']` to calculate the density scaling factor.
+        If the density is specified as a float, it multiplies it by the cube of the box size and divides by the number of galaxies
+        (obtained using the `ngal` method). If no density is specified, the function defaults to returning 1.
+
+        Example
+        -------
+        If `self.args[tracer]['density']` is set to `0.01` and `self.boxsize = 100`:
+        - The density scaling factor will be calculated as `0.01 * 100^3 / self.ngal(tracer)[0]`.
+        If no density is specified, the function simply returns 1.
+
+        If `verbose` is set to True, the following message will be printed:
+        - "Set density to 0.01 gal/Mpc/h".
+        """
+        
         if isinstance(self.args[tracer]['density'], float):
             if verbose:
                 print('Set density to {} gal/Mpc/h'.format(self.args[tracer]['density']))
             return self.args[tracer]['density']*self.boxsize**3 /self.ngal(tracer)[0]
         else:
-            print('No density set')
+            if verbose: print('No density set')
             return 1 
     
     def ngal(self, tracer, verbose=False):
-        '''
-        --- Return the number of galaxy and the satelitte fraction form HOD parameters
-        '''
+        """
+        Return the number of galaxy and the satelitte fraction 
+        
+        Parameters
+        ----------
+            tracer: str
+                Name of the galaxy tracer in self.tracers 
+            verbose (bool, optional): Defaults to False.
+
+        Returns
+        -------
+        ngal: float
+            Total number of galaxies expected
+        
+        fsat: float
+            Expected fraction of satellite galaxy (n_sat/ngal)
+        """
         start = time.time()
         hod_list_param_cen, hod_list_param_sat, _ = self.__init_hod_param(tracer)
         ngal, fsat = compute_ngal(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], self.args['nthreads'], 
-                                hod_list_param_cen, hod_list_param_sat, self.args[tracer]['conformity_bias'])
+                                hod_list_param_cen, hod_list_param_sat, self.args[tracer]['conformity_bias'], self.args[tracer]['link_sat_to_central'])
         if verbose:
             print(time.time()-start)
         return ngal, fsat   
 
 
     def calc_env_factor(self, cellsize=5, resampler='cic'):
+
+        """
+        Not used anymore
+        Compute density around each halos on a mesh. Based on pypower CatalogMesh https://pypower.readthedocs.io/en/latest/api/api.html#pypower.mesh.CatalogMesh
+
+        Parameters
+        ----------
+        cellsize : array, float, default=5
+            Physical size of mesh cells.
+        
+        resampler : string, ResampleWindow, default='tsc'
+            Resampler used to assign particles to the mesh.
+            Choices are ['ngp', 'cic', 'tcs', 'pcs'].
+
+        Returns
+        -------
+        None
+            Add column named ``env`` in the halo catalog self.hcat 
+        """
+        from pypower import CatalogMesh
 
         print(f'Compute environment in cellsize {cellsize}...', flush=True)
         import warnings
@@ -166,96 +561,372 @@ class HOD:
 
 
     def _compute_assembly_bias_columns(self):
-        ab_proxy = np.unique([[l for l in ll] for ll in [list(self.args[tr]['assembly_bias'].keys()) for tr in self.args['tracers']]])
-        for ab in ab_proxy:
-            self.set_assembly_bias_values(ab)
-
-    def set_assembly_bias_values(self, col, bins=50):
         """
-        --- Set by mass bin a linear fonction (-0.5, 0.5) according to col value
-        """
-        if f'ab_{col}' in self.hcat.columns():
-            return 0
-        
-        if (col == 'env') & ('env' not in self.hcat.columns()):
-            self.calc_env_factor()
+        Initialize assembly bias columns for all tracers.
 
-        if col not in self.hcat.columns():
-            raise ValueError(f'{col} not in halo catalog columns')
-        
-        print(f'Set value for assembly bias according {col}...', flush=True)
-        
-        nb, mbins = np.histogram(self.hcat['log10_Mh'], bins=bins)
-        self.hcat[f'ab_{col}'] = np.zeros_like(self.hcat['log10_Mh'])
-        mask_bin_hcat = [(self.hcat['log10_Mh'] > b_inf-1e-6) &  (self.hcat['log10_Mh'] <= b_sup) for b_inf, b_sup in zip(mbins[:-1], mbins[1:])]
-        idx_sort_mbins = []
-        i = 1
-        for mask in mask_bin_hcat:
-            hcat_bin = self.hcat[mask]
-            f_c = np.zeros_like(hcat_bin['log10_Mh'])
-            idx_sort_mbins += [np.argsort(hcat_bin[col])[::-1]]
-            np.put(f_c, idx_sort_mbins[-1], np.linspace(-0.5, 0.5, len(hcat_bin[col])))
-            self.hcat[f'ab_{col}'][mask] = f_c
-            if i % 10 == 0:
-                print(f'{i*2}% done...', flush=True)
-            i += 1
-
-    def make_mock_cat(self, tracers=None, fix_seed=None, verbose=True):
-        """
-        Generate mock catalogs from HOD model.
+        This method creates the assembly bias columns for each tracer by iterating over the unique assembly bias
+        column names defined in the `assembly_bias` parameter file for each tracer. For each column, the
+        `set_assembly_bias_values` method is called to assign the values to the halo catalog.
 
         Parameters
         ----------
-        self
+        None
 
-        fix_seed : Fix the seed for reproductibility. Caveat : Only works for a same number of threads in args['nthreads']
+        Returns
+        -------
+        None
 
-        Output
+        Notes
+        -----
+        This function relies on the existence of the `self.args['tracers']` and `self.args[tracer]['assembly_bias']`
+        configurations. The assembly bias columns are created using the column names defined in the `assembly_bias`
+        keys for each tracer.
+
+        Example
+        -------
+        If there are multiple tracers defined in `self.args['tracers']` and each tracer has specific assembly bias
+        columns defined in `self.args[tracer]['assembly_bias']`, this method will iterate over all of them and create
+        the corresponding assembly bias columns in the halo catalog.
+        """
+        ab_proxy = []
+        for tr in self._tracers():
+            if self.args[tr].get('assembly_bias'):
+                ab_proxy += [list(self.args[tr]['assembly_bias'].keys())]
+        ab_proxy = list(set().union(*ab_proxy))
+        for ab in ab_proxy:
+            self.set_assembly_bias_values(ab)
+
+    def get_env_col(self, verbose: bool = True):
+        """
+        Interpolate environment-based quantities (density and shear) 
+        from precomputed meshes onto halo positions.
+
+        This function assigns two new columns to `self.hcat`:
+        - `'env'`: interpolated density environment value at each halo position.
+        - `'shear'`: interpolated shear value at each halo position.
+
+        Method
         ------
-        mock_cat : dict
-            dict of mock galaxies properties
+        - The halo positions (`x, y, z` in `self.hcat`) are normalized by the 
+        mesh cell size and mapped into grid indices.
+        - `scipy.interpolate.interpn` is used to interpolate values from 
+        `self.density_mesh` and `self.shear_mesh` at those halo positions.
+        - Periodic wrapping (`% N_dim`) is applied to positions to ensure 
+        indices lie within mesh bounds.
+
+        Parameters
+        ----------
+        verbose : bool, optional (default=True)
+            If True, prints progress messages to stdout. Set False for silent execution.
+
+        Notes
+        -----
+        - Requires `self.density_mesh` and `self.shear_mesh` to be already loaded.
+        - Modifies `self.hcat` in-place by adding two new columns.
+        """
+        from scipy.interpolate import interpn
+
+        N_dim = self.density_mesh.shape[0]
+        cell_size = self.boxsize / N_dim
+
+        # Halo positions in grid index space (apply periodic wrapping)
+        GroupPos = (
+            np.array([self.hcat['x'], self.hcat['y'], self.hcat['z']]).T / cell_size
+        ).astype(int) % N_dim
+
+        grid_axes = (np.arange(N_dim), np.arange(N_dim), np.arange(N_dim))
+
+        for name, mesh in [('env', self.density_mesh), ('shear', self.shear_mesh)]:
+            if verbose:
+                print(f"Initializing {name} column...", flush=True)
+            self.hcat[name] = interpn(grid_axes, mesh, GroupPos)
+            if verbose:
+                print("Done!", flush=True)
+
+
+
+    def load_env_based_properties(self):
+        """
+        Load environment-based properties (density and shear meshes) for HOD assembly bias modeling.
+
+        This method attaches density and shear information to the catalog for use in 
+        environment-based assembly bias models. It handles multiple cases:
+
+        1. **Abacus simulation (`self.__is_sim_abacus` is True)**:
+        - If `path_to_density_mesh` is a directory, attempts to construct a file path of the form:
+            `env_shear_map_<sim_name>_z<z_simu>.h5`.
+        - If that file exists, loads precomputed meshes using `Catalog.read`.
+        - Otherwise, attempts to compute meshes on the fly via 
+            `.environment_func.compute_env_shear_abacus`.
+        - If the redshift snapshot is not supported for particle outputs, issues a warning 
+            and removes environment-based assembly bias parameters.
+
+        2. **No mesh path provided (`path_to_density_mesh is None`)**:
+        - Issues a warning and removes 'env' and 'shear' assembly bias parameters 
+            from tracer and fit parameter dictionaries.
+
+        3. **Mesh file exists** (`os.path.exists(path_to_density_mesh)`):
+        - Reads meshes from file using `Catalog.read`.
+        - Assigns them to `self.density_mesh` and `self.shear_mesh`.
+        - Calls `self.get_env_col()` to attach environment columns to `self.hcat`.
+
+        4. **Invalid mesh path**:
+        - Issues a warning and removes 'env' and 'shear' assembly bias parameters.
+
+        Notes
+        -----
+        - This function modifies `self.args` in place by removing environment-based 
+        assembly bias entries if meshes cannot be loaded.
+        - If meshes are successfully loaded or computed, they are stored in 
+        `self.density_mesh` and `self.shear_mesh`, and `self.hcat` is updated with 
+        corresponding 'env' and 'shear' columns.
+        """
+
+        path = self.args.get('path_to_density_mesh', None)
+        print(f'Load environment-based properties for assembly bias HOD from {path}...', flush=True)
+        def _remove_env_bias():
+            """Remove 'env' and 'shear' assembly bias parameters from all tracers."""
+            for tr in self._tracers():
+                for c in ['env', 'shear']:
+                    self.args.get(tr, {}).get('assembly_bias', {}).pop(c, None)
+                    self.args.get('fit_param', {}).get('priors', {}).get(tr, {}).get('assembly_bias', {}).pop(c, None)
+                
+
+        # --- Case 1: Abacus simulation ---
+        if self.__is_sim_abacus:
+            if os.path.isdir(path):
+                path = os.path.join(
+                    path,
+                    f'env_shear_map_{self.args["hcat"]["sim_name"]}_z{self.args["hcat"]["z_simu"]:.3f}.h5'
+                )
+            if os.path.exists(path):
+                env_prop = Catalog.read(path)
+                self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
+                self.get_env_col()
+
+            else:
+                from .environment_func import compute_env_shear_abacus
+                valid_snapshots = [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 1.1, 1.4, 1.7, 2.0, 2.5, 3.0]
+                z_simu = self.args['hcat']['z_simu']
+
+                if z_simu not in valid_snapshots:
+                    import warnings
+                    warnings.warn(
+                        f"Redshift snapshot {z_simu:.3f} does not have particle outputs. "
+                        "Continuing without shear/environment-based assembly bias."
+                    )
+                    _remove_env_bias()
+                else:
+                    print('Compute density and shear from particle distributions...', flush=True)
+                    self.density_mesh, self.shear_mesh = compute_env_shear_abacus(
+                        self.args['hcat']['sim_name'],
+                        z_simu,
+                        cell_size=5,
+                        R=1.5,
+                        root_abacus_dir=self._root_dir_abacus,
+                        dir_to_save=path,
+                    )
+                    self.get_env_col()
+
+        # --- Case 2: Uchuu sim ---
+        elif self.__is_sim_uchuu:
+            # DDE_sims = ['Planck18', 'Planck18_DDE', 'DESIY1_DDE', 'Uchuu2Gpc']
+            print('Uchuu simulation detected...', flush=True)
+            if self.args['hcat']['sim_name'] == 'Uchuu2Gpc':   
+                if path and os.path.isdir(path):
+                    snapshot_num = read_uchuu.get_Uchuu_snapshot_file('{:.3f}'.format(self.args['hcat']['z_simu']))
+                    path = os.path.join(
+                        path,
+                        f'env_shear_map_Uchuu_snapdir_{snapshot_num:03d}.h5'
+                    )
+                    print(f'Looking for Uchuu env/shear mesh at {path}...', flush=True)
+                if path and os.path.exists(path):
+                    print('Load precomputed density and shear mesh for Uchuu...', flush=True)
+                    env_prop = Catalog.read(path)
+                    self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
+                    self.get_env_col()
+
+            else:
+                    import warnings
+                    warnings.warn(
+                        f"No particle outputs for DDE simulatioms. "
+                        "Continuing without shear/environment-based assembly bias."
+                    )
+                    _remove_env_bias()
+
+        # --- Case 3: Mesh file exists ---
+        elif path is None:
+            import warnings
+            warnings.warn(
+                "Path to density/shear mesh not set. "
+                "To generate density and shear mesh for assembly bias HOD, use compute_env_shear.py. "
+                "Continuing without shear/environment-based assembly bias."
+            )
+            _remove_env_bias()
+
+        elif os.path.exists(path):
+            env_prop = Catalog.read(path)
+            self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
+            self.get_env_col()
+
+        # --- Case 4: Invalid path ---
+        else:
+            import warnings
+            warnings.warn(
+                f"Path to density/shear mesh not valid ({path}). "
+                "To generate density and shear mesh for assembly bias HOD, use compute_env_shear.py. "
+                "Continuing without shear/environment-based assembly bias."
+            )
+            _remove_env_bias()
+            
+
+    def set_assembly_bias_values(self, col):
+
+        """
+        Assign ranked values for assembly bias computation based on a specific column.
+
+        This method assigns ranked values linearly between -0.5 and 0.5 for the assembly bias computation. The
+        values are based on a histogram of halo masses (`log10_Mh`), and the `col` parameter specifies the column
+        in the halo catalog that will be used for the ranking. The method first checks if the required column 
+        (`ab_{col}`) already exists; if not, it computes the values based on the input column and adds them to the
+        halo catalog.
+
+        Parameters
+        ----------
+        col : str
+            The column name in the halo catalog used to compute assembly bias values. 
+            This column is expected to be present in the halo catalog.
+        bins : int, optional
+            The number of bins used for mass binning in the histogram of halo masses. Default is 50.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If the specified column is not present in the halo catalog, a `ValueError` is raised.
+
+        Notes
+        -----
+        The method uses `log10_Mh` values to bin the halos and ranks the halos in each bin based on the specified column.
+        The assembly bias values are assigned linearly between -0.5 and 0.5 within each bin.
+        If the column `env` is requested but not present, the `calc_env_factor()` method is called to compute it first.
+        Additionally, the `ab_{col}` column is only added if it does not already exist in the halo catalog.
+
+        Example
+        -------
+        If `col = 'env'`, the method checks if an assembly bias column for `env` exists. If not, it computes and adds it.
+        The halos are binned based on their mass, and each halo is ranked within its mass bin. A value between -0.5 and 0.5
+        is assigned to each halo in the catalog based on the ranking of the `env` column.
+        """
+
+        if f'ab_{col}' in self.hcat.columns():
+            return 0
+        
+        if ((col == 'env') & ('env' not in self.hcat.columns())) | ((col == 'shear') & ('shear' not in self.hcat.columns())):
+            self.load_env_based_properties()
+            if col not in self.hcat.columns():
+                return
+            else:
+                for col in ['env', 'shear']:
+                    print(f'Set value for assembly bias according to {col}...', flush=True)
+                    self.hcat[f'ab_{col}'] = initialize_assembly_bias_value(self.hcat['log10_Mh'], self.hcat[col])
+                return
+        if col not in self.hcat.columns():
+            raise ValueError(f'{col} not in halo catalog columns')
+        
+        print(f'Set value for assembly bias according to {col}...', flush=True)
+
+        self.hcat[f'ab_{col}'] = initialize_assembly_bias_value(self.hcat['log10_Mh'], self.hcat[col])
+        
+        print(f'Done !', flush=True)
+
+
+    def make_mock_cat(self, tracers=None, fix_seed=None, verbose=True):
+        """
+        Generate HOD mock catalogs.
+
+        This method creates mock galaxy catalogs based on the Halo Occupation Distribution (HOD) model for each 
+        specified tracer. It computes the central and satellite galaxies, assigns them to halos, and optionally 
+        includes assembly bias effects, conformity bias, and uses particle-level data for satellite galaxy 
+        positions. It handles multiple tracers and provides options for reproducibility and verbose output.
+
+        Parameters
+        ----------
+        tracers : list or str, optional
+            Name(s) of the galaxy tracers (e.g., 'LRG', 'ELG') to include in the mock catalog. If None, all 
+            tracers defined in `self.tracers` are considered. Defaults to None.
+        fix_seed : int, optional
+            Fix the seed for reproducibility. This is useful for ensuring consistent results when using a fixed 
+            number of threads (`nthreads`). Defaults to None.
+        verbose : bool, optional
+            If True, the function prints progress messages during execution. Defaults to True.
+
+        Returns
+        -------
+        final_cat : dict
+            A dictionary containing mock catalogs for each tracer specified. Each catalog is represented by a `Catalog`
+            object, which contains the generated galaxy data (centrals and satellites) for the corresponding tracer.
+
+        Notes
+        -----
+        - The method relies on HOD models defined for each tracer in `self.args[tracer]['HOD_model']` and `self.args[tracer]['sat_HOD_model']`.
+        - If `self.args['assembly_bias']` is enabled, assembly bias columns will be computed and included in the mock catalog.
+        - The `fix_seed` parameter ensures that the mock catalogs are generated in a reproducible manner, but it requires consistent 
+        thread configurations (`self.args['nthreads']`).
+        - When `tracers` includes both 'ELG' and 'LRG', the method handles the case where both tracers share the same halo by placing
+        one LRG at the center and positioning other galaxies (like ELGs) based on the NFW profile.
+
+        Example
+        -------
+        To generate mock catalogs for both 'LRG' and 'ELG' tracers with fixed seed for reproducibility:
+
+        final_cat = mock_catalog.make_mock_cat(tracers=['LRG', 'ELG'], fix_seed=42)
         """
 
         rng = np.random.RandomState(seed=fix_seed)
-        timeall = time.time()
-
-        start = time.time()
+        start_all = time.time()
         
         if tracers is None: 
-            tracers = self.args['tracers']
+            tracers = self._tracers()
         else:
             tracers = tracers if isinstance(tracers, list) else [tracers]
+            for tr in tracers:
+                if tr not in self._tracers():
+                    raise ValueError(f'{tr} not in defined tracers {self._tracers()}')
         if verbose:
             print('Create mock catalog for {}'.format(tracers), flush=True)         
         
-        if self.args['assembly_bias']:
+        if self.args['use_assembly_bias']:
             self._compute_assembly_bias_columns()
 
         final_cat = {}
-        mask_id = np.ones(self.hcat.size, dtype=bool)
-        count_gal = {}
+        # mask_id = np.ones(self.hcat.size, dtype=bool)
+        # count_gal = {}
         for tracer in tracers:
+            start = time.time()
             self._fun_cHOD[tracer] = globals()['_'+self.args[tracer]['HOD_model']]
             self._fun_sHOD[tracer] = globals()['_'+self.args[tracer]['sat_HOD_model']]
             if verbose:
                 print('Run HOD for {}'.format(tracer), flush=True)         
             hod_list_param_cen, hod_list_param_sat, hod_list_ab_param = self.__init_hod_param(tracer)
             
-            if self.args[tracer]['satellites']:
-                ds = self.get_ds_fac(tracer, verbose=verbose)
-                if (hod_list_param_cen[0]*ds > 1) or (hod_list_param_cen[0]*ds > 1):
-                    import warnings
-                    warnings.warn(f'Ac={hod_list_param_cen[0]} or As={hod_list_param_cen[0]} is > 1, the density is not fixed to {self.args[tracer]["density"]}')
-                else : 
-                    hod_list_param_cen[0] *= ds
-                    hod_list_param_sat[0] *= ds
+            ds = self.get_ds_fac(tracer, verbose=verbose)
+            if (hod_list_param_cen[0]*ds > 1):
+                import warnings
+                warnings.warn('Ac={} is > 1, the density is not fixed to {}'.format(hod_list_param_cen[0]*ds, self.args[tracer]["density"]))
+            else : 
+                hod_list_param_cen[0] *= ds
+                hod_list_param_sat[0] *= 1 if self.args[tracer]['link_sat_to_central'] else ds
 
             if fix_seed is not None:
                 seed = rng.randint(0, 4294967295, self.args['nthreads'])
             else:
                 seed = None
             
-            if self.args['assembly_bias'] & (hod_list_ab_param is not None):
+            if self.args['use_assembly_bias'] & (hod_list_ab_param is not None):
                 cols_ab =  ['ab_'+col for col in self.args[tracer]['assembly_bias'].keys()]
                 if np.all([col in self.hcat.columns() for col in cols_ab]):
                     ab_arr =  np.vstack([self.hcat[col] for col in cols_ab]).T
@@ -265,54 +936,86 @@ class HOD:
                     hod_list_ab_param=None
             else:
                 hod_list_ab_param, ab_arr = None, None
-
-            cent, sat, cond_cent, proba_sat = compute_N(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], hod_list_param_cen, hod_list_param_sat, hod_list_ab_param,
-                                                            self.args['nthreads'], ab_arr, self.args[tracer]['conformity_bias'], seed)
-
-            mask_cent = cond_cent == 1
-            Nb_sat = proba_sat.sum()
-    
-            cent_cat = self.hcat[mask_cent]
-            cent_cat['Central'] = np.ones(cent_cat['x'].size,dtype='int')
-            if (cent > 1).any():
-                import warnings
-                warnings.warn(f'WARNING Ncent>1 {(cent > 1).sum()} times')
             if verbose:
-                print("HOD Computed", time.time() - start, flush=True)         
+                print("Initialisation in {:.2f} sec".format(time.time()-start), flush=True)
+                st = time.time()
+            cond_cent, proba_sat, Nb_sat = compute_N(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], hod_list_param_cen, 
+                                                   hod_list_param_sat, self.args[tracer]['nu'], hod_list_ab_param, self.args['nthreads'], ab_arr, 
+                                                   self.args[tracer]['conformity_bias'], self.args[tracer]['link_sat_to_central'], seed)
+            if verbose:
+                print('Ncent, Nsat computed in {:.2f} sec'.format(time.time()-st), flush=True)
+                st = time.time()
+            cent_cat = self.hcat[cond_cent]
+            cent_cat['Central'] = np.ones(cent_cat['x'].size,dtype='int')
+
+            if verbose:
+                print('Central catalog in {:.2f} sec'.format(time.time()-st), flush=True)
+                print("HOD computed for {} in {:.2f} sec".format(tracer, time.time()-start), flush=True)
             
-            mask_sat = proba_sat > 0
             if (not self.args[tracer]['satellites']) | (Nb_sat == 0):
                 Nb_sat=0
                 final_cat[tracer] = cent_cat
-
+                final_cat[tracer]['TRACER'] = [tracer]*final_cat[tracer].size
+                
             else:
-                start = time.time()
+                start_sat = time.time()
                 if verbose:
                     print("Start satellite assignement", flush=True)
+                mask_sat = proba_sat > 0
                 list_nsat = proba_sat[mask_sat]
                 sat_cat = Catalog.from_array(np.repeat(self.hcat[mask_sat].to_array(), list_nsat))
-
-                if fix_seed is not None:
-                    seed = rng.randint(0, 4294967295, self.args['nthreads'])
-                else:
-                    seed = None
                 
-                if self.args['use_particles']:
+                if self.args['use_particles'] & (self.part_subsamples is not None):
                     if verbose: print('Using particles', flush=True)
-                    if self.part_subsamples is not None:
-                        mask_nfw = compute_sat_from_part(self.part_subsamples['pos'].T[0],self.part_subsamples['pos'].T[1],self.part_subsamples['pos'].T[2],
+                    if self.__is_sim_abacus:
+                        if verbose: 
+                            print('Using Abacus particles', flush=True)
+                            start = time.time()
+                        if fix_seed is not None:
+                            seed = rng.randint(0, 4294967295, self.args['nthreads'])
+                        else:
+                            seed = None
+                        mask_nfw = compute_sat_from_abacus_part(self.part_subsamples['pos'].T[0],self.part_subsamples['pos'].T[1],self.part_subsamples['pos'].T[2],
                             self.part_subsamples['vel'].T[0], self.part_subsamples['vel'].T[1],self.part_subsamples['vel'].T[2],
                             sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
                             self.hcat['npoutA'][mask_sat], self.hcat['npstartA'][mask_sat], list_nsat, np.insert(np.cumsum(list_nsat), 0, 0), self.args['nthreads'], seed=seed)
-                        if verbose: print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
-                    else:
-                        print('No particles found continue with NFW', flush=True)
-                        mask_nfw = np.ones(Nb_sat, dtype=bool)
+                        if verbose: 
+                            print('sat from part done', time.time() - start, flush=True)
+                            print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
+
+                    elif self.part_subsamples is not None:
+                        if fix_seed is not None:
+                            seed = rng.randint(0, 4294967295, sat_cat.size)
+                        else:
+                            seed = None
+                        start = time.time()
+                        start_part = time.time()
+                        uniq_sat_id = np.unique(sat_cat['halo_id'])
+                        if not hasattr(self, '_order_part_index'):
+                            self._order_part_index = np.argsort(self.part_subsamples['upid'])
+                        flat, offsets = halo_to_particle_indices(self.part_subsamples['upid'][self._order_part_index], self._order_part_index, uniq_sat_id, self.args['nthreads'])
+                        # result = [flat[offsets[i]:offsets[i+1]] for i in range(len(uniq_sat_id))]
+                        start = time.time()
+                        sat_cat = sat_cat[sat_cat['halo_id'].argsort()]
+                        start = time.time()
+                        # mask_nfw = compute_sat_from_part(sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
+                        #                                  self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
+                        #                                  self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'], result,
+                        #                                  list_nsat, np.insert(np.cumsum(list_nsat),0,0), self.args['nthreads'], seed=seed)
+
+                        mask_nfw = sample_satellites_from_particles(sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
+                                                         self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
+                                                         self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'], flat, offsets,
+                                                         list_nsat, self.args['nthreads'], seed=seed)
+                        if verbose: 
+                            print('sample_satellites_from_particles done', time.time() - start, flush=True)
+                            print('sat from part done', time.time() - start_part, flush=True)
+                            print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
                 else:
                     mask_nfw = np.ones(Nb_sat, dtype=bool)
                 
                 if mask_nfw.sum() > 0:
-                    
+                    start = time.time()
                     if fix_seed is not None:
                         seed1 = rng.randint(0, 4294967295, self.args['nthreads'])
                     else:
@@ -330,54 +1033,104 @@ class HOD:
 
                     sat_cat['x'][mask_nfw], sat_cat['y'][mask_nfw], sat_cat['z'][mask_nfw], \
                     sat_cat['vx'][mask_nfw], sat_cat['vy'][mask_nfw], sat_cat['vz'][mask_nfw] = compute_fast_NFW(sat_cat['x'][mask_nfw], sat_cat['y'][mask_nfw], sat_cat['z'][mask_nfw],
-                                                                                                                            sat_cat['vx'][mask_nfw], sat_cat['vy'][mask_nfw], sat_cat['vz'][mask_nfw],
-                                                                                                                            sat_cat['c'][mask_nfw], sat_cat['Mh'][mask_nfw], sat_cat['Rh'][mask_nfw], 
-                                                                                                                            rd_pos, rd_vel, exp_frac=self.args[tracer]['exp_frac'], 
-                                                                                                                            exp_scale=self.args[tracer]['exp_scale'], nfw_rescale=self.args[tracer]['nfw_rescale'],
-                                                                                                                            vrms_h=vrms_h, f_sigv=self.args[tracer]['f_sigv'], v_infall=self.args[tracer]['v_infall'], 
-                                                                                                                            vel_sat=self.args[tracer]['vel_sat'], Nthread=self.args['nthreads'], seed=seed)
-
+                    sat_cat['vx'][mask_nfw], sat_cat['vy'][mask_nfw], sat_cat['vz'][mask_nfw],
+                    sat_cat['c'][mask_nfw], sat_cat['Mh'][mask_nfw], sat_cat['Rh'][mask_nfw], 
+                    rd_pos, rd_vel, exp_frac=self.args[tracer]['exp_frac'], 
+                    exp_scale=self.args[tracer]['exp_scale'], nfw_rescale=self.args[tracer]['nfw_rescale'],
+                    vrms_h=vrms_h, f_sigv=self.args[tracer]['f_sigv'], v_infall=self.args[tracer]['v_infall'], 
+                    vel_sat=self.args[tracer]['vel_sat'], Nthread=self.args['nthreads'], seed=seed)
+                    if verbose:
+                        print("NFW Computed", time.time() - start, flush=True)
                 sat_cat['Central'] = sat_cat.zeros()
 
                 if verbose:
-                    print("Satellite assignement done", time.time() - start, flush=True)
+                    print("Satellite assignement done", time.time() - start_sat, flush=True)
 
-                
+                if verbose:
+                    print("Make final catalog", flush=True)
+                    start = time.time()
                 final_cat[tracer] = Catalog.concatenate((cent_cat,sat_cat))
+                # final_cat[tracer]['TRACER'] = [tracer]*final_cat[tracer].size
+                final_cat[tracer]['TRACER'] = np.full(final_cat[tracer].size, tracer)
                 if verbose:
                     print('{} mock catalogue done'.format(tracer), time.time()-start, flush=True)
-                    print("{} central galaxies, {} satellites, fraction of satellite {:.2f} ".format(mask_cent.sum(),Nb_sat, Nb_sat/final_cat[tracer].size), flush=True)
+                    
                 
-            mask_id &= (mask_cent | mask_sat)
-            count_gal[tracer] = np.int64(proba_sat + cond_cent)
+            # mask_id &= (mask_cent | mask_sat)
+            # count_gal[tracer] = np.int64(proba_sat + cond_cent)
 
             if verbose:
-                print("Done overall time ", tracer, time.time() - timeall, flush=True)
+                print("Done overall time ", tracer, time.time() - start_all, flush=True)
 
         # When LRG and ELG are in the same halo, put 1 LRG at the center and all other galaxies are position following NFW profile
-        if ((tracers == ['ELG', 'LRG']) | (tracers == ['LRG', 'ELG'])) & (mask_id.sum() >0) & ~self.args['hcat']['halo_lc']:
-            mask_elg = np.in1d(final_cat['ELG']['row_id'], final_cat['LRG']['row_id'])
-            mask_lrg = np.in1d(final_cat['LRG']['row_id'], final_cat['ELG']['row_id'])
+        # if ((tracers == ['ELG', 'LRG']) | (tracers == ['LRG', 'ELG'])) & (mask_id.sum() >0):
+        #     mask_elg = np.in1d(final_cat['ELG']['halo_id'], final_cat['LRG']['halo_id'])
+        #     mask_lrg = np.in1d(final_cat['LRG']['halo_id'], final_cat['ELG']['halo_id'])
             
-            cen_LRG = self.hcat[mask_id]
-            cen_LRG['Central'] = cen_LRG.ones()
+        #     cen_LRG = self.hcat[mask_id]
+        #     cen_LRG['Central'] = cen_LRG.ones()
 
-            if ((count_gal['LRG'] > 1) & mask_id).sum() > 0:
-                sat_LRG = Catalog.from_array(np.repeat(self.hcat[(count_gal['LRG'] > 1) & mask_id].to_array(), count_gal['LRG'][(count_gal['LRG'] > 1) & mask_id]-1))
-                sat_LRG = self.init_elg_sat_for_lrg('LRG', sat_LRG, fix_seed=fix_seed)
-                final_cat['LRG'][mask_lrg] = Catalog.concatenate(cen_LRG, sat_LRG)
-            else:
-                final_cat['LRG'][mask_lrg] = cen_LRG
+        #     if ((count_gal['LRG'] > 1) & mask_id).sum() > 0:
+        #         sat_LRG = Catalog.from_array(np.repeat(self.hcat[(count_gal['LRG'] > 1) & mask_id].to_array(), count_gal['LRG'][(count_gal['LRG'] > 1) & mask_id]-1))
+        #         sat_LRG = self.init_elg_sat_for_lrg('LRG', sat_LRG, fix_seed=fix_seed)
+        #         final_cat['LRG'][mask_lrg] = Catalog.concatenate(cen_LRG, sat_LRG)
+        #     else:
+        #         final_cat['LRG'][mask_lrg] = cen_LRG
             
-            sat_ELG = Catalog.from_array(np.repeat(self.hcat[mask_id].to_array(), count_gal['ELG'][mask_id]))
-            sat_ELG = self.init_elg_sat_for_lrg('ELG', sat_ELG, fix_seed=fix_seed)
-            final_cat['ELG'][mask_elg] = sat_ELG
-
-        return final_cat
+        #     sat_ELG = Catalog.from_array(np.repeat(self.hcat[mask_id].to_array(), count_gal['ELG'][mask_id]))
+        #     sat_ELG = self.init_elg_sat_for_lrg('ELG', sat_ELG, fix_seed=fix_seed)
+        #     final_cat['ELG'][mask_elg] = sat_ELG
+        
+        if verbose:
+            st = time.time()
+            final_cat = Catalog.concatenate(list(final_cat.values())) 
+            Nb_sat = np.count_nonzero(final_cat['Central'])
+            # print("{} central galaxies, {} satellites, fraction of satellite {:.2f} ".format(final_cat.size-Nb_sat,Nb_sat, Nb_sat/final_cat.size), flush=True)
+            print('Total time to create the mock catalog: {:.2f} seconds'.format((time.time() - start_all)), flush=True)
+            return final_cat
+        return Catalog.concatenate(list(final_cat.values())) 
 
 
 
     def init_elg_sat_for_lrg(self, tracer, sat_cat, fix_seed=None):
+
+        """
+        Draft function to assign ELG satellites around LRG central galaxies in a NFW profile 
+        if they are in the same halo.
+
+        This function generates the positions and velocities of Emission Line Galaxies (ELGs) 
+        around Luminous Red Galaxies (LRGs) using a Navarro–Frenk–White (NFW) profile. It 
+        ensures that the ELG satellites are placed according to the halo's mass distribution, 
+        and their velocities are assigned based on the chosen model (NFW or random normal).
+
+        Parameters
+        ----------
+        tracer : str
+            The name of the tracer (e.g., 'LRG') used to determine the velocity model and 
+            other simulation parameters for satellite galaxies.
+        sat_cat : Catalog
+            A catalog of the satellite galaxies, which includes properties such as 
+            position, velocity, concentration, mass, and radius. The function will modify 
+            the positions and velocities of these satellites.
+        fix_seed : int, optional
+            A seed for random number generation, ensuring reproducibility of the mock catalog. 
+            Defaults to None, meaning that a random seed will be generated internally.
+
+        Returns
+        -------
+        Catalog
+            The input satellite catalog (`sat_cat`) is updated with new positions, velocities, 
+            and a `Central` flag (set to 0 for satellites).
+        
+        Notes
+        -----
+        - The position of satellites is computed on a spherical shell using `getPointsOnSphere_jit`.
+        - The velocity of the satellites can be generated in two ways:
+            - 'NFW': Satellites are assigned velocities based on the NFW profile.
+            - 'rd_normal': Satellites are assigned random velocities.
+        - If the `Vrms` column is available in `sat_cat`, it is used to adjust the velocity distribution.
+        - This function directly modifies the `sat_cat` and returns the updated catalog.
+        """
 
         rng = np.random.RandomState(seed=fix_seed)
 
@@ -387,7 +1140,7 @@ class HOD:
             seed = None
 
         Nb_sat = sat_cat.size
-       
+
         if fix_seed is not None:
             seed1 = rng.randint(0, 4294967295, self.args['nthreads'])
         else:
@@ -412,41 +1165,114 @@ class HOD:
         
         sat_cat['Central'] = sat_cat.zeros()
         return sat_cat
+    
 
+    def get_vsmear(self, tracer, cat_size, verbose=True):
 
-                                         
-    def get_2PCF(self, cats, tracers=None, R1R2=None, verbose=True):
         """
-        --- Return the 2PCF for a given mock catalog in a cubic box
+        Generate a random velocity smear for the specified tracer
+        """
+
+        if isinstance(self.args[tracer]['vsmear'], numbers.Number) and (self.args[tracer]['vsmear'] != 0):
+            if self.args[tracer]['vsmear'] < 0:
+                raise ValueError('vsmear must be positive')
+            if verbose: 
+                print('Generate gaussian vsmear for {} of {} km/s...'.format(tracer, self.args[tracer]['vsmear']), flush=True)
+            vsmear = self.rng.normal(0, self.args[tracer]['vsmear'], cat_size)
+            
+        elif isinstance(self.args[tracer]['vsmear'], list):
+            from HODDIES.desi.Y3_redshift_systematics import vsmear as gen_vsmear
+            if verbose: 
+                print('Generate vsmear for {} at z {:.2f}-{:.2f}...'.format(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1]), flush=True)
+            vsmear = gen_vsmear(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1], cat_size, dvmode='obs',seed=42,verbose=verbose)
+        else:
+            vsmear = 0
+        return vsmear
+    
+
+    def get_2PCF(self, cats, tracers=None, ells=None, R1R2=None, verbose=True):
+        """
+        Compute the two-point correlation function (2PCF) for a given mock catalog in a cubic box.
+
+        This function calculates the two-point correlation function (2PCF) for specified galaxy tracers 
+        in a mock catalog. It computes the correlation for multiple tracers if provided, and returns 
+        the 2PCF and its separation distance for each tracer.
+
+        Parameters
+        ----------
+        cats : dict
+            A dictionary of mock catalogs where the keys are the names of the tracers 
+            and the values are the corresponding catalogs (e.g., 'LRG', 'ELG').
+        tracers : list or str, optional
+            A list of tracer names (keys in `cats`) for which the 2PCF should be computed. 
+            If None, all tracers in `self.args['tracers']` are considered. Defaults to None.
+        ells : tuple of int, optional
+            Multipoles to project onto. If None, ells in `self.args['2PCF_settings']['multipole_index']` are considered. Default to None.
+        R1R2 : tuple or None, optional
+            A tuple defining a range for R1 and R2 for the 2PCF computation. If None, 
+            the default values will be used. Defaults to None.
+        verbose : bool, optional
+            If True, prints progress and computation time for each tracer. Defaults to True.
+
+        Returns
+        -------
+        s_all : list
+            A list of separation distances corresponding to the computed 2PCF for each tracer.
+        xi_all : list
+            A list of the two-point correlation function (2PCF) values for each tracer.
+
+        Notes
+        -----
+        - The function uses `apply_rsd` to account for redshift space distortions (RSD) if enabled and Cosmology set.
+        - The separation distances `s` and the correlation values `xi` are calculated using the 
+        `compute_twopoint` function, and the results are stored for each tracer.
+        - The results are returned as lists (`s_all` and `xi_all`) when multiple tracers are provided.
+        - The function supports a log-scale binning option for radial bins if `bin_logscale` is True.
+        - The output is either the 2PCF for a single tracer (if only one tracer is given) or for 
+        all tracers provided in the list.
+
+        Example
+        -------
+        s, xi = get_2PCF(cats, tracers=['LRG', 'ELG'])
         """
 
         if tracers is None: 
-            tracers = self.args['tracers'] 
-        tracers = tracers if isinstance(tracers, list) else [tracers]
+            tracers = self._tracers()
+            if 'TRACER' in cats.columns():
+                tracers = list(np.unique(cats['TRACER']))
+        else:
+            tracers = tracers if isinstance(tracers, list) else [tracers]
+        for tr in tracers:
+            if tr not in self._tracers():
+                raise ValueError(f'{tr} not in defined tracers {self._tracers()}')
         
 
-        if self.args['2PCFthread_settings']['edges_smu'] is None:
+        if self.args['2PCF_settings']['edges_smu'] is None:
             if self.args['2PCF_settings']['bin_logscale']:
                 r_bins = np.geomspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
             else:
                 r_bins = np.linspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
             
             self.args['2PCF_settings']['edges_smu'] = (r_bins, np.linspace(-self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['n_mu_bins']))
-
+        ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
         s_all, xi_all = [],[]
         for tr in tracers:
-            mock_cat = cats[tr]
+            mock_cat = cats[cats['TRACER'] == tr]
             if verbose:
-                print('#Computing 2PCF for {}...'.format(tr), flush=True)
-                time1 = time.time()
-            if self.args['2PCF_settings']['rsd']:
-                pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'], self.cosmo)
+                print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
+                time1 = time.time() 
+
+            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
+                pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear)
             else:
+                if self.args['2PCF_settings']['rsd']:
+                    print('Cosmology not set, does not apply rsd', flush=True)
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
             
-            s, xi = compute_2PCF(pos, self.args['2PCF_settings']['edges_smu'], self.args['2PCF_settings']['multipole_index'], self.boxsize,  self.args['2PCF_settings']['los'], self.args['nthreads'], R1R2=R1R2)
+            s, xi = compute_twopoint(pos, 'smu', self.args['2PCF_settings']['edges_smu'], self.boxsize, self.args['2PCF_settings']['los'], self.args['nthreads'], ells=ells, R1R2=R1R2)
             if verbose:
-                print('#2PCF for {} computed !time = {:.3f} s'.format(tr, time.time()-time1), flush=True)
+                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
             if len(tracers) > 1:
                 s_all += [s]
                 xi_all += [xi]
@@ -456,13 +1282,57 @@ class HOD:
 
     def get_wp(self, cats, tracers=None, R1R2=None, verbose=True):
         """
-        --- Return wp (projected correlation function) for a given mock catalog in a cubic box
+        Compute the projected two-point correlation function (wp) for a given mock catalog in a cubic box.
+
+        This function calculates the projected two-point correlation function (wp) for specified galaxy tracers 
+        in a mock catalog. It can compute wp for multiple tracers, returning the results for each.
+
+        Parameters
+        ----------
+        cats : dict
+            A dictionary of mock catalogs where the keys are the names of the tracers 
+            and the values are the corresponding catalogs (e.g., 'LRG', 'ELG').
+        tracers : list or str, optional
+            A list of tracer names (keys in `cats`) for which the wp should be computed. 
+            If None, all tracers in `self.args['tracers']` are considered. Defaults to None.
+        R1R2 : tuple or None, optional
+            A tuple defining a range for R1 and R2 for the wp computation. If None, 
+            the default values will be used. Defaults to None.
+        verbose : bool, optional
+            If True, prints progress and computation time for each tracer. Defaults to True.
+
+        Returns
+        -------
+        rp_all : list
+            A list of projected separation distances corresponding to the computed wp for each tracer.
+        wp_all : list
+            A list of the projected two-point correlation function (wp) values for each tracer.
+
+        Notes
+        -----
+        - The function uses `apply_rsd` to account for redshift space distortions (RSD) if enabled and Cosmology set.
+        - The projected separation distances `rp` and the correlation values `wp` are calculated using the 
+        `compute_twopoint` function, and the results are stored for each tracer.
+        - The results are returned as lists (`rp_all` and `wp_all`) when multiple tracers are provided.
+        - The function supports a log-scale binning option for radial bins if `bin_logscale` is True.
+        - The output is either the wp for a single tracer (if only one tracer is given) or for 
+        all tracers provided in the list.
+
+        Example
+        -------
+        rp, wp = get_wp(cats, tracers=['LRG', 'ELG'])
         """
 
         if tracers is None: 
-            tracers = self.args['tracers'] 
-        tracers = tracers if isinstance(tracers, list) else [tracers]
-       
+            tracers = self._tracers()
+            if 'TRACER' in cats.columns():
+                tracers = list(np.unique(cats['TRACER']))
+        else:
+            tracers = tracers if isinstance(tracers, list) else [tracers]
+        for tr in tracers:
+            if tr not in self._tracers():
+                raise ValueError(f'{tr} not in defined tracers {self._tracers()}')
+
         if self.args['2PCF_settings']['edges_rppi'] is None:
             if self.args['2PCF_settings']['bin_logscale']:
                 r_bins = np.geomspace(self.args['2PCF_settings']['rp_min'], self.args['2PCF_settings']['rp_max'], self.args['2PCF_settings']['n_rp_bins']+1, endpoint=(True))
@@ -472,30 +1342,155 @@ class HOD:
 
         rp_all, wp_all = [],[]
         for tr in tracers:
-            mock_cat = cats[tr]
+            mock_cat = cats[cats['TRACER'] == tr]
             if verbose:
-                print('#Computing wp for {}...'.format(tr), flush=True)
+                print('#Compute wp for {}...'.format(tr), flush=True)
                 time1 = time.time()
-            if self.args['2PCF_settings']['rsd']:
-                pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr]['vsmear'], self.cosmo)
+            
+            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
+                pos = apply_rsd(mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear)
             else:
+                if self.args['2PCF_settings']['rsd']:
+                    print('Cosmology not set, does not apply rsd', flush=True)
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
-            rp, wp = compute_wp(pos, self.args['2PCF_settings']['edges_rppi'], self.args['2PCF_settings']['pimax'], self.boxsize, self.args['2PCF_settings']['los'],  self.args['nthreads'], R1R2=R1R2)
+                
+            rp, wp = compute_twopoint(pos, 'rppi', self.args['2PCF_settings']['edges_rppi'], self.boxsize, self.args['2PCF_settings']['los'],  self.args['nthreads'], pimax=self.args['2PCF_settings']['pimax'], R1R2=R1R2)
             if verbose:
-                print('#wp for {} computed !time = {:.3f} s'.format(tr, time.time()-time1), flush=True)
+                print('Done in {:.3f} s'.format(time.time()-time1), flush=True)
             if len(tracers) > 1:
                 rp_all += [rp]
                 wp_all += [wp]
             else: 
                 return rp, wp
         return rp_all, wp_all
-    
 
+
+    def get_delta_sigma(self, cats, tracers=None, verbose=True, return_dic=False):
+        """
+        Compute ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2] for one or several lens tracers using particle.
+    
+        Parameters
+        ----------
+        cats : dict-like or structured array
+            Catalog containing tracers (same logic as get_wp).
+        tracers : list or str, optional
+            Which tracers to compute ΔΣ for. If None, use all tracers.
+        verbose : bool, optional
+    
+        Returns
+        -------
+        rp_all : list or array
+            rp midpoints for ΔΣ(R).
+        ds_all : list or array
+            ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2]  for each tracer.
+        """
+
+        if self.part_subsamples is None:
+            raise ValueError('Particle subsample is required to compute ΔΣ(R).')
+        
+        if tracers is None: 
+            tracers = self._tracers()
+            if 'TRACER' in cats.columns():
+                tracers = list(np.unique(cats['TRACER']))
+        else:
+            tracers = tracers if isinstance(tracers, list) else [tracers]
+        for tr in tracers:
+            if tr not in self._tracers():
+                raise ValueError(f'{tr} not in defined tracers {self._tracers()}')
+    
+        ds_settings = self.args['Dsigma_settings']
+        rp_min = ds_settings['rp_min']
+        rp_max = ds_settings['rp_max']
+        n_rp_bins = ds_settings['n_rp_bins']
+        pimax = ds_settings['pimax']
+        bin_log = ds_settings.get('bin_logscale', True)
+    
+        if bin_log:
+            rp_bins = np.geomspace(rp_min, rp_max, n_rp_bins + 1)
+        else:
+            rp_bins = np.linspace(rp_min, rp_max, n_rp_bins + 1)
+    
+        if return_dic:
+            res_dict = {}
+        for tr in tracers:
+    
+            if verbose:
+                print(f"# Compute ΔΣ for {tr}...", flush=True)
+                t0 = time.time()
+    
+            # Select tracer catalog
+            mock_cat = cats[cats['TRACER'] == tr]
+    
+            # Lens positions (periodic)
+            pos_lens = np.vstack(
+                [mock_cat['x'],
+                 mock_cat['y'],
+                 mock_cat['z']]
+            ) % self.boxsize
+    
+            rp, ds = compute_delta_sigma(
+                pos_lens,
+                self.part_subsamples['pos'][::100].T%self.boxsize,
+                rbins=rp_bins,
+                boxsize=self.boxsize,
+                rho_m=self.cosmo.rho_m(0.5) * 1e10,
+                los=ds_settings.get('los', 'z'),
+                pimax=pimax,
+                nthreads=self.args['nthreads'],
+            )
+            if return_dic:
+                res_dict[f'{tr}_{tr}'] = rp, ds
+            if verbose:
+                print("Done in {:.3f} s".format(time.time() - t0), flush=True)
+
+        if (len(tracers) > 1) & ~return_dic:
+            return rp, ds
+        return res_dict
+    
+    
     def get_crosswp(self, cats, tracers, R1R2=None, verbose=True):
         """
-        --- Return wp (projected correlation function) for a given mock catalog in a cubic box
+        Compute the projected correlation and cross-correlation functions (wp) for a given mock catalog in a cubic box.
+
+        This function computes the projected two-point correlation and cross-correlation function (wp) for pairs of tracers in the 
+        mock catalogs. It calculates wp for all combinations of tracers provided, handling redshift space distortions 
+        (RSD) if enabled.
+
+        Parameters
+        ----------
+        cats : dict
+            A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
+            (e.g., 'LRG', 'ELG').
+        tracers : list of str
+            A list of tracer names (keys in `cats`) for which the cross wp should be computed. The function 
+            computes the wp for all pairs of tracers in the list.
+        R1R2 : tuple or None, optional  
+            A tuple defining a range for R1 and R2 for the wp computation. If None, the default values will be used.
+            Defaults to None.
+        verbose : bool, optional
+            If True, prints progress and computation time for each pair of tracers. Defaults to True.
+
+        Returns
+        -------
+        res_dict : dict
+            A dictionary where the keys are the concatenated names of tracer pairs (e.g., 'LRG_ELG') and the 
+            values are the corresponding projected two-point correlation functions (wp) for each pair.
+
+        Notes
+        -----
+        - The function computes the cross-correlation wp for all unique pairs of tracers from the input list.
+        - If redshift space distortions (RSD) are enabled, the positions of galaxies in the catalogs are adjusted accordingly.
+        - The results are stored in `res_dict` with keys in the format 'tracer1_tracer2', where each value is the wp 
+        corresponding to the pair of tracers.
+        - The function uses `compute_twopoint` to calculate the wp for each tracer pair.
+
+        Example
+        -------
+        res = get_crosswp(cats, tracers=['LRG', 'ELG', 'QSO'])
         """
-        
+        if isinstance(tracers, str):
+            tracers = [tracers]
         if self.args['2PCF_settings']['edges_rppi'] is None:
             if self.args['2PCF_settings']['bin_logscale']:
                 r_bins = np.geomspace(self.args['2PCF_settings']['rp_min'], self.args['2PCF_settings']['rp_max'], self.args['2PCF_settings']['n_rp_bins']+1, endpoint=(True))
@@ -505,29 +1500,76 @@ class HOD:
 
 
         res_dict = {}
-        com_tr =np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
+        com_tr = self.get_comb_tr_list(tracers)
+        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
+        
         for tr in com_tr:
             if verbose:
-                print('#Computing wp for {}...'.format(tr), flush=True)
+                print('#Compute wp for {}...'.format(tr), flush=True)
                 time1 = time.time()
-            if self.args['2PCF_settings']['rsd']:
-                pos1 = apply_rsd (cats[tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'], self.cosmo)
-                pos2 = apply_rsd (cats[tr[1]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'], self.cosmo)
-            else:
-                pos1 = cats[tr[0]]['x']%self.boxsize, cats[tr[0]]['y']%self.boxsize, cats[tr[0]]['z']%self.boxsize
-                pos2 = cats[tr[1]]['x']%self.boxsize, cats[tr[1]]['y']%self.boxsize, cats[tr[1]]['z']%self.boxsize
 
-            res_dict[f'{tr[0]}_{tr[1]}'] = compute_wp(pos1, self.args['2PCF_settings']['edges_rppi'], self.args['2PCF_settings']['pimax'], self.boxsize, self.args['2PCF_settings']['los'],  self.args['nthreads'], R1R2=R1R2, pos2=pos2)
+            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
+                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
+                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
+            else:
+                if self.args['2PCF_settings']['rsd']:
+                    print('Cosmology not set, does not apply rsd', flush=True)
+                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
+                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
+            
+            res_dict[f'{tr[0]}_{tr[1]}'] = compute_twopoint(pos1, 'rppi', self.args['2PCF_settings']['edges_rppi'], self.boxsize, self.args['2PCF_settings']['los'],  self.args['nthreads'], pimax=self.args['2PCF_settings']['pimax'], R1R2=R1R2, pos2=pos2)
             if verbose:
-                print('#wp for {} computed !time = {:.3f} s'.format(tr, time.time()-time1), flush=True)
+                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
 
         return res_dict
     
 
-    def get_cross2PCF(self, cats, tracers, R1R2=None, verbose=True):
+    def get_cross2PCF(self, cats, tracers, ells=None, R1R2=None, verbose=True):
         """
-        --- Return the 2PCF for a given mock catalog in a cubic box
+        Compute the two-point correlation function (2PCF) multipoles for a given mock catalog in a cubic box.
+
+        This function computes the two-point correlation function (2PCF) and cross-correlations multipoles for pairs of tracers in the mock catalogs. 
+        It calculates the 2PCF for all combinations of tracers provided, handling redshift space distortions (RSD) if enabled.
+
+        Parameters
+        ----------
+        cats : dict
+            A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
+            (e.g., 'LRG', 'ELG').
+        tracers : list of str
+            A list of tracer names (keys in `cats`) for which the cross 2PCF should be computed. The function 
+            computes the 2PCF for all pairs of tracers in the list.
+        ells : tuple of int, optional
+            Multipoles to project onto. If None, ells in `self.args['2PCF_settings']['multipole_index']` are considered. Default to None.
+        R1R2 : tuple or None, optional
+            A tuple defining a range for R1 and R2 for the 2PCF computation. If None, the default values will be used.
+            Defaults to None.
+        verbose : bool, optional
+            If True, prints progress and computation time for each pair of tracers. Defaults to True.
+
+        Returns
+        -------
+        res_dict : dict
+            A dictionary where the keys are the concatenated names of tracer pairs (e.g., 'LRG_ELG') and the 
+            values are the average separations and the corresponding two-point correlation functions (2PCF) for each pair.
+
+        Notes
+        -----
+        - The function computes the cross-correlation 2PCF for all unique pairs of tracers from the input list.
+        - If redshift space distortions (RSD) are enabled, the positions of galaxies in the catalogs are adjusted accordingly.
+        - The results are stored in `res_dict` with keys in the format 'tracer1_tracer2', where each value is the 2PCF 
+        corresponding to the pair of tracers.
+        - The function uses `compute_twopoint` to calculate the 2PCF for each tracer pair.
+    
+
+        Example
+        -------
+        res = get_cross2PCF(cats, tracers=['LRG', 'ELG', 'QSO'])
         """
+        
+        if isinstance(tracers, str):
+            tracers = [tracers]
         
         if self.args['2PCF_settings']['edges_smu'] is None:
             if self.args['2PCF_settings']['bin_logscale']:
@@ -536,30 +1578,162 @@ class HOD:
                 r_bins = np.linspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
             
             self.args['2PCF_settings']['edges_smu'] = (r_bins, np.linspace(-self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['n_mu_bins']))
-
+        ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
         res_dict = {}
-        com_tr =np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
+        com_tr = self.get_comb_tr_list(tracers)
+        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
         for tr in com_tr:
             if verbose:
-                print('#Computing 2PCF for {}...'.format(tr), flush=True)
+                print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
                 time1 = time.time()
-            if self.args['2PCF_settings']['rsd']:
-                pos1 = apply_rsd (cats[tr[0]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[0]]['vsmear'], self.cosmo)
-                pos2 = apply_rsd (cats[tr[1]], self.args['hcat']['z_simu'], self.boxsize, self.H_0, self.args['2PCF_settings']['los'], self.args[tr[1]]['vsmear'], self.cosmo)
+            
+            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
+                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
+                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
             else:
-                pos1 = cats[tr[0]]['x']%self.boxsize, cats[tr[0]]['y']%self.boxsize, cats[tr[0]]['z']%self.boxsize
-                pos2 = cats[tr[1]]['x']%self.boxsize, cats[tr[1]]['y']%self.boxsize, cats[tr[1]]['z']%self.boxsize
+                if self.args['2PCF_settings']['rsd']:
+                    print('Cosmology not set, does not apply rsd', flush=True)
+                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
+                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
 
-            res_dict[f'{tr[0]}_{tr[1]}'] = compute_2PCF(pos1, self.args['2PCF_settings']['edges_smu'], self.args['2PCF_settings']['multipole_index'], self.boxsize,  self.args['2PCF_settings']['los'], self.args['nthreads'], pos2=pos2, R1R2=R1R2)
+            res_dict[f'{tr[0]}_{tr[1]}'] = compute_twopoint(pos1, 'smu', self.args['2PCF_settings']['edges_smu'], self.boxsize, self.args['2PCF_settings']['los'], self.args['nthreads'], ells=ells, pos2=pos2, R1R2=R1R2)
             if verbose:
-                print('#2PCF for {} computed !time = {:.3f} s'.format(tr, time.time()-time1), flush=True)
+                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
         return res_dict
+
+
+    def get_cross_twopoint(self, cats, mode, tracers, ells=None, pimax=None, R1R2=None, verbose=True):
+        """
+        Compute the two-point correlation function (2PCF) multipoles for a given mock catalog in a cubic box.
+
+        This function computes the two-point correlation function (2PCF) and cross-correlations multipoles for pairs of tracers in the mock catalogs. 
+        It calculates the 2PCF for all combinations of tracers provided, handling redshift space distortions (RSD) if enabled.
+
+        Parameters
+        ----------
+        cats : dict
+            A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
+            (e.g., 'LRG', 'ELG').
+        mode : str
+            The mode of the two-point correlation function to compute (e.g., 'smu', 'rppi').
+        tracers : list of str
+            A list of tracer names (keys in `cats`) for which the cross 2PCF should be computed. The function 
+            computes the 2PCF for all pairs of tracers in the list.
+        R1R2 : tuple or None, optional
+            A tuple defining a range for R1 and R2 for the 2PCF computation. If None, the default values will be used.
+            Defaults to None.
+        verbose : bool, optional
+            If True, prints progress and computation time for each pair of tracers. Defaults to True.
+
+        Returns
+        -------
+        res_dict : dict
+            A dictionary where the keys are the concatenated names of tracer pairs (e.g., 'LRG_ELG') and the 
+            values are the average separations and the corresponding two-point correlation functions (2PCF) for each pair.
+
+        Notes
+        -----
+        - The function computes the cross-correlation 2PCF for all unique pairs of tracers from the input list.
+        - If redshift space distortions (RSD) are enabled, the positions of galaxies in the catalogs are adjusted accordingly.
+        - The results are stored in `res_dict` with keys in the format 'tracer1_tracer2', where each value is the 2PCF 
+        corresponding to the pair of tracers.
+        - The function uses `compute_twopoint` to calculate the 2PCF for each tracer pair.
     
-    
+
+        Example
+        -------
+        res = get_cross_twopoint(cats, mode='smu', tracers=['LRG', 'ELG', 'QSO'])
+        """
+        
+        if isinstance(tracers, str):
+            tracers = [tracers]
+        if mode == 'wp':
+            mode = 'rppi'
+            pimax = self.args['2PCF_settings']['pimax'] if pimax is None else pimax
+        if mode == 'xi_ells':
+            mode = 'smu'
+            ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
+
+        if mode not in ['smu', 'rppi']:
+            raise ValueError('Twopoint mode must be wp, xi_ells, smu or rppi')
+        if self.args['2PCF_settings'][f'edges_{mode}'] is None:
+            sep_min, sep_max, n_sep_bins = 'rmin', 'rmax', 'n_r_bins'
+            if mode == 'rppi':
+                sep_min, sep_max, n_sep_bins = 'rp_min', 'rp_max', 'n_rp_bins'
+            if self.args['2PCF_settings']['bin_logscale']:
+                r_bins = np.geomspace(self.args['2PCF_settings'][sep_min], self.args['2PCF_settings'][sep_max], self.args['2PCF_settings'][n_sep_bins])
+            else:
+                r_bins = np.linspace(self.args['2PCF_settings'][sep_min], self.args['2PCF_settings'][sep_max], self.args['2PCF_settings'][n_sep_bins])
+            if mode == 'rppi':
+                self.args['2PCF_settings'][f'edges_{mode}'] = (r_bins, np.linspace(-self.args['2PCF_settings']['pimax'], self.args['2PCF_settings']['pimax'], 2*self.args['2PCF_settings']['pimax']+1))
+            elif mode == 'smu':
+                self.args['2PCF_settings'][f'edges_{mode}'] = (r_bins, np.linspace(-self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['n_mu_bins']))
+        
+        res_dict = {}
+        com_tr = self.get_comb_tr_list(tracers)
+        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
+        for tr in com_tr:
+            if verbose:
+                print('#Compute xi({}) for {}...'.format(mode, tr), flush=True)
+                time1 = time.time()
+            
+            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
+                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
+                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
+            else:
+                if self.args['2PCF_settings']['rsd']:
+                    print('Cosmology not set, does not apply rsd', flush=True)
+                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
+                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
+
+            res_dict[f'{tr[0]}_{tr[1]}'] = compute_twopoint(pos1, mode, self.args['2PCF_settings'][f'edges_{mode}'], self.boxsize, self.args['2PCF_settings']['los'], self.args['nthreads'], ells=ells, pimax=pimax, pos2=pos2, R1R2=R1R2)
+            if verbose:
+                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
+        return res_dict
+
+
+
     def HOD_plot(self, tracer=None, fig=None):
+
+        """
+        Plot the HOD (Halo Occupation Distribution) for a given tracer or set of tracers.
+
+        This function generates a plot showing the Halo Occupation Distribution (HOD) for specified tracers.
+        It uses different colors for each tracer, and can handle multiple tracers at once. If no tracer is
+        specified, the function uses the default tracers defined in the arguments.
+
+        Parameters
+        ----------
+        tracer : str or list of str, optional
+            The name(s) of the tracer(s) for which to plot the HOD. If None, it uses the tracers defined in `self.args['tracers']`.
+            If a single tracer name is provided, it will be converted into a list.
+        fig : matplotlib.figure.Figure, optional
+            An existing `matplotlib` figure object to which the plot will be added. If None, a new figure will be created.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The `matplotlib` figure object containing the plotted HOD.
+
+        Notes
+        -----
+        - The function uses predefined colors for each tracer: 'ELG' (deepskyblue), 'QSO' (seagreen), and 'LRG' (red).
+        - The function calls `__init_hod_param` to initialize the HOD parameters and then uses `plot_HOD` to generate the plots.
+        - If no `fig` is provided, a new figure is created and returned.
+        - The plot is not displayed until `plt.show()` is called, which happens automatically after all tracers are plotted.
+
+        Example
+        -------
+        HOD_plot(tracer='ELG')   # Plot HOD for the 'ELG' tracer.
+        HOD_plot(tracer=['ELG', 'QSO'])  # Plot HOD for both 'ELG' and 'QSO' tracers.
+        """
+        import matplotlib.pyplot as plt
+
     
         if tracer is None:
-            tracer=self.args['tracers']
+            tracer=self._tracers()
         else:
             tracer = tracer if isinstance(tracer, list) else [tracer]
         colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red'}
@@ -569,22 +1743,68 @@ class HOD:
         plt.show()
 
 
-    def plot_HMF(self, cats, show_sat=False, range=(10.8,15), tracer=None, inital_HMF=None):
+    def plot_HMF(self, cats, show_sat=False, range=(10.8, 15), tracer=None, inital_HMF=None):
+        """
+        Plot the Halo Mass Function (HMF) for a given mock catalog.
+
+        This function generates a plot of the Halo Mass Function (HMF) using the halo mass values (`log10_Mh`) 
+        from the provided catalog(s). The plot can optionally include histograms for central and satellite galaxies,
+        and can display an initial HMF for comparison.
+
+        Parameters
+        ----------
+        cats : dict
+            A dictionary of catalog data for different tracers. Each catalog should contain a `log10_Mh` array representing 
+            the halo mass in base-10 logarithmic form, and a `Central` array indicating whether the galaxy is central (1) or satellite (0).
+        
+        show_sat : bool, optional
+            Whether to show the histogram for satellite galaxies separately. Default is False.
+        
+        range : tuple, optional
+            The range for the satellite galaxy histogram. Default is (10.8, 15).
+        
+        tracer : str or list of str, optional
+            The tracer(s) for which to plot the HMF. If None, it uses the default tracers defined in `self.args['tracers']`. 
+            If a single tracer is provided, it will be converted into a list.
+        
+        inital_HMF : bool, optional
+            Whether to plot the initial Halo Mass Function (HMF) for comparison. Default is None (does not plot the initial HMF).
+        
+        Returns
+        -------
+        None
+            The function generates and displays the plot but does not return any value.
+        
+        Notes
+        -----
+        - The function uses different colors for each tracer: 'ELG' (deepskyblue), 'QSO' (seagreen), and 'LRG' (red).
+        - For satellite galaxies, the histograms are plotted with different line styles (`--` for centrals, `:` for satellites).
+        - The initial HMF (if provided) is plotted using a gray color.
+        - The y-axis is displayed on a logarithmic scale, and the x-axis represents the logarithm of the halo mass in solar masses.
+
+        Example
+        -------
+        plot_HMF(cats, show_sat=True, range=(10.8, 15), tracer='ELG')  # Plot HMF for the 'ELG' tracer with satellite galaxies.
+        plot_HMF(cats, inital_HMF=True)  # Plot HMF with the initial HMF included.
+        """
+        import matplotlib.lines as mlines
+        import matplotlib.pyplot as plt
 
         colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red'}
         handles=[]
         
         if tracer is None:
-            tracer=self.args['tracers']
+            tracer=self._tracers()
         else:
             if not isinstance(tracer, list):
                 tracer = [tracer]
 
         for i, tr in enumerate(tracer):
-            plt.hist(cats[tr]['log10_Mh'], histtype='step', bins=100, color=colors[tr] if tr in colors.keys() else f'C{i}')
+            mask = cats['TRACER'] == tr
+            plt.hist(cats['log10_Mh'][mask], histtype='step', bins=100, color=colors[tr] if tr in colors.keys() else f'C{i}')
             if show_sat:
-                plt.hist(cats[tr]['log10_Mh'][cats[tr]['Central']==1], histtype='step', bins=100, range=range, color=colors[tr] if tr in colors.keys() else f'C{i}', ls='--')
-                plt.hist(cats[tr]['log10_Mh'][cats[tr]['Central']==0], histtype='step', bins=100, range=range, color=colors[tr] if tr in colors.keys() else f'C{i}', ls=':')
+                plt.hist(cats['log10_Mh'][mask & (cats['Central']==1)], histtype='step', bins=100, range=range, color=colors[tr] if tr in colors.keys() else f'C{i}', ls='--')
+                plt.hist(cats['log10_Mh'][mask & (cats['Central']==0)], histtype='step', bins=100, range=range, color=colors[tr] if tr in colors.keys() else f'C{i}', ls=':')
             handles +=[mlines.Line2D([], [], color=colors[tr] if tr in colors.keys() else f'C{i}', label=tr, ls='-')]
 
         if show_sat:
@@ -595,56 +1815,428 @@ class HOD:
             handles +=[mlines.Line2D([], [], color='gray', label='inital HMF', ls='-')]
 
         plt.yscale('log')
-        plt.ylabel('$N_{gal}$')
-        plt.xlabel('$\log(M_h\ [M_{\odot}])$')
+        plt.ylabel(r'd$N$/d$M_{h}$ [$h$/Mpc$^3$]')
+        plt.xlabel(r'$\log(M_h\ [M_{\odot}])$')
         plt.legend(handles=handles, loc='upper right')
         plt.tight_layout()
         plt.show()
 
+    def plot_initial_HMF(self, save_fn=None, show=False):
+        """
+        Plot the inital Halo Mass Function (HMF) from the halo catalog.
+
+        This function generates a plot of the Halo Mass Function (HMF) using the halo mass values (`log10_Mh`) 
+        from the provided catalog(s). The plot can optionally include histograms for central and satellite galaxies,
+        and can display an initial HMF for comparison.
+
+        Parameters
+        ----------        
+        range : tuple, optional
+            The range for the satellite galaxy histogram. Default is (10.8, 15).
+        
+        Returns
+        -------
+        None
+            The function generates and displays the plot but does not return any value.
+        
+        Notes
+        -----
+        - The function uses different colors for each tracer: 'ELG' (deepskyblue), 'QSO' (seagreen), and 'LRG' (red).
+        - For satellite galaxies, the histograms are plotted with different line styles (`--` for centrals, `:` for satellites).
+        - The initial HMF (if provided) is plotted using a gray color.
+        - The y-axis is displayed on a logarithmic scale, and the x-axis represents the logarithm of the halo mass in solar masses.
+
+        Example
+        -------
+        plot_HMF()  # Plot HMF for the 'ELG' tracer with satellite galaxies.
+        """
+        import matplotlib.lines as mlines
+        import matplotlib.pyplot as plt
+
+        handles=[]
+        
+        plt.hist(self.hcat['log10_Mh'], histtype='step', bins=100, color='gray')
+        handles +=[mlines.Line2D([], [], color='gray', label='inital HMF', ls='-')]
+
+        plt.yscale('log')
+        plt.ylabel('$N_{h}$')
+        plt.xlabel(r'$\log(M_h\ [M_{\odot}])$')
+        plt.legend(handles=handles, loc='upper right')
+        plt.tight_layout()
+        if save_fn is not None: 
+            plt.savefig(save_fn)
+        if show: 
+            plt.show()
+
     @staticmethod
-    def downsample_mock_cat (cat, ds_fac=0.1, mask=None):
+    def downsample_mock_cat(cat, ds_fac=0.1, mask=None):
+        """
+        Downsample a mock catalog by randomly selecting a subset of galaxies based on the given downsampling factor.
+
+        This method randomly selects a subset of galaxies from the input catalog based on the downsampling factor `ds_fac`.
+        If a mask is provided, it is used to select galaxies; otherwise, a random selection is made using `ds_fac`.
+        
+        Parameters
+        ----------
+        cat : dict
+            The mock catalog to downsample. The catalog should be a dictionary containing the galaxy data, 
+            such as galaxy positions (`x`, `y`, `z`), and other associated properties.
+        
+        ds_fac : float, optional
+            The downsampling factor, representing the fraction of galaxies to retain in the downsampled catalog.
+            A value between 0 and 1. Default is 0.1 (10% of the galaxies will be selected).
+        
+        mask : array-like, optional
+            A boolean mask array that can be used to specify which galaxies to retain in the downsampled catalog.
+            If not provided, a random mask is generated based on the `ds_fac` downsampling factor.
+        
+        Returns
+        -------
+        dict
+            A downsampled catalog containing a subset of the galaxies from the original catalog, based on the mask.
+        
+        Notes
+        -----
+        - If `mask` is provided, it should have the same length as the catalog (the number of galaxies).
+        - The `ds_fac` parameter defines the probability for each galaxy to be selected; for example, `ds_fac=0.1` means each galaxy has a 10% chance of being selected.
+        - The downsampling is done independently for each galaxy.
+
+        Example
+        -------
+        # Downsample a catalog to 10% of its original size
+        downsampled_cat = downsample_mock_cat(cat, ds_fac=0.1)
+
+        # Downsample using a custom mask
+        mask = np.array([True, False, True, True, False])
+        downsampled_cat = downsample_mock_cat(cat, mask=mask)
+        """
+
         if mask is None:
             mask = np.random.uniform(size=len(cat['x'])) < ds_fac
         return cat[mask]
     
 
-    def compute_training(self, tracers, nreal=20, training_points=None, start_point=0, verbose=False):
+    def update_new_param(self, new_params, name_param, verbose=False):
+        """
+        Helper function to update the parameters in the argument dictionary
+        """
+        name_param_tr = {}
 
-        tracers = tracers if isinstance(tracers, list) else [tracers]
-        if training_points is None:
-            training_points = genereate_training_points(self.args['fit_param']['N_trainning_points'], 
-                                                        self.args['fit_param']['priors'], 
-                                                        sampling_type=self.args['fit_param']['sampling_type'], 
-                                                        rand_seed=self.args['fit_param']['seed_trainning'])
+        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
+            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
+
+        for tr in self._tracers():
+            name_param_tr[tr] = [x.split(f'_{tr}')[0] for x in name_param if tr in x]
+            
+        for i, new_p in enumerate(new_params):
+            for tr in self._tracers():
+                idx = np.where([tr in vv for vv in new_p.dtype.names])[0].tolist()
+                tr_par = list(name_param[i] for i in idx)
+
+                self.args[tr].update(dict(zip(name_param_tr[tr], new_p[tr_par][0])))
+                if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys():
+                    for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
+                        self.args[tr]['assembly_bias'][var] = [new_p[f'ab_{var}_cen_{tr}'][0], new_p[f'ab_{var}_sat_{tr}'][0]]
+                if verbose:
+                    print(f"# {tr} {[(var, self.args[tr][var]) for var in self.args['fit_param']['priors'][tr].keys()]}", flush=True)
+
+
+    def get_param_and_prior(self):
+        """
+        Helper function to return the list of parameters and their priors
+        """
+        priors = {}
+        priors_array = []
+        for tr in self._tracers():
+            priors[tr] = self.args['fit_param']['priors'][tr].copy()
+
+            if 'assembly_bias' in priors[tr].keys():
+                for var in priors[tr]['assembly_bias'].keys():
+                    priors[tr][f'ab_{var}_cen'] =  priors[tr]['assembly_bias'][var][0]
+                    priors[tr][f'ab_{var}_sat'] = priors[tr]['assembly_bias'][var][1]
+                priors[tr].pop('assembly_bias')
+            priors_array += list(priors[tr].values())
+        name_param = [f'{var}_{tr}' for tr in priors.keys() for var in priors[tr].keys()]
+        return name_param, priors_array
+
+    
+    @staticmethod
+    def get_comb_tr_list(tracers):
+        """
+        Helper function to return the list of tracer combinations
+        """
+        if isinstance(tracers, str):
+            tracers = [tracers]
+        return np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
+
+
+
+
+    def compute_stat(self, cat, stat, tracers, verbose=False):
+        if stat not in get_list_stat():
+            raise ValueError('Stat {} not implemented. Choose among {}'.format(stat, get_list_stat()))
         
-        os.makedirs(self.args['fit_param']["path_to_training_point"], exist_ok=True)
-        if np.sum([len(self.args['fit_param']['priors'][tr]) for tr in tracers]) != len(training_points.dtype.names):
+        if stat == 'xi_smu':
+            result = self.get_cross_twopoint(cat, 'smu', tracers=tracers, verbose=verbose)
+        if stat == 'xi_rppi':
+            result = self.get_cross_twopoint(cat, 'rppi', tracers=tracers, verbose=verbose)
+        if stat == 'delta_sigma':
+            result = self.get_delta_sigma(cat, tracers=tracers, verbose=verbose, return_dic=True)
+        return result
+
+    def __compute_all_stat(self, cat):
+        result = {}
+        for stat in get_list_stat():
+            if stat == 'delta_sigma' and self.part_subsamples is None:
+                continue
+            result[stat]= self.compute_stat(cat, stat, self._tracers(), verbose=False)
+        return result
+        
+
+    def compute_training(self, nreal=20, training_points=None, start_point=0, seed=None, verbose=False):
+        
+        """
+        Generate and save training data for HOD model fitting by sampling parameter sets 
+        (training points), generating mock catalogs, and computing clustering statistics.
+
+        This method automates the process of training data generation for halo occupation distribution (HOD) 
+        modeling. It evaluates HOD parameter samples, generates mock galaxy catalogs, computes desired clustering 
+        statistics (e.g., wp, xi), and stores the results for each training point on disk.
+
+        Parameters
+        ----------
+        nreal : int, optional
+            Number of mock realizations to generate for each training point. Default is 20.
+        training_points : structured array or None, optional
+            Array of training points with named fields corresponding to HOD parameters. If None, 
+            training points will be generated using `genereate_training_points`.
+        start_point : int, optional
+            Starting index for training point numbering (useful when continuing interrupted runs). Default is 0.
+        verbose : bool, optional
+            Whether to print progress messages during execution. Default is False.
+
+        Raises
+        ------
+        ValueError
+            If the defined tracers in `self.args` do not match those defined in the priors, 
+            or if the number of training parameters doesn't match expectations.
+
+        Notes
+        -----
+        - The method checks consistency between tracers and prior parameter definitions.
+        - For each training point, the HOD parameters are injected into the model and multiple 
+        mock realizations are generated.
+        - The 2PCF (xi) and/or wp (projected correlation function) are computed per realization, depending 
+        on `fit_type`.
+        - Each result is saved as a .npy file with a name format based on sampling type and training point index.
+
+        Files Saved
+        -----------
+        - One `.npy` file per training point is saved to `path_to_training_point` with structure:
+            {
+                tracer_1: <updated HOD params dict>,
+                tracer_2: ...,
+                'wp': [...],
+                'xi': [...],
+                'hod_fit_param': <parameter values used>
+            }
+
+        Example
+        -------
+        self.compute_training(nreal=10, verbose=True)
+        
+        """
+
+        from .fits_functions import genereate_training_points
+
+        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
+            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
+        
+        name_param, priors_array = self.get_param_and_prior()
+
+        if len(name_param) != len(training_points.dtype.names):
             raise ValueError('The training sample shape ({}) does not correspond to the number of parameters ({})'.format(len(self.args['fit_param']['priors'][tr]), len(training_points.dtype.names)))
+                
+        if training_points is None:
+            training_points = genereate_training_points(self.args['fit_param']['N_training_points'], self.args['fit_param']['priors'], sampling_type=self.args['fit_param']['sampling_type'], path_to_save_training_point=self.args['fit_param']['path_to_training_point'], rand_seed=None)
+        tracers = self._tracers()
+                
         if verbose:
-            print(f'Run training sample computations', flush=True)
+            print(f'Run training sample', flush=True)
+
+        name_param_tr = {}
+        for tr in tracers:
+            name_param_tr[tr] = [x.split(f'_{tr}')[0] for x in name_param if tr in x]
 
         for nb_point, param in enumerate(training_points):
             if not os.path.exists(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_{}.npy'.format(self.args['fit_param']['sampling_type'], nb_point+start_point))):
-                start = time.time() 
+                start = time.time()     
                 result = {}
                 for tr in tracers:
-                    var_name_tr = np.array(training_points.dtype.names)[np.array([tr in var for var in training_points.dtype.names])].tolist()
-                    var_name = [v.split(f'_{tr}')[0] for v in var_name_tr]
-                    self.args[tr].update(dict(zip(var_name, param[var_name_tr])))
+                    # var_name_tr = np.array(training_points.dtype.names)[np.array([tr in var for var in training_points.dtype.names])].tolist()
+                    idx = np.where([tr in vv for vv in name_param])[0].tolist()
+                    tr_par = list(name_param[i] for i in idx)
+                    self.args[tr].update(dict(zip(name_param_tr[tr], param[tr_par])))
+                    if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys():
+                        for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
+                            self.args[tr]['assembly_bias'][var] = [param[f'ab_{var}_cen_{tr}'], param[f'ab_{var}_sat_{tr}']]
+
                     result[tr] = self.args[tr].copy()
-                cats = [self.make_mock_cat(tracers, verbose=verbose) for i in range(nreal)]
+                print('Compute HOD:\n',  '\n'.join(['{}:{}'.format(tt,ttt) for tt, ttt in zip(name_param, param)]), flush=True)
+                cats = [self.make_mock_cat(tracers, fix_seed=seed, verbose=verbose) for i in range(nreal)]
                 
                 if 'wp' in self.args['fit_param']["fit_type"]:
                     result['wp']= [self.get_crosswp(cats[i], tracers=tracers, verbose=verbose) for i in range(nreal)]
+                    # if result.get('rppi_bins') is None: 
+                    #     result['rppi_bins'] = self.args['2PCF_settings']['edges_rppi']
                 if 'xi' in self.args['fit_param']["fit_type"]:
                     result['xi'] = [self.get_cross2PCF(cats[i], tracers=tracers, verbose=verbose) for i in range(nreal)]
+                    # if result.get('smu_bins') is None:  
+                    #     result['smu_bins'] = self.args['2PCF_settings']['edges_smu']
+                if 'delta_sigma' in self.args['fit_param']["fit_type"]:
+                    result['delta_sigma'] = [self.get_delta_sigma(cats[i], tracers=tracers, verbose=verbose, return_dic=True) for i in range(nreal)]
                 result['hod_fit_param'] = param
+                result['param_file'] = self.args
                 np.save(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_{}.npy'.format(self.args['fit_param']['sampling_type'], nb_point+start_point)), result)
-                print('Point {} done {:.2f}'.format(nb_point+start_point, start-time.time()))        
+                print('Point {} done {:.2f}'.format(nb_point+start_point, time.time()-start), flush=True)        
 
-
-    def read_training(self, data, inv_cov2, sig=None, add_sig2_cosmic=False):
+    def compute_training_v2(self, training_points=None, start_point=0, seed=None, verbose=False):
         
+        """
+        Generate and save training data for HOD model fitting by sampling parameter sets 
+        (training points), generating mock catalogs, and computing clustering statistics.
+
+        This method automates the process of training data generation for halo occupation distribution (HOD) 
+        modeling. It evaluates HOD parameter samples, generates mock galaxy catalogs, computes desired clustering 
+        statistics (e.g., wp, xi), and stores the results for each training point on disk.
+
+        Parameters
+        ----------
+        nreal : int, optional
+            Number of mock realizations to generate for each training point. Default is 20.
+        training_points : structured array or None, optional
+            Array of training points with named fields corresponding to HOD parameters. If None, 
+            training points will be generated using `genereate_training_points`.
+        start_point : int, optional
+            Starting index for training point numbering (useful when continuing interrupted runs). Default is 0.
+        verbose : bool, optional
+            Whether to print progress messages during execution. Default is False.
+
+        Raises
+        ------
+        ValueError
+            If the defined tracers in `self.args` do not match those defined in the priors, 
+            or if the number of training parameters doesn't match expectations.
+
+        Notes
+        -----
+        - The method checks consistency between tracers and prior parameter definitions.
+        - For each training point, the HOD parameters are injected into the model and multiple 
+        mock realizations are generated.
+        - The 2PCF (xi) and/or wp (projected correlation function) are computed per realization, depending 
+        on `fit_type`.
+        - Each result is saved as a .npy file with a name format based on sampling type and training point index.
+
+        Files Saved
+        -----------
+        - One `.npy` file per training point is saved to `path_to_training_point` with structure:
+            {
+                tracer_1: <updated HOD params dict>,
+                tracer_2: ...,
+                'wp': [...],
+                'xi': [...],
+                'hod_fit_param': <parameter values used>
+            }
+
+        Example
+        -------
+        self.compute_training(nreal=10, verbose=True)
+        
+        """
+
+        from .fits_functions import genereate_training_points
+
+        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
+            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
+        
+        name_param, priors_array = self.get_param_and_prior()
+
+        if len(name_param) != len(training_points.dtype.names):
+            raise ValueError('The training sample shape ({}) does not correspond to the number of parameters ({})'.format(len(self.args['fit_param']['priors'][tr]), len(training_points.dtype.names)))
+                
+        if training_points is None:
+            training_points = genereate_training_points(self.args['fit_param']['N_training_points'], self.args['fit_param']['priors'], sampling_type=self.args['fit_param']['sampling_type'], path_to_save_training_point=self.args['fit_param']['path_to_training_point'], rand_seed=None)
+        tracers = self._tracers()
+                
+        if verbose:
+            print(f'Run training sample', flush=True)
+
+        name_param_tr = {}
+        for tr in tracers:
+            name_param_tr[tr] = [x.split(f'_{tr}')[0] for x in name_param if tr in x]
+
+        for nb_point, param in enumerate(training_points):
+            if not os.path.exists(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_{}.npy'.format(self.args['fit_param']['sampling_type'], nb_point+start_point))):
+                start = time.time()     
+                result = {}
+                for tr in tracers:
+                    # var_name_tr = np.array(training_points.dtype.names)[np.array([tr in var for var in training_points.dtype.names])].tolist()
+                    idx = np.where([tr in vv for vv in name_param])[0].tolist()
+                    tr_par = list(name_param[i] for i in idx)
+                    self.args[tr].update(dict(zip(name_param_tr[tr], param[tr_par])))
+                    if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys():
+                        for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
+                            self.args[tr]['assembly_bias'][var] = [param[f'ab_{var}_cen_{tr}'], param[f'ab_{var}_sat_{tr}']]
+
+                    result[tr] = self.args[tr].copy()
+                print('Compute HOD:\n',  '\n'.join(['{}:{}'.format(tt,ttt) for tt, ttt in zip(name_param, param)]), flush=True)
+                cat = self.make_mock_cat(tracers, fix_seed=seed, verbose=verbose)
+                
+                result.update(self.__compute_all_stat(cat))
+                result['comb_trs'] = self.get_comb_tr_list(self._tracers())
+                result['hod_fit_param'] = param
+                result['param_file'] = self.args
+                np.save(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_{}.npy'.format(self.args['fit_param']['sampling_type'], nb_point+start_point)), result)
+                print('Point {} done {:.2f}'.format(nb_point+start_point, time.time()-start), flush=True)        
+
+
+    def read_training(self, data, inv_cov2):
+        
+        """
+        Loads and processes HOD training samples, computes chi² statistics for each sample 
+        against a target dataset, and returns a structured array for Gaussian Process training.
+
+        Parameters
+        ----------
+        data : array_like
+            Observed data vector (e.g., wp or xi measurements) to compare against model predictions.
+
+        inv_cov2 : ndarray
+            Inverse of the covariance matrix used in chi² computation.
+
+        Returns
+        -------
+        training_set : structured ndarray
+            Structured array where each row corresponds to a training point, including:
+            - HOD parameters
+            - Mean chi² value for the realizations
+            - Uncertainty on chi² (standard deviation / sqrt(N_real))
+        
+        Notes
+        -----
+        - Reads all training `.npy` files from `self.args['fit_param']['path_to_training_point']` with the given sampling type.
+        - Applies covariance matrix adjustments if requested.
+        - Supports either 'wp', 'xi', or both statistics depending on `self.args['fit_param']['fit_type']`.
+        - Combines model realizations by flattening tracer combinations and statistics into a single vector.
+        - Computes chi² using the `compute_chi2()` utility, which is assumed to match the data/model shape.
+
+        Example
+        -------
+        >>> train_set = model.read_training(observed_data, inv_cov2)
+        """
+
+        from fits_functions import compute_chi2
+
         print('Read training sample...', flush=True)
         files = glob.glob(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_*.npy'.format(self.args['fit_param']['sampling_type'])))
         files.sort()
@@ -652,32 +2244,19 @@ class HOD:
             res_param =  np.load(file, allow_pickle=True)[()]
             if ii == 0:
                 name_arr = list(res_param['hod_fit_param'].dtype.names) + ['chi2', 'chi2_err']
-                trainning_set = np.zeros((len(files),len(name_arr)))
+                training_set = np.zeros((len(files),len(name_arr)))
             stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
             res = {}
             comb_trs = res_param[stats[0]][0].keys() 
             nreal = len(res_param[stats[0]])
             res = [np.hstack([np.hstack([np.hstack(res_param[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nreal)]
-            #res_std = np.std(res, axis=0)             # ONLY FOR CORR MODEL !!!
-            #inv_Cov2 = inv_cov2*(res_std*res_std[:, None])
-            if add_sig2_cosmic:
-                inv_Cov2 *= np.sqrt(self.args['sig2_cosmic']*self.args['sig2_cosmic'][:,None])
 
-            chi2 = np.mean([compute_chi2(model_arr, data, inv_Cov2=inv_cov2, sig=sig) for model_arr in res])
-            chi2_err = np.std([compute_chi2(model_arr, data, inv_Cov2=inv_cov2, sig=sig) for model_arr in res])/np.sqrt(nreal)
-            trainning_set[ii] = np.hstack((res_param['hod_fit_param'].tolist(),chi2,chi2_err))
+            chi2 = np.mean([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])
+            chi2_err = np.std([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])/np.sqrt(nreal)
+            training_set[ii] = np.hstack((res_param['hod_fit_param'].tolist(),chi2,chi2_err))
 
-            '''for comb_tr in res_param[stats[0]][0].keys():
-                res[comb_tr], res_std[comb_tr] = {}, {}
-                for stat in stats:
-                    res[comb_tr][f'mean_{stat}'] = np.mean([np.hstack(res_param[stat][i][comb_tr][1]) for i in range(2)], axis=0)
-                    res[comb_tr][f'std_{stat}'] = np.std([np.hstack(res_param[stat][i][comb_tr][1]) for i in range(2)], axis=0)
-
-            mean = np.hstack([np.hstack([res[comb_tr][f'mean_{stat}'] for stat in stats]) for comb_tr in comb_trs])
-            std = np.hstack([np.hstack([res[comb_tr][f'std_{stat}'] for stat in stats]) for comb_tr in comb_trs])'''
-
-        trainning_set.dtype=[(name, dt) for name, dt in zip(name_arr, ['float64']*len(name_arr))]
-        return trainning_set
+        training_set.dtype=[(name, dt) for name, dt in zip(name_arr, ['float64']*len(name_arr))]
+        return training_set
     
         
     def run_gp_mcmc(self, training_set, niter, logchi2=True,
@@ -685,11 +2264,68 @@ class HOD:
                         random_state=None, verbose=True):
         
         """
-        --- Function which computes Gaussian process prediction from a given training sample, then compute a MCMC over the GP prediction, and returns the next point(s) using the input aquisition function for the iterative procedure
+        Performs Gaussian Process Regression (GPR) on a training set, runs MCMC sampling over 
+        the GPR-predicted posterior, and returns the next suggested parameter point(s) for exploration.
+
+        This function enables Bayesian optimization for halo model fitting by building a GP emulator
+        on existing training data, sampling from the GP posterior using MCMC, and identifying 
+        the most promising regions in parameter space.
+        Detail of the method in arxiv:2302.07056
+
+        Parameters
+        ----------
+        training_set : structured array
+            Training data containing parameters and corresponding chi² values (and uncertainties).
+
+        niter : int
+            Current iteration index (used for file naming and logging).
+
+        logchi2 : bool, optional
+            If True, the GP models log(chi²). Default is True.
+
+        nb_points : int, optional
+            Number of new points to return from the GP+MCMC sampling. Default is 1.
+
+        remove_edges : float, optional
+            Factor to shrink prior boundaries when enforcing parameter limits. Values egal to 1 
+            keep the prior boundaries. Default is 0.9.
+
+        random_state : int or None, optional
+            Seed for reproducibility. Default is None.
+
+        verbose : bool, optional
+            If True, print progress and diagnostics. Default is True.
+
+        Returns
+        -------
+        new_points : ndarray
+            Array of shape (nb_points, n_parameters) with newly suggested parameter values.
+        
+
+        Notes
+        -----
+        - Trains a GP model using scikit-learn's `GaussianProcessRegressor`.
+        - Runs MCMC sampling using `emcee` or `zeus`. Default sampler is emcee.
+        - Logs GPR and MCMC diagnostics to `output_GP_*.txt`.
+        - Saves the full sampled chain with GP predictions to `chains/chain_*.txt`.
+        - The GP kernel is configured based on `self.args['fit_param']['kernel_gp']`. Default kernel is Matern 5/2.
+        - Trained GP model and MCMC output are saved for post-analysis and reproducibility.
+        - During MCMC, parameter boundaries are enforced via a likelihood mask.
+        - GPR score, prediction at the prior mean, and best predicted chi² are logged.
+
+        Raises
+        ------
+        ValueError
+            If an unsupported GP kernel or sampler is specified.
+
+        Example
+        -------
+        >>> new_pts = model.run_gp_mcmc(training_data, niter=5, nb_points=3, logchi2=True)
+
         """
 
         priors = self.args['fit_param']['priors']
-        priors_array = np.vstack([list(priors[tr].values()) for tr in self.args['tracers']])
+        priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
         nvar = len(priors_array)
         name_param = training_set.dtype.names[:-2]
         ranges = np.hstack((priors_array, np.mean(priors_array, axis=1).reshape(nvar,-1), np.diff(priors_array, axis=1)))
@@ -827,21 +2463,83 @@ class HOD:
     
 
     def run_fit(self, data_arr, inv_Cov2, training_point,
-                add_sig2_cosmic=False, reprise=False, verbose=True):
+                resume_fit=False, verbose=True):
         
         """
-        --- Run the iterative procedure.
+        Execute the Gaussian Process MCMC fitting routine for HOD parameter inference.
+
+        This method performs iterative Gaussian Process-driven MCMC sampling to explore the
+        Halo Occupation Distribution (HOD) parameter space, fitting mock catalog outputs to observed
+        clustering statistics such as the 2-point correlation function.
+
+        For methodological details, see: https://arxiv.org/abs/2302.07056
+
+        Parameters
+        ----------
+        data_arr : array_like
+            Observed data vector used in chi-squared comparisons (e.g., wp, xi).
+
+        inv_Cov2 : ndarray
+            Inverse of the covariance matrix used in the chi-squared computation.
+            Must match the dimensionality of `data_arr`.
+
+        training_point : structured ndarray
+            Existing training sample including HOD parameters and chi-squared values,
+            used to condition the GP model.
+
+        resume_fit : bool, optional
+            If True, resumes from a previously saved fit by loading logs and chains.
+            Default is False.
+
+        verbose : bool, optional
+            If True, displays detailed iteration-level logs. Default is True.
+
+        Returns
+        -------
+        None
+            All fitting results are saved to disk. No return value.
+
+        Notes
+        -----
+        - Creates and updates files under `dir_output_fit`, including:
+            - `*.txt` logs of sampled parameter values and chi² results
+            - Chains of samples in `chains/` directory
+            - Diagnostic metrics such as KL divergence
+        - Calls the following key internal methods:
+            - `make_mock_cat()`: to generate mock catalogs
+            - `get_crosswp()`, `get_cross2PCF()`: for 2PCF computation
+            - `compute_chi2()`: to evaluate model-data fit
+            - `run_gp_mcmc()`: for parameter sampling via GP-MCMC
+        - Convergence is optionally monitored via KL divergence, but the stopping criterion is commented out.
+        - Handles both projected (wp) and full-space (xi) correlation functions depending on `fit_type`.
+        - Assumes the availability of `emcee` or `zeus` samplers for MCMC.
+        - Results are appended to an evolving training set across iterations.
+
+        Example
+        -------
+        >>> model.run_fit(data_arr, inv_cov2, training_set, resume_fit=True)
         """
+        import pandas as pd
+        from .fits_functions import compute_chi2
+        if self.args['fit_param']['sampler'] == "zeus":
+            import zeus
+        elif self.args['fit_param']['sampler'] == "emcee":
+            import emcee 
+        else: 
+            raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
+        
+        import sklearn.gaussian_process as skg
+
         nmock = self.args['fit_param']['nb_real']
         dir_output_file= self.args['fit_param']['dir_output_fit']
         fit_name = self.args['fit_param']['fit_name']
         priors = self.args['fit_param']['priors']
-        priors_array = np.vstack([list(priors[tr].values()) for tr in self.args['tracers']])
+        priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
         nvar = len(priors_array)  
         arr_dtype = training_point.dtype
 
         iter = 0
-        if reprise & os.path.exists(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt")):
+        if resume_fit & os.path.exists(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt")):
             output_point = pd.read_csv(os.path.join(
                 dir_output_file, f"{nvar}p_{fit_name}.txt"), sep=" ", comment="#")
             
@@ -853,8 +2551,7 @@ class HOD:
                                         f'chain_{nvar}p_{fit_name}_{iter-1}.txt'))[:, :nvar]
             D_kl = 10
             if verbose:
-                print("#reprise ", iter, "len param point ",
-                      len(training_point), flush=True)
+                print("#resume fit at iteration ", iter, "len param point ", len(training_point), flush=True)
                 
         print("Run gpmcmc...", flush=True)
         for j in range(iter, self.args['fit_param']['n_calls']):
@@ -868,8 +2565,7 @@ class HOD:
 
 
             if verbose:
-                print("#time_compute_gpmcmc =", time.time()
-                      - time_compute_mcmc, flush=True)
+                print("#time_compute_gpmcmc =", time.time() - time_compute_mcmc, flush=True)
 
             ### Test de Kullback Leibler
             D_kl1 = 10
@@ -909,7 +2605,7 @@ class HOD:
                 f.close()
 
             for i, new_p in enumerate(new_params):
-                for tr in self.args['tracers']:
+                for tr in self._tracers():
                     for var in self.args['fit_param']['priors'][tr].keys():
                         self.args[tr][var] = new_p['{}_{}'.format(var, tr)][0]
                     if verbose:
@@ -917,7 +2613,7 @@ class HOD:
                 
                 time_function_compute_parralel_chi2 = time.time()
                 print(f'Run {nmock} galaxy catalog for iteration {j}', flush=True)
-                cats = [self.make_mock_cat(self.args['tracers'], verbose=False) for jj in range(nmock)]
+                cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmock)]
 
                 print(f'Time to compute {nmock} cats : {time.strftime("%H:%M:%S",time.gmtime(time.time() - time_function_compute_parralel_chi2))}', flush=True)
 
@@ -926,9 +2622,9 @@ class HOD:
                 print('Run 2PCF...', flush=True)
                 result = {}
                 if 'wp' in self.args['fit_param']["fit_type"]:
-                    result['wp']= [self.get_crosswp(cats[i], tracers=self.args['tracers'], verbose=False) for i in range(nmock)]
+                    result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
                 if 'xi' in self.args['fit_param']["fit_type"]:
-                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self.args['tracers'], verbose=False) for i in range(nmock)]
+                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
                 if verbose:
                     print("#Time to compute 2PCFs =", time.strftime("%H:%M:%S", time.gmtime(time.time()-time_function_compute_parralel_chi2)), flush=True)
                     
@@ -939,8 +2635,7 @@ class HOD:
                 res = [np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmock)]
                 #res_std = np.std(res, axis=0)            
                 #iCov2 = inv_Cov2*res_std*res_std[:, None]
-                if add_sig2_cosmic:
-                    iCov2 *= np.sqrt(self.args['sig2_cosmic']*self.args['sig2_cosmic'][:,None])
+                
 
                 chi2 = np.mean([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])
                 chi2_err = np.std([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])/np.sqrt(nmock)
@@ -957,3 +2652,424 @@ class HOD:
             training_point = np.vstack((training_point, new_train_point))
             if verbose:
                 print(f'Iteration {j} done, took {time.strftime("%H:%M:%S",time.gmtime(time.time()-time_compute_mcmc))}', flush=True)
+
+    
+    def initialize_fit(self, data_vec=None, inv_cov2=None, diag_err=None, add_poisson_noise=True, nmocks_std=20, hartlap_fac=0, **kwargs):
+
+        from .fits_functions import load_desi_data, get_corr_small_boxes
+        from pycorr import utils
+
+        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
+            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
+
+        self.args['fit_param']['pimax'] = self.args['2PCF_settings']['pimax']
+        self.args['fit_param']['multipole_index'] = self.args['2PCF_settings']['multipole_index']
+        self.args['fit_param']['z_simu'] = self.args['hcat']['z_simu']
+        self.args['fit_param'].update(kwargs)
+        
+        if self.args['fit_param']['use_desi_data']:
+            data_dic = load_desi_data(self.args['fit_param'], self._tracers(), load_cov_jk=self.args['fit_param']['load_cov_jk'])
+
+            mm = [list(data_dic.keys())[i].endswith(tuple(self._tracers())) for i in range(len(data_dic.keys()))]
+            comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
+            data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+            diag_err = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+
+            if 'wp' in  data_dic['edges'].keys():
+                self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
+            if 'xi' in  data_dic['edges'].keys():
+                self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
+            if self.args['fit_param']['use_vsmear']:
+                for tr in self._tracers():
+                    print('Apply vsmear for {} at z{}-{}'.format(tr, self.args['fit_param']['zmin'], self.args['fit_param']['zmax']), flush=True)
+                    self.args[tr]['vsmear'] = [self.args['fit_param']['zmin'], self.args['fit_param']['zmax']]
+
+            if add_poisson_noise:
+                print('Compute poisson noise...', flush=True)
+
+                cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
+
+                result = {}
+                if 'wp' in self.args['fit_param']["fit_type"]:
+                    result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+                if 'xi' in self.args['fit_param']["fit_type"]:
+                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+
+                stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+
+                comb_trs = result[stats[0]][0].keys() 
+                std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
+                print('Done', flush=True)
+            else: 
+                std_poisson = np.zeros_like(diag_err)
+
+            if self.args['fit_param']['load_cov_jk']:
+                std_2 = np.sqrt(np.diag(data_dic['cov_jk']) + std_poisson**2)
+                corr_jk = utils.cov_to_corrcoef(data_dic['cov_jk'])
+                inv_cov2 = np.linalg.inv(corr_jk*std_2*std_2[:,None])
+            else:
+                corr = get_corr_small_boxes(self.args['fit_param'], self._tracers())
+                sig_all = np.sqrt(diag_err**2 + std_poisson**2)
+                cov = corr*sig_all*sig_all[:,None]
+                hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
+                inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+
+                if np.isnan(diag_err).any():
+                    mask = np.isnan(cov)
+                    cov = np.nan_to_num(cov, nan=1)
+                    inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+                    for i, mm in enumerate(mask):
+                        inv_cov2[i, mm] = 0
+                    data_vec = np.nan_to_num(data_vec, nan=0)
+                    diag_err = np.nan_to_num(diag_err, nan=0)
+            self.data = data_vec
+            self.inv_cov2 = inv_cov2
+            self.sig = diag_err
+            self.sig_model = std_poisson
+            self.name_params, self.priors = self.get_param_and_prior()
+            return 0
+
+        elif add_poisson_noise:
+            print('Compute poisson noise...', flush=True)
+
+            cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
+
+            result = {}
+            if 'wp' in self.args['fit_param']["fit_type"]:
+                result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+            if 'xi' in self.args['fit_param']["fit_type"]:
+                result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+
+            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+
+            comb_trs = result[stats[0]][0].keys() 
+            std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
+            print('Done', flush=True)
+            
+        else:
+            std_poisson = 0
+
+        if inv_cov2 is not None:
+            mask = inv_cov2.diagonal() == 0
+            if mask.sum() != 0:
+                idx = mask.sum()
+                cov_re = np.linalg.inv(inv_cov2[idx:,idx:])
+                sig2 = np.zeros_like(inv_cov2.diagonal())
+                sig2[idx:] = cov_re.diagonal()
+                diag_err = np.sqrt(sig2)
+                sig_all = np.sqrt(diag_err**2 + std_poisson**2)
+                # Manque add poisson noise to cov +hartlap
+            else:
+                sig_all = np.sqrt((np.linalg.inv(inv_cov2).diagonal()))
+
+            if data_vec.size != inv_cov2.diagonal().size:
+                raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
+        
+        else:
+            sig_all = np.sqrt(diag_err**2 + std_poisson**2)
+            if data_vec.size != sig_all.size:
+                raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, sig_all.size))
+
+        self.data = data_vec
+        self.inv_cov2 = inv_cov2
+        self.sig = sig_all
+        self.sig_model = std_poisson
+        self.name_params, self.priors = self.get_param_and_prior()
+        
+    
+    def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, minimizer_options={}, **kwargs):
+        from stochopy.optimize import minimize
+        from .fits_functions import func_stochopy
+        
+        if hasattr(self, 'data') & hasattr(self, 'inv_cov2'):
+            pass
+        else:
+            self.initialize_fit(**kwargs)
+        
+        name_param, priors_array = self.get_param_and_prior()
+        print('Priors:', *zip(name_param, priors_array))
+        if init_params is None:
+            init_params = []
+            for tr in self._tracers():
+                priors_tmp = self.args['fit_param']['priors'][tr].copy()
+                param_ab = []
+                if 'assembly_bias' in priors_tmp.keys():
+                    ab_list = priors_tmp['assembly_bias'].keys()
+                    param_ab = [self.args[tr]['assembly_bias'][vv] for vv in ab_list][0]
+                    priors_tmp.pop('assembly_bias')
+                init_params += [self.args[tr][vv] for vv in priors_tmp.keys()]
+                init_params += param_ab
+        print('First point:', *zip(name_param, init_params))
+        options = {"maxiter":10, "popsize": 10, 'xtol':1e-6}
+        options.update(minimizer_options)  
+
+        if mpi_comm is None:
+            mpi_rank = 0
+        else:
+            mpi_rank = mpi_comm.Get_rank()
+            options['workers'] = mpi_comm.Get_size()
+            options['backend']= 'mpi'
+
+        res = minimize(func_stochopy, args=(self, name_param, self.data, self.inv_cov2, self.sig, seed),
+                    bounds=priors_array, x0=init_params,
+                    method='cmaes', options=options)
+        
+        self.result_fit = res
+        res['param_fit'] = self.args.copy()
+        if isinstance(self.args['fit_param']['save_fn'], str) & (mpi_rank==0):
+            print('Save fit result to:', self.args['fit_param']['save_fn'], flush=True)
+            np.save(self.args['fit_param']['save_fn'], res)
+        return res
+
+    
+
+    def compute_bf_corr(self, bf_file=None, verbose=False, fix_seed=None, save_bf_cat=None, **kwargs):
+
+        from HODDIES.fits_functions import compute_chi2
+        name_param, priors_array = self.get_param_and_prior()
+        if hasattr(self, 'result_fit'):
+            self.result_fit = self.result_fit if bf_file is None else np.load(bf_file, allow_pickle=True).item()
+        else:
+            if bf_file is None:
+                raise ValueError('No best fit file provided and no previous fit result found.')
+            self.result_fit = np.load(bf_file, allow_pickle=True).item()
+
+        new_params= np.array([self.result_fit['x']])
+        
+        new_params.dtype = [(name, dt) for name, dt in zip(name_param, ['float64']*len(name_param))]
+        self.update_new_param(new_params, name_param)
+        print('Best fit point:', *zip(name_param, self.result_fit['x']), flush=True)
+        cat = self.make_mock_cat(fix_seed=fix_seed)
+        result = {}
+        if 'wp' in self.args['fit_param']["fit_type"]:
+            result['wp'] = self.get_crosswp(cat, tracers=self._tracers(), verbose=verbose)
+        if 'xi' in self.args['fit_param']["fit_type"]:
+            result['xi'] = self.get_cross2PCF(cat, tracers=self._tracers(), verbose=verbose)
+
+        
+        if hasattr(self, 'data'):
+            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+            res = {}
+            comb_trs = result[stats[0]].keys() 
+            res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][1])for stat in stats]) for comb_tr in comb_trs])
+            result['chi2'] = compute_chi2(res, self.data, inv_Cov2=self.inv_cov2)
+        
+        if save_bf_cat is not None:
+            if self.args['fit_param']['use_vsmear']:
+                cat[f'vsmear'] = np.zeros(cat.size, dtype=np.float32)
+                for tr in self._tracers():
+                    mm = cat['TRACER'] == tr
+                    cat[f'vsmear'][mm] = self.get_vsmear(tr, mm.sum(), verbose=verbose)
+            cat.write(save_bf_cat)
+            print(f'Save best fit catalog to {save_bf_cat}', flush=True)
+
+        return result
+
+
+    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=0, max_sig = 5, fix_seed=None, add_no_vsmear=False, save_bf_cat=None, **kwargs):
+
+        from HODDIES.fits_functions import load_desi_data
+        from matplotlib.gridspec import GridSpec
+        import matplotlib.pyplot as plt
+        
+        
+        data_dic = load_desi_data(self.args['fit_param'], self._tracers(), multipole_index=self.args['2PCF_settings']['multipole_index'], pimax=self.args['2PCF_settings']['pimax'],**kwargs)
+        self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp'] if 'wp' in self.args['fit_param']["fit_type"] else None
+        self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi'] if 'xi' in self.args['fit_param']["fit_type"] else None
+        result_bf = self.compute_bf_corr(fix_seed=fix_seed, save_bf_cat=save_bf_cat, **kwargs)
+        stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+        comb_trs = list(result_bf[stats[0]].keys())
+
+        if add_no_vsmear and self.args['fit_param']['use_vsmear']:
+            tmp_vsmear = []
+            for tr in self._tracers():
+                tmp_vsmear += [self.args[tr]['vsmear']]
+                self.args[tr]['vsmear'] = 0
+            result_bf_no_vsmear = self.compute_bf_corr(fix_seed=fix_seed, **kwargs)
+            for ii,tr in enumerate(self._tracers()):
+                self.args[tr]['vsmear'] = tmp_vsmear[ii]
+        else:
+            result_bf_no_vsmear = None
+        nb_tracers = len(comb_trs)
+        ncols = len(data_dic[comb_trs[0]].keys())            
+
+        if 'xi' in data_dic[comb_trs[0]].keys():
+            ncols += 1
+            ells = self.args['2PCF_settings']['multipole_index']
+        else:
+            ells = None
+
+        default_color = {'BGS_BGS': 'yellowgreen', 'ELG_ELG': 'steelblue', 'LRG_LRG': 'orangered', 'QSO_QSO': 'seagreen', 'ELG_LRG': 'firebrick', 
+                        'LRG_ELG': 'firebrick', 'QSO_ELG': 'skyblue', 'ELG_QSO': 'skyblue', 'LRG_QSO': 'peru', 'QSO_LRG': 'peru'}
+        
+        if fig is None:
+            new_fig = True
+            if figsize is None: 
+                size = 9 if nb_tracers == 1 else 18 if nb_tracers == 3 else 27
+                figsize=(9, size/ncols)
+            fig = plt.figure(figsize=figsize)
+            fig.suptitle(suptitle, fontsize=suptitle_fontsize)
+            gs = GridSpec(len(comb_trs)*2, ncols, height_ratios=[ncols, len(comb_trs)]*len(comb_trs), hspace=0.0)
+            
+        else:   
+            new_fig=False
+            axes = fig.axes
+        i_ax = 0
+        # Setup figure and grid    
+
+        # for lax, trs in zip(axes, comb_trs):
+        for ii, trs in enumerate(comb_trs):
+            ii = ii * 2
+            # for col in range(len(stats)):
+                
+            color = default_color[trs] if kwargs.get('color') is None else kwargs['color']
+            col = 0
+            for corr in data_dic[trs].keys():
+                
+                sep_data, res_data, sig_data = data_dic[trs][corr]
+                sep_m, res_model = result_bf[corr][trs]
+                if result_bf_no_vsmear is not None:
+                    sep_nov, res_model_nov = result_bf_no_vsmear[corr][trs]
+                    
+                xlabel = '$s$ [Mpc/h]' if corr == 'xi' else '$r_p$ [Mpc/h]' if corr == 'wp' else None
+                ylabel = r'$s \cdot \xi_{{{:d}}}(s)$ [$\mathrm{{Mpc}}/h$]' if corr == 'xi' else r'$r_p \cdot w_p(r_p)$ [$\mathrm{{Mpc}}/h$]' if corr == 'wp' else None
+
+                if len(res_data.shape) == 1:
+                    res_data = [res_data]
+                    sig_data = [sig_data]
+                    res_model = [res_model]
+                    if result_bf_no_vsmear is not None:
+                        res_model_nov= [res_model_nov]
+                
+                panel_titles = ['Monopole', 'Quadrupole', 'Hexadecaople'] if corr == 'xi' else ['Projected clustering'] if corr == 'wp' else None
+
+                for (ill, panel_title), res_m, res, sig in zip(enumerate(panel_titles), res_model, res_data, sig_data):
+                    ax_main = fig.add_subplot(gs[ii, col]) if new_fig  else axes[i_ax]
+                    ax_main.errorbar(sep_data, sep_data**pow_sep*res+shift ,yerr= sep_data**pow_sep*sig,fmt='.',
+                                    markerfacecolor='w', zorder=0, label=f'{trs} z{self.args["fit_param"]["zmin"]}-{self.args["fit_param"]["zmax"]}', color=color)
+                    ax_main.plot(sep_m, sep_m**pow_sep*res_m, color=color, alpha=0.8, lw=1.2)
+                    if result_bf_no_vsmear is not None:
+                        print('With-WO vsmear result ', res, res_model_nov[ill])
+                        ax_main.plot(sep_nov, sep_nov**pow_sep*res_model_nov[ill], color=color, alpha=0.8, lw=1.2, ls='--', label='No vsmear')
+
+                    if corr == 'xi':
+                        ax_main.set_ylabel(ylabel.format(ells[ill]), fontsize=fontsize)
+                    else: 
+                        ax_main.set_ylabel(ylabel, fontsize=fontsize)
+
+                    ax_main.grid(True)
+                    ax_main.set_xscale('log')
+                    if ii == 0:  ax_main.set_title(panel_title,fontsize=fontsize)
+                    # ax_main.set_xlabel(xlabel, fontsize=fontsize)
+                    if col == 0:
+                        if corr == 'xi':
+                            ax_main.set_ylabel(ylabel.format(ells[ill]), fontsize=fontsize)
+                        else: 
+                            ax_main.set_ylabel(ylabel, fontsize=fontsize)
+
+                    if col == len(stats):
+                        ax_main.legend(fontsize=fontsize)
+                    # ax_main.tick_params(labelbottom=False)
+
+                    # Residual plot
+
+                    ax_res = fig.add_subplot(gs[ii + 1, col], sharex=ax_main) if new_fig else axes[i_ax+1]
+                    residual = (res_m - res) / sig
+                    if result_bf_no_vsmear is not None:
+                        residual_nov = (res_model_nov[ill] - res) / sig
+                        ax_res.plot(sep_nov, residual_nov, color=color, ls='--')
+                    ax_res.axhspan(-2, 2, color='gray', alpha=0.2)
+                    ax_res.axhline(0, color='black', linestyle='--')
+                    ax_res.plot(sep_data, residual, color=color)
+                    ax_res.set_xscale('log')
+                    ax_res.set_ylim(-max_sig, max_sig)
+                    ax_res.set_xlabel(xlabel, fontsize=fontsize)
+                
+                    if col == 0:
+                        ax_res.set_ylabel(r"$\Delta/\sigma$")
+
+                    
+
+                    if (ii == 0) &  (col == 0) & ('chi2' in result_bf.keys()):
+                        props = dict(boxstyle='round', facecolor='w', alpha=0.5)
+
+                        # place a text box in upper left in axes coords
+                        ax_main.text(0.05, 0.95, r'$\chi^2 = {:.2f}$'.format(result_bf['chi2']), transform=ax_main.transAxes, fontsize=fontsize,
+                                verticalalignment='top', bbox=props)
+                    col +=1     
+                    i_ax += 2
+        fig.tight_layout()                  
+        if save: 
+            fig.savefig(save, facecolor='w',  bbox_inches='tight', pad_inches=0.1)
+        if show:
+            plt.show()
+        return fig
+
+        
+    def get_lin_bias(self):
+        """
+            Compute the expected linear bias for a given HOD parameters set betwwen s [40-80] Mpc/h using scipy curve_fit method
+        """
+        
+        import scipy
+        from cosmoprimo import Fourier        
+        fo = Fourier(self.cosmo, engine='class')
+        pk = fo.pk_interpolator()
+        xi_lin = pk.to_xi()
+    
+        rsd_tmp = self.args['2PCF_settings']['rsd']
+        edges_smu_tmp = self.args['2PCF_settings']['edges_smu']
+        self.args['2PCF_settings']['edges_smu'] = (np.linspace(40,80,41), np.linspace(-1,1,201))
+        cat_bf = self.make_mock_cat()
+        s, xi = self.get_2PCF(cat_bf, ells=0)
+        zsim = self.args['hcat']['z_simu']    
+        import scipy
+        def func(s, b):
+            return b**2*xi_lin(s,z=zsim)
+        bias, b_err = scipy.optimize.curve_fit(func, s, xi, p0=[2])
+    
+    
+        self.args['2PCF_settings']['rsd'] = rsd_tmp
+        self.args['2PCF_settings']['edges_smu'] = edges_smu_tmp
+        return bias
+
+    def plot_wp_xi(self, cat, tracers=None, fig=None, show=True, figsize=(12, 3), fontsize=11, **kwargs):
+        import matplotlib.pyplot as plt
+        colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red'}
+        if isinstance(tracers, str):
+            tracers = [tracers]
+        elif tracers is None:
+            tracers = np.unique(cat['TRACER'])
+        
+        if fig is None:
+            fig,ax = plt.subplots(1,1+len(self.args['2PCF_settings']['multipole_index']), figsize=figsize)
+        else:
+            ax = fig.axes
+        for tr in tracers:
+            if 'color' not in kwargs.keys(): 
+                kwargs['color'] = colors[tr] if tr in colors.keys() else None
+
+            if 'label' in kwargs.keys(): 
+                label = kwargs['label']
+                kwargs.pop('label')
+            else:
+                label = tr
+
+            rp, wp = self.get_wp(cat, tracers=tr)
+            s, xi = self.get_2PCF(cat, tracers=tr)
+            
+
+            ax[0].semilogx(rp,rp*wp, **kwargs)
+            ax[1].semilogx(s,s*xi[0], **kwargs)
+            ax[2].semilogx(s,s*xi[1], label=label, **kwargs)
+            
+            ax[0].set_xlabel('$r_p$ [Mpc/h]', fontsize=fontsize)
+            ax[1].set_xlabel('$s$ [Mpc/h]', fontsize=fontsize)
+            ax[2].set_xlabel('$s$ [Mpc/h]', fontsize=fontsize)
+            ax[0].set_ylabel(r'$r_p \cdot w_p(r_p)$ [$\mathrm{{Mpc}}/h$]', fontsize=fontsize)
+            ax[1].set_ylabel(r'$s \cdot \xi_0(s)$ [$\mathrm{{Mpc}}/h$]', fontsize=fontsize)
+            ax[2].set_ylabel(r'$s \cdot \xi_2(s)$ [$\mathrm{{Mpc}}/h$]', fontsize=fontsize)
+            ax[2].legend(fontsize=fontsize)
+        if show: 
+            fig.show()
+        return fig
