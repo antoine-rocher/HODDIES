@@ -509,7 +509,6 @@ def _tsc_scatter(positions, density, boxsize, weights=None, offset=0.0):
 
 
 
-@numba.njit(fastmath=True, cache=True)
 def smooth_density(D, R, N_dim, Lbox):
     # cell size
     cell = Lbox / N_dim

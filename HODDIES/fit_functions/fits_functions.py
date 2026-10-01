@@ -1,6 +1,8 @@
 import numpy as np
 import os
 import glob
+import torch 
+
 
 def genereate_training_points(nPoints, name_param, priors_lists, sampling_type='lhs', path_to_save_training_point=None, rand_seed=None):
     """
@@ -213,6 +215,57 @@ def func_stochopy(new_params, HOD_obj, fix_seed=10, verbose=False):
     HOD_obj.logger.info(f'chi2={chi2}')
     return chi2
 
+
+def likelihood(theta, model, train_Dataset, data, priors, inv_Cdata=None, inv_corr_data=None, sig_data_err=None, logdet_corr_data=0):
+
+    if not values_in_boundaries(theta, priors):
+        return -np.inf
+    theta_tensor = torch.tensor(train_Dataset.normalizer.normalize_x(theta), dtype=torch.float32)
+    y_pred_norm, var_pred_norm = model.predict(theta_tensor, no_grad=True)
+    y_pred_norm = y_pred_norm.cpu().numpy()
+    var_pred_norm = var_pred_norm.cpu().numpy()
+    Y_pred, var_pred = train_Dataset.normalizer.denormalize_y(y_pred_norm, var_pred_norm)
+
+    delta = Y_pred - data
+    
+    if inv_Cdata is not None:
+        chi_square = delta @ inv_Cdata @ delta.T
+    elif inv_corr_data is not None:
+        # Compute the total standard deviation
+        std_tot = np.sqrt(var_pred + sig_data_err**2)
+        std_inv = 1/np.outer(std_tot,std_tot)
+        chi_square = delta @ (inv_corr_data * std_inv) @ delta.T
+        # log|C_tot| = log|corr_data| + 2 * sum(log std_tot)
+        # -> the -0.5 * log|C_tot| term becomes:
+        logdet = logdet_corr_data + 2.0 * np.sum(np.log(std_tot))
+
+        return -0.5 * (chi_square + logdet)
+
+    return -chi_square / 2
+
+
+def likelihood_vec(thetas, model, train_Dataset, data, priors, inv_Cdata=None, inv_corr_data=None, sig_data_err=None, logdet_corr_data=0):
+    thetas = np.atleast_2d(thetas)
+    inside = np.array([values_in_boundaries(t, priors) for t in thetas])
+
+    theta_norm = train_Dataset.normalizer.normalize_x(thetas)
+    xt = torch.tensor(theta_norm, dtype=torch.float32).to(train_Dataset.device)
+    y_pred_norm, var_pred_norm = model.predict(xt, no_grad=True)
+    Y_pred, var_pred = train_Dataset.normalizer.denormalize_y(
+        y_pred_norm.cpu().numpy(), var_pred_norm.cpu().numpy())
+
+    delta = Y_pred - data                                    # (n, B)
+    std_tot = np.sqrt(var_pred + sig_data_err**2)            # (n, B)
+
+    # per-walker chi2 with per-walker std rescaling of the fixed inv correlation
+    # chi2_n = sum_ij delta_ni * inv_corr_ij * delta_nj / (std_tot_ni * std_tot_nj)
+    d_scaled = delta / std_tot                               # fold D_tot^-1 into delta
+    chi2 = np.einsum('ni,ij,nj->n', d_scaled, inv_corr_data, d_scaled)   # (n,)
+
+    logdet = logdet_corr_data + 2.0 * np.sum(np.log(std_tot), axis=1)    # (n,)
+    logl = -0.5 * (chi2 + logdet)
+    logl[~inside] = -np.inf
+    return logl
 
 def get_corr_small_boxes(param, tracers, **kwargs):
 

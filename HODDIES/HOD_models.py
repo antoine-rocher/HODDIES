@@ -234,10 +234,10 @@ def Nsat_pow_law(log10_Mh, As, M_0, M_1, alpha):
         Expected number of satellite galaxies in a halo of mass log10_Mh.
 
     """
-    if log10_Mh < M_0:
+    if log10_Mh <= M_0:
         return 0.0
-    elif log10_Mh - M_0 < 0.001:
-        N_sat = As * ((10**log10_Mh - 10**(M_0+0.001)) / 10**M_1)**alpha
+    # elif log10_Mh - M_0 < 0.001:
+    #     N_sat = As * ((10**log10_Mh - 10**(M_0-0.001)) / 10**M_1)**alpha # was set to avoid too large number of satellites when alpha is negative
     else:
         N_sat = As * ((10**log10_Mh - 10**M_0) / 10**M_1)**alpha    
     return N_sat

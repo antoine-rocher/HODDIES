@@ -1,0 +1,85 @@
+
+nthreads: 32  # Number of threads to use for parallelization. Set to None to use all available threads.
+use_particles: False  # Whether to use particles for the HOD model. If False, only halos will be used.
+
+tracers:
+  - LRG
+
+# HOD (Halo Occupation Distribution) parameters, one list per tracer 
+LRG: # Name of tracer 1
+
+  # Parameters for the central HOD model
+  HOD_model: SHOD  # Central galaxy HOD model. Choices: SHOD, GHOD, SFHOD, HMQ, mHMQ, LNHOD.
+  Ac: 1  # Normalization amplitude for central distribution
+  log_Mcent: 12.75  # Central galaxy cutoff mass (log scale) or mean value if gausaain distribution
+  sigma_M: 0.5  # Width of central galaxy mass distribution or stepness of the step function. 
+
+  # Parameters for the satellite HOD model
+  satellites: true  # Whether satellites are included
+  sat_HOD_model: Nsat_pow_law  # Satellite galaxy HOD model 
+  link_sat_to_central: False # Wheter to multiply the mean satellite number Nsat by the central mean number Ncen (often use for LRG)  
+  As: 1  # Normalization amplitude for satellite distribution
+  M_0: 12.6  # Minimum halo mass for satellites
+  M_1: 13.5  # Characteristic mass for satellites
+  alpha: 1.25  # Power-law slope of the satellite HOD
+  f_sigv: 1  # Scaling factor for velocity dispersion
+  density: null  # Target galaxy number density
+
+
+# Abacus simulation parameters
+hcat:
+  path_to_sim: '/dvs_ro/cfs/cdirs/desi/cosmosim/Abacus'  # Path to halo catalogs
+  mass_cut: null  # Minimum halo mass cut in log10(Msun/h) e.g. 12 to cut M < 10**12
+  z_simu: 0.5  # Redshift of simulation snapshot (list of redshifts from Abacus light cone shells.)
+  sim_name: AbacusSummit_small_c000_ph3000  # Specific to Abacus simulation
+  load_particles: False  # Whether to load particle/subhalos data
+
+
+fit_param:
+  dir_output_fit: /global/homes/a/arocher/Code/postdoc/HODDIES_v2/HODDIES/HODDIES/fit_functions/scripts/results_optimizer  # Directory where output from this fitting will be saved
+  fit_statistics:  # List of statistics to fit. Options include: rppi, smu, CIC, delta_sigma, wp, xi_ells, power_spectrum
+    - wp
+    - xi_ells
+    
+  # The settings for all the statistics must be set in the clustering_statistics_parameters file.
+
+  # data_path: path_to_data  # Path to the observational data file
+  # error_path: path_to_errors  # Path to the error data file, either covariance matrix or error bars
+  # add_poisson_noise: True  # Whether to add Poisson noise to the model predictions (evalutated from n realisations of a single HOD model)
+  # neval_poisson_noise: 50  # Number of realisations to estimate the poisson noise of the model predictions. Only used if add_poisson_noise is True
+
+
+  # Prior ranges for HOD parameters for each tracer
+  priors:  
+    # Example of prior ranges for LRG 
+    LRG:
+      M_0: [12.5, 13.5]
+      M_1: [13, 14.5] 
+      alpha: [0.5, 1.5]
+      f_sigv: [0.5, 1.5]
+      log_Mcent: [12.4, 13.5]
+      sigma_M: [0.05, 1]
+
+  #Minimizer settings
+  minimizer:
+    maxiter: 5  # Maximum number of iterations for the minimizer
+    popsize: 10  # Population size for the minimizer
+    xtol: 1e-6  # Tolerance for convergence
+    method: cmaes  # Minimization method to use (e.g., cmaes, nelder-mead, etc.)
+  
+
+  sampler: 
+    sampler_name: emcee  # MCMC sampler to use ('emcee' or 'zeus')
+    n_iter: 10000  # Number of iterations for MCMC sampling
+    nwalkers: 20  # Number of walkers for the MCMC sampler
+
+  emulator:
+    emu_type: FCNN  # Type of emulator to use (only FCNN atm)
+    N_training_points: 800  # Number of training points to generate for the emulator
+    sampling_type: Hammersley  # Sampling method for generating training points. Available sampling types are "lhs", "hammersley", "uniform", "halton", "cvt", or "random"
+    path_to_training_point: /global/cfs/cdirs/desi/users/arocher/HODDIES_results/test/  # Path to save or read precomputed training samples
+
+
+clustering_settings:
+  CIC:
+    max_count: 25  # Max CIC count for the CIC histogram, need to be set for inderence 

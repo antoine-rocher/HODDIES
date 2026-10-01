@@ -1,20 +1,19 @@
 """ Base HOD class """
 
-from HODDIES import read_uchuu
-from numba import njit, jit, numba
+import numba
 import time 
 import os
-from utils import *
-from estimators.clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat, compute_CIC, compute_power_spectrum
-import HOD_models
+from .utils import *
+from .estimators.clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat, compute_CIC, compute_power_spectrum
+from . import HOD_models
 import yaml 
 import glob
 from mpytools import Catalog
 import collections.abc
-from fit_functions.fits_functions import compute_chi2
+from .fit_functions.fits_functions import compute_chi2
 import numbers
 import numpy as np
-from sim_loader import BaseLogger
+from .sim_loader import BaseLogger
 
 class HOD(BaseLogger):
 
@@ -35,8 +34,9 @@ class HOD(BaseLogger):
             Optional arguments that can be added that will replace the one provided in the parameter file.
 
         """
-        
-        self.init_logger(kwargs.get('setup_logger', True))
+        setup_logger=kwargs.get('setup_logger', True)
+        print('setup_logger', setup_logger)
+        self.init_logger(setup_logger=kwargs.get('setup_logger', True))
 
         # self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)
         self._get_default_parameters()
@@ -131,7 +131,7 @@ class HOD(BaseLogger):
         tracer_templates = {
             'LRG': {
                 'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 12.75, 'sigma_M': 0.5, 'gamma': 1, 'pmax': 1, 'Q': 100,
-                'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 12.5, 'M_1': 13.5, 'alpha': 1,
+                'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 13, 'M_1': 13.5, 'alpha': 1,
                 'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
                 'assembly_bias':{'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
@@ -177,56 +177,56 @@ class HOD(BaseLogger):
             # Set the merged parameters
             self.args[t] = params_to_set
 
-    def _initialize_fit_params(self, tracer):
-        """
-        Initializes HOD fit parameters for one or more tracers in-place.
-        """
-        fit_param_template = {
-            'nb_real': 20, 'fit_name': 'myhodfit', 'path_to_training_point': None, 'dir_output_fit': 'path_to_save_fit_outputs',
-            'fit_type': 'wp+xi', 'generate_training_sample': True, 'sampling_type': 'Hammersley',
-            'N_training_points': 800, 'seed_training': 18, 'n_calls': 800, 'logchi2': True,
-            'sampler': 'emcee', 'n_iter': 10000, 'nwalkers': 20, 'func_aq': 'EI',
-            'length_scale_bounds': [0.001, 10], 'length_scale': False, 'kernel_gp': 'Matern_52',
-            'save_fn': 'results_fit.npy', 'use_desi_data': True, 'zmin': 0.8, 'zmax': 1.1,
-            'dir_data': '/global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP', 'region': 'GCcomb',
-            'weights_type': 'pip_angular_bitwise', 'njack': 128, 'nran': 4, 'bin_type': 'log',
-            'load_cov_jk': False, 'corr_dir': '/dvs_ro/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/',
-            'nb_mocks': 1883,
-            'priors': {}
-        }
+    # def _initialize_fit_params(self, tracer):
+    #     """
+    #     Initializes HOD fit parameters for one or more tracers in-place.
+    #     """
+    #     fit_param_template = {
+    #         'nb_real': 20, 'fit_name': 'myhodfit', 'path_to_training_point': None, 'dir_output_fit': 'path_to_save_fit_outputs',
+    #         'fit_type': 'wp+xi', 'generate_training_sample': True, 'sampling_type': 'Hammersley',
+    #         'N_training_points': 800, 'seed_training': 18, 'n_calls': 800, 'logchi2': True,
+    #         'sampler': 'emcee', 'n_iter': 10000, 'nwalkers': 20, 'func_aq': 'EI',
+    #         'length_scale_bounds': [0.001, 10], 'length_scale': False, 'kernel_gp': 'Matern_52',
+    #         'save_fn': 'results_fit.npy', 'use_desi_data': True, 'zmin': 0.8, 'zmax': 1.1,
+    #         'dir_data': '/global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP', 'region': 'GCcomb',
+    #         'weights_type': 'pip_angular_bitwise', 'njack': 128, 'nran': 4, 'bin_type': 'log',
+    #         'load_cov_jk': False, 'corr_dir': '/dvs_ro/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/',
+    #         'nb_mocks': 1883,
+    #         'priors': {}
+    #     }
 
-        priors_templates = {
-            'LRG': {
-                'M_0': [12.5, 13.5], 'M_1': [13, 14.5], 'alpha': [0.5, 1.5], 'f_sigv': [0.5, 1.5],
-                'log_Mcent': [12.4, 13.5], 'sigma_M': [0.05, 1]
-            },
-            'ELG': {
-                'M_0': [11.0, 12.5], 'M_1': [11.0, 12.5], 'alpha': [0.3, 1.2], 'f_sigv': [0.5, 1.5],
-                'log_Mcent': [11.0, 12.5], 'sigma_M': [0.1, 1]
-            },
-            'QSO': {
-                'M_0': [12.5, 14.0], 'M_1': [13.5, 15.0], 'alpha': [0.8, 1.8], 'f_sigv': [0.5, 1.5],
-                'log_Mcent': [12.5, 14.0], 'sigma_M': [0.1, 1.0]
-            }
-        }
+    #     priors_templates = {
+    #         'LRG': {
+    #             'M_0': [12.5, 13.5], 'M_1': [13, 14.5], 'alpha': [0.5, 1.5], 'f_sigv': [0.5, 1.5],
+    #             'log_Mcent': [12.4, 13.5], 'sigma_M': [0.05, 1]
+    #         },
+    #         'ELG': {
+    #             'M_0': [11.0, 12.5], 'M_1': [11.0, 12.5], 'alpha': [0.3, 1.2], 'f_sigv': [0.5, 1.5],
+    #             'log_Mcent': [11.0, 12.5], 'sigma_M': [0.1, 1]
+    #         },
+    #         'QSO': {
+    #             'M_0': [12.5, 14.0], 'M_1': [13.5, 15.0], 'alpha': [0.8, 1.8], 'f_sigv': [0.5, 1.5],
+    #             'log_Mcent': [12.5, 14.0], 'sigma_M': [0.1, 1.0]
+    #         }
+    #     }
         
 
-        if 'fit_param' not in self.args:
-            self.args['fit_param'] = {}
+    #     if 'fit_param' not in self.args:
+    #         self.args['fit_param'] = {}
         
-        params_to_set = fit_param_template.copy()
-        params_to_set.update(self.args['fit_param'])
-        self.args['fit_param'] = params_to_set
+    #     params_to_set = fit_param_template.copy()
+    #     params_to_set.update(self.args['fit_param'])
+    #     self.args['fit_param'] = params_to_set
         
-        tracers = tracer
-        if isinstance(tracer, str):
-            tracers = [tracer]
+    #     tracers = tracer
+    #     if isinstance(tracer, str):
+    #         tracers = [tracer]
         
-        for t in tracers:
-            if t not in self.args['fit_param']['priors']:
-                # a default prior is assigned if the tracer is not defined
-                template = priors_templates.get(t, priors_templates['LRG'])
-                self.args['fit_param']['priors'][t] = template.copy()
+    #     for t in tracers:
+    #         if t not in self.args['fit_param']['priors']:
+    #             # a default prior is assigned if the tracer is not defined
+    #             template = priors_templates.get(t, priors_templates['LRG'])
+    #             self.args['fit_param']['priors'][t] = template.copy()
 
     def _get_default_parameters(self):
         """
@@ -239,7 +239,7 @@ class HOD(BaseLogger):
                 'Omega_L': None, 'Omega_b': None, 'sigma_8': None, 'n_s': None, 'w0_fdl': None, 'wa_fdl': None
             },
 
-            'seed': None, 'nthreads': 32, 'use_assembly_bias': False, 'use_particles': False, 'path_to_density_mesh':None,
+            'seed': None, 'nthreads': 32, 'use_assembly_bias': False, 'use_particles': False, 'dir_to_save_env_mesh': 'tmp/',
         }
         
         default_params['clustering_settings'] = self.__get_default_clustering_parameters()
@@ -524,7 +524,7 @@ class HOD(BaseLogger):
         """
         start = time.time()
         hod_list_param_cen, hod_list_param_sat, _ = self.__init_hod_param(tracer)
-        ngal, fsat, mean_hmass = compute_ngal(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], self.nthreads, 
+        ngal, fsat, mean_hmass = compute_ngal(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer],
                                 hod_list_param_cen, hod_list_param_sat, self.args[tracer]['conformity_bias'], self.args[tracer]['link_sat_to_central'])
         if verbose:
             self.logger.debug(f'ngal computed in {time.time()-start:.2f} sec')
@@ -569,7 +569,7 @@ class HOD(BaseLogger):
                 ab_proxy += [list(self.args[tr]['assembly_bias'].keys())]
         ab_proxy = list(set().union(*ab_proxy))
         
-        abproxy_to_remove = self.base_catalog.set_assembly_bias_values(ab_proxy)
+        abproxy_to_remove = self.base_catalog.set_assembly_bias_values(ab_proxy, self.args)
         self._remove_env_bias(abproxy_to_remove)
 
 
@@ -892,8 +892,9 @@ class HOD(BaseLogger):
             r_bins = np.geomspace(smu_settings['smin'], smu_settings['smax'], smu_settings['n_s_bins'])
         else:
             r_bins = np.linspace(smu_settings['smin'], smu_settings['smax'], smu_settings['n_s_bins'])
-        
-        smu_settings['edges_smu'] = (r_bins, np.linspace(-smu_settings['mu_max'], smu_settings['mu_max'], smu_settings['n_mu_bins']))
+
+        if smu_settings.get('edges_smu', None) is None:
+            smu_settings['edges_smu'] = (r_bins, np.linspace(-smu_settings['mu_max'], smu_settings['mu_max'], smu_settings['n_mu_bins']))
         ells = smu_settings['multipole_index'] if ells is None else ells
         s_all, xi_all = [],[]
         for tr in tracers:
@@ -978,7 +979,9 @@ class HOD(BaseLogger):
             r_bins = np.geomspace(rppi_settings['rp_min'], rppi_settings['rp_max'], rppi_settings['n_rp_bins']+1, endpoint=(True))
         else:
             r_bins = np.linspace(rppi_settings['rp_min'], rppi_settings['rp_max'], rppi_settings['n_rp_bins']+1)
-        rppi_settings['edges_rppi'] = (r_bins, np.linspace(-pimax, pimax, 2*pimax+1))
+            
+        if rppi_settings.get('edges_rppi', None) is None:
+            rppi_settings['edges_rppi'] = (r_bins, np.linspace(-pimax, pimax, 2*pimax+1))
 
         rp_all, wp_all = [],[]
         for tr in tracers:
@@ -1086,7 +1089,7 @@ class HOD(BaseLogger):
         return k_all, Pk_all
 
 
-    def get_CIC(self, cat, tracers, verbose=True):
+    def get_CIC(self, cat, tracers=None, return_dic=False, return_counts=False, max_count=None, density=True, verbose=True):
         """
         Compute counts-in-cylinder (CIC) for a given tracer.
 
@@ -1096,21 +1099,46 @@ class HOD(BaseLogger):
             Catalog containing the tracer.
         tracers : list or str
             Name of the tracer(s) for which to compute CIC.
+        return_dic : bool, optional
+            If True, returns a dictionary with the counts-in-cylinder for each tracer. Defaults to False.
+        return_counts : bool, optional
+            If True, returns the counts for each object in the catalog. Defaults to False.
+        max_count : int, optional
+            Maximum count to consider for the histogram. If None, it will be determined from the data. Defaults to None.
+        density : bool, optional
+            If True, returns the histogram as a density (normalized). Defaults to True.
         verbose : bool, optional
             If True, prints progress and computation time. Defaults to True.
 
         Returns
         -------
+        cens : array
+            Bin centers for the counts-in-cylinder histogram.
+        hist : array
+            Histogram of counts-in-cylinder for the specified tracer(s).
         counts : array
             Array of counts-in-cylinder for each object in the catalog.
+        
+        Notes
+        -----
+        - The function uses `apply_rsd` to account for redshift space distortions (RSD) if enabled and Cosmology set.
+        - The counts-in-cylinder are computed using the `compute_CIC` function, which calculates the number of neighboring galaxies within a specified cylinder around each galaxy.
+        - The results can be returned as a dictionary if `return_dic` is True, with keys corresponding to each tracer and values containing the bin centers and histogram.
+        - The `max_count` parameter allows for controlling the range of counts considered in the histogram, which can be useful for focusing on specific ranges of interest.
+        - The `density` parameter allows for returning the histogram as a normalized density, which can be useful for comparing distributions across different tracers or datasets.
+        - The function supports multiple tracers, and the results are computed and returned for each tracer specified in the `tracers` parameter. If only one tracer is provided, the results are returned directly without being wrapped in a list or dictionary.
+        - The `verbose` parameter allows for controlling the verbosity of the output, providing information on the progress and timing of the computations for each tracer. 
         """
 
         tracers = self.check_cat_tracers(cat, tracers)
 
         self.check_clustering_settings('CIC')
         cic_settings = self.args['clustering_settings'].get('CIC', None)
-
+        max_count = cic_settings.get('max_count', None) if max_count is None else max_count
+        
         counts = []
+        hists = []
+
         for tr in tracers:
             mock_cat = cat[cat['TRACER'] == tr]
             if self.args['clustering_settings']['rsd']:
@@ -1119,7 +1147,20 @@ class HOD(BaseLogger):
             else:
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
             counts += [compute_CIC(pos[0], pos[1], pos[2], self.boxsize, cic_settings['R_max'], cic_settings['L_max'])]
-        return counts
+            if max_count is None:
+                max_count = int(np.nanmax(counts))
+            bins = np.arange(-0.5, max_count + 1.5)
+            hist, edges = np.histogram(counts, bins=bins)
+            cens = 0.5 * (edges[:-1] + edges[1:])
+            if density and hist.sum() > 0:
+                hist = hist / hist.sum()
+            hists += [hist]
+        if return_dic:
+            return {f'{tr}_{tr}': [cens, hh] for tr, hh in zip(tracers, hists)}
+        if return_counts:
+            return cens, hist, counts
+        return cens, hist
+        
     
 
     def get_delta_sigma(self, cats, tracers=None, verbose=True, return_dic=False):
@@ -1149,11 +1190,11 @@ class HOD(BaseLogger):
 
         self.check_clustering_settings('delta_sigma')
         ds_settings = self.args['clustering_settings'].get('delta_sigma', None)
-        
-        if ds_settings['bin_logscale']:
-            ds_settings['edges_rp'] = np.geomspace(ds_settings['rp_min'], ds_settings['rp_max'], ds_settings['n_rp_bins']+1, endpoint=(True))
-        else:
-            ds_settings['edges_rp'] = np.linspace(ds_settings['rp_min'], ds_settings['rp_max'], ds_settings['n_rp_bins']+1)
+        if ds_settings.get('edges_rp', None) is None:
+            if ds_settings['bin_logscale']:
+                ds_settings['edges_rp'] = np.geomspace(ds_settings['rp_min'], ds_settings['rp_max'], ds_settings['n_rp_bins']+1, endpoint=(True))
+            else:
+                ds_settings['edges_rp'] = np.linspace(ds_settings['rp_min'], ds_settings['rp_max'], ds_settings['n_rp_bins']+1)
     
         if return_dic:
             res_dict = {}
@@ -1171,11 +1212,11 @@ class HOD(BaseLogger):
                 [mock_cat['x'],
                  mock_cat['y'],
                  mock_cat['z']]
-            ) % self.boxsize
+            ).T % self.boxsize
     
             rp, ds = compute_delta_sigma(
                 pos_lens,
-                self.part_subsamples['pos'][::100].T%self.boxsize,
+                self.part_subsamples['pos'][::100]%self.boxsize,
                 rbins=ds_settings['edges_rp'],
                 boxsize=self.boxsize,
                 rho_m=self.cosmo.rho_m(0.5) * 1e10,
@@ -1428,7 +1469,8 @@ class HOD(BaseLogger):
                 r_bins = np.geomspace(settings['rp_min'], settings['rp_max'], settings['n_rp_bins']+1, endpoint=True)
             else:
                 r_bins = np.linspace(settings['rp_min'], settings['rp_max'], settings['n_rp_bins']+1, endpoint=True)
-            settings['edges_rppi'] = (r_bins, np.linspace(-settings['pimax'], settings['pimax'], 2*settings['pimax']+1))
+            if settings.get('edges_rppi', None) is None:
+                settings['edges_rppi'] = (r_bins, np.linspace(-settings['pimax'], settings['pimax'], 2*settings['pimax']+1))
             edges = settings['edges_rppi']
             
         elif (mode == 'xi_ells') | ('smu' in mode):
@@ -1439,7 +1481,8 @@ class HOD(BaseLogger):
                 r_bins = np.geomspace(settings['smin'], settings['smax'], settings['n_s_bins']+1, endpoint=True)
             else:
                 r_bins = np.linspace(settings['smin'], settings['smax'], settings['n_s_bins']+1, endpoint=True)
-            settings['edges_smu'] = (r_bins, np.linspace(-settings['mu_max'], settings['mu_max'], settings['n_mu_bins']))
+            if settings.get('edges_smu', None) is None:
+                settings['edges_smu'] = (r_bins, np.linspace(-settings['mu_max'], settings['mu_max'], settings['n_mu_bins']))
             edges = settings['edges_smu']
             ells = settings.get('multipole_index', [0,2])
 
@@ -1475,6 +1518,88 @@ class HOD(BaseLogger):
                 self.logger.info(f'Done in {time.time()-time1:.3f} s')
         return res_dict
 
+
+    def get_cross_PS(self, cats, tracers=None, verbose=True):
+        """
+        Compute the two-point correlation function (2PCF) multipoles for a given mock catalog in a cubic box.
+
+        This function computes the two-point correlation function (2PCF) and cross-correlations multipoles for pairs of tracers in the mock catalogs. 
+        It calculates the 2PCF for all combinations of tracers provided, handling redshift space distortions (RSD) if enabled.
+
+        Parameters
+        ----------
+        cats : dict
+            A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
+            (e.g., 'LRG', 'ELG').
+        mode : str
+            The mode of the two-point correlation function to compute (e.g., 'smu', 'rppi').
+        tracers : list of str
+            A list of tracer names (keys in `cats`) for which the cross 2PCF should be computed. The function 
+            computes the 2PCF for all pairs of tracers in the list.
+        R1R2 : tuple or None, optional
+            A tuple defining a range for R1 and R2 for the 2PCF computation. If None, the default values will be used.
+            Defaults to None.
+        verbose : bool, optional
+            If True, prints progress and computation time for each pair of tracers. Defaults to True.
+
+        Returns
+        -------
+        res_dict : dict
+            A dictionary where the keys are the concatenated names of tracer pairs (e.g., 'LRG_ELG') and the 
+            values are the average separations and the corresponding two-point correlation functions (2PCF) for each pair.
+
+        Notes
+        -----
+        - The function computes the cross-correlation 2PCF for all unique pairs of tracers from the input list.
+        - If redshift space distortions (RSD) are enabled, the positions of galaxies in the catalogs are adjusted accordingly.
+        - The results are stored in `res_dict` with keys in the format 'tracer1_tracer2', where each value is the 2PCF 
+        corresponding to the pair of tracers.
+        - The function uses `compute_twopoint` to calculate the 2PCF for each tracer pair.
+    
+
+        Example
+        -------
+        res = get_cross_PS(cats, tracers=['LRG', 'ELG', 'QSO'])
+        """
+        
+        tracers = self.check_cat_tracers(cats, tracers)
+        
+        self.check_clustering_settings('power_spectrum')
+        ps_settings = self.args['clustering_settings'].get('power_spectrum', None)
+
+        if ps_settings.get('k_edges', None) is None:
+            if ps_settings['bin_logscale']:
+                ps_settings['k_edges'] = np.geomspace(ps_settings['kmin'], ps_settings['kmax'], ps_settings['n_k_bins']+1, endpoint=(True))
+            else:
+                ps_settings['k_edges'] = np.linspace(ps_settings['kmin'], ps_settings['kmax'], ps_settings['n_k_bins']+1)
+        ells = ps_settings['multipole_index']
+                
+        res_dict = {}
+        com_tr = self.get_comb_tr_list(tracers)
+        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
+        for tr in com_tr:
+            if verbose: 
+                self.logger.info(f'Compute PS for {tr}...')
+                time1 = time.time()
+            
+            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
+                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
+                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_0)
+                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_1)
+            else:
+                if self.args['clustering_settings']['rsd']:
+                    self.logger.warning('Cosmology not set, does not apply rsd')
+                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
+                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
+
+            k, Pk = compute_power_spectrum(pos1=pos1, pos2=pos2, nmesh=ps_settings['nmesh'], boxsize=self.boxsize, kedges=ps_settings['k_edges'], ells=ells, los=self.args['clustering_settings']['los'], resampler=ps_settings['resampler'], interlacing=ps_settings['interlacing']).poles(ell=ells, return_k=True, complex=False)
+
+            res_dict[f'{tr[0]}_{tr[1]}'] = k, Pk
+
+            if verbose:
+                self.logger.info(f'Done in {time.time()-time1:.3f} s')
+        return res_dict
+    
 
     # def get_cross_twopoint(self, cats, mode, tracers, ells=None, R1R2=None, verbose=True):
     #     """
@@ -1787,7 +1912,9 @@ class HOD(BaseLogger):
         """
         priors = {}
         priors_array = []
-        for tr in self._tracers():
+        if not hasattr(self, '_tracer_to_fit'):
+            self._initialize_fit_params()
+        for tr in self._tracer_to_fit:
             priors[tr] = self.args['fit_param']['priors'][tr].copy()
 
             if 'assembly_bias' in priors[tr].keys():
@@ -1868,11 +1995,16 @@ class HOD(BaseLogger):
         if 'delta_sigma' in stat:
             result['delta_sigma'] = self.get_delta_sigma(cat, tracers=tracers, verbose=verbose, return_dic=True)
         if 'CIC' in stat:
-            result['CIC'] = self.get_CIC(cat, tracers=tracers, verbose=verbose)
+            result['CIC'] = self.get_CIC(cat, tracers=tracers, verbose=verbose, return_dic=True)
+        if 'power_spectrum' in stat:
+            result['power_spectrum'] = self.get_cross_PS(cat, tracers=tracers, verbose=verbose)
+            
         return result
 
 
-    def compute_training_v2(self, training_points=None, test_set=False, start_point=0, seed=None, verbose=False):
+
+
+    def compute_training(self, training_points=None, path_to_save_point=None, start_point=0, seed=None, verbose=False, overwrite=False, **kwargs):
         
         """
         Generate and save training data for HOD model fitting by sampling parameter sets 
@@ -1887,8 +2019,8 @@ class HOD(BaseLogger):
         training_points : structured array or None, optional
             Array of training points with named fields corresponding to HOD parameters. If None, 
             training points will be generated using `genereate_training_points`.
-        test_set : bool, optional
-            Whether to run a independent test set. Default is False.
+        path_to_save_point : str, optional
+            Path to the directory where the training points will be saved. If None, the default path will be used.
         start_point : int, optional
             Starting index for training point numbering (useful when continuing interrupted runs). Default is 0.
         verbose : bool, optional
@@ -1926,10 +2058,10 @@ class HOD(BaseLogger):
         
         """
 
-        from fit_functions.fits_functions import genereate_training_points
-        self._initialize_fit_params(fit_params=self.args['fit_param'])
+        from .fit_functions import genereate_training_points
+        self._initialize_fit_params(**kwargs)
         emu_settings = self.args['fit_param']['emulator']
-        path_to_save_point = emu_settings['path_to_save_training_point']
+        path_to_save_point = emu_settings['path_to_training_point'] if path_to_save_point is None else path_to_save_point
         sampling_type = emu_settings['sampling_type']
         if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
             raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
@@ -1937,14 +2069,14 @@ class HOD(BaseLogger):
         
         if training_points is None:
             
-            if test_set:
-                self.logger.info(f"Creating {sampling_type} sample for test set...")
-                path_to_save_point = os.path.join(emu_settings['path_to_save_training_point'], 'test_set')
-                sampling_type = emu_settings.get('test_sampling_type', 'lhs')
-                training_points = genereate_training_points(emu_settings.get('N_test_points', 10), self.name_params, self.priors, sampling_type=sampling_type, path_to_save_training_point=path_to_save_point, rand_seed=None)
-            else:
-                self.logger.info(f"Creating {sampling_type} sample for training set...")
-                training_points = genereate_training_points(emu_settings['N_training_points'], self.name_params, self.priors, sampling_type=sampling_type, path_to_save_training_point=path_to_save_point, rand_seed=None)
+            # if test_set:
+            #     self.logger.info(f"Creating {sampling_type} sample for test set...")
+            #     path_to_save_point = path_to_test_set if path_to_test_set is not None else os.path.join(emu_settings['path_to_training_point'], 'test_set')
+            #     sampling_type = emu_settings.get('test_sampling_type', 'lhs')
+            #     training_points = genereate_training_points(emu_settings.get('N_test_points', 10), self.name_params, self.priors, sampling_type=sampling_type, path_to_save_training_point=path_to_save_point, rand_seed=None)
+            # else:
+            self.logger.info(f"Creating {sampling_type} sample for training set...")
+            training_points = genereate_training_points(emu_settings['N_training_points'], self.name_params, self.priors, sampling_type=sampling_type, path_to_save_training_point=path_to_save_point, rand_seed=None)
         tracers = self._tracer_to_fit
         
         if len(self.name_params) != len(training_points.dtype.names):
@@ -1959,7 +2091,7 @@ class HOD(BaseLogger):
 
         # stats = 
         for nb_point, param in enumerate(training_points):
-            if not os.path.exists(os.path.join(path_to_save_point, '{}_{}.npy'.format(sampling_type, nb_point+start_point))):
+            if (not os.path.exists(os.path.join(path_to_save_point, 'train_hod_{}.npy'.format(nb_point+start_point)))) | overwrite:
                 start = time.time()     
                 result = {}
                 for tr in tracers:
@@ -1972,607 +2104,648 @@ class HOD(BaseLogger):
                             self.args[tr]['assembly_bias'][var] = [param[f'ab_{var}_cen_{tr}'], param[f'ab_{var}_sat_{tr}']]
 
                     result[tr] = self.args[tr].copy()
-                self.logger.info('Compute HOD:\n',  '\n'.join(['{}:{}'.format(tt,ttt) for tt, ttt in zip(self.name_params, param)]))
+                self.logger.info('Compute HOD:' + ', '.join('{}: {:.3f}'.format(tt, ttt) for tt, ttt in zip(self.name_params, param)))
                 cat = self.make_mock_cat(tracers, fix_seed=seed, verbose=verbose)
                 
                 result.update(self.compute_stats(cat, stat=self.args['fit_param']['fit_statistics'], tracers=self._tracers(), verbose=False))
                 result['comb_trs'] = self.get_comb_tr_list(self._tracers())
                 result['hod_fit_param'] = param
                 result['param_file'] = self.args
-                np.save(os.path.join(path_to_save_point, '{}_{}.npy'.format(sampling_type, nb_point+start_point)), result)
+                np.save(os.path.join(path_to_save_point, 'train_hod_{}.npy'.format(nb_point+start_point)), result)
                 self.logger.info('Point {} done {:.2f}'.format(nb_point+start_point, time.time()-start))        
 
 
-    def read_training(self, data, inv_cov2):
+    # def read_training(self, data, inv_cov2):
         
-        """
-        Loads and processes HOD training samples, computes chi² statistics for each sample 
-        against a target dataset, and returns a structured array for Gaussian Process training.
+    #     """
+    #     Loads and processes HOD training samples, computes chi² statistics for each sample 
+    #     against a target dataset, and returns a structured array for Gaussian Process training.
 
-        Parameters
-        ----------
-        data : array_like
-            Observed data vector (e.g., wp or xi measurements) to compare against model predictions.
+    #     Parameters
+    #     ----------
+    #     data : array_like
+    #         Observed data vector (e.g., wp or xi measurements) to compare against model predictions.
 
-        inv_cov2 : ndarray
-            Inverse of the covariance matrix used in chi² computation.
+    #     inv_cov2 : ndarray
+    #         Inverse of the covariance matrix used in chi² computation.
 
-        Returns
-        -------
-        training_set : structured ndarray
-            Structured array where each row corresponds to a training point, including:
-            - HOD parameters
-            - Mean chi² value for the realizations
-            - Uncertainty on chi² (standard deviation / sqrt(N_real))
+    #     Returns
+    #     -------
+    #     training_set : structured ndarray
+    #         Structured array where each row corresponds to a training point, including:
+    #         - HOD parameters
+    #         - Mean chi² value for the realizations
+    #         - Uncertainty on chi² (standard deviation / sqrt(N_real))
         
-        Notes
-        -----
-        - Reads all training `.npy` files from `self.args['fit_param']['path_to_training_point']` with the given sampling type.
-        - Applies covariance matrix adjustments if requested.
-        - Supports either 'wp', 'xi', or both statistics depending on `self.args['fit_param']['fit_type']`.
-        - Combines model realizations by flattening tracer combinations and statistics into a single vector.
-        - Computes chi² using the `compute_chi2()` utility, which is assumed to match the data/model shape.
+    #     Notes
+    #     -----
+    #     - Reads all training `.npy` files from `self.args['fit_param']['path_to_training_point']` with the given sampling type.
+    #     - Applies covariance matrix adjustments if requested.
+    #     - Supports either 'wp', 'xi', or both statistics depending on `self.args['fit_param']['fit_type']`.
+    #     - Combines model realizations by flattening tracer combinations and statistics into a single vector.
+    #     - Computes chi² using the `compute_chi2()` utility, which is assumed to match the data/model shape.
 
-        Example
-        -------
-        >>> train_set = model.read_training(observed_data, inv_cov2)
-        """
+    #     Example
+    #     -------
+    #     >>> train_set = model.read_training(observed_data, inv_cov2)
+    #     """
 
-        from HODDIES.fits_functions_old import compute_chi2
+    #     from HODDIES.fits_functions_old import compute_chi2
 
-        print('Read training sample...', flush=True)
-        files = glob.glob(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_*.npy'.format(self.args['fit_param']['sampling_type'])))
-        files.sort()
-        for ii,file in enumerate(files):
-            res_param =  np.load(file, allow_pickle=True)[()]
-            if ii == 0:
-                name_arr = list(res_param['hod_fit_param'].dtype.names) + ['chi2', 'chi2_err']
-                training_set = np.zeros((len(files),len(name_arr)))
-            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
-            res = {}
-            comb_trs = res_param[stats[0]][0].keys() 
-            nreal = len(res_param[stats[0]])
-            res = [np.hstack([np.hstack([np.hstack(res_param[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nreal)]
+    #     print('Read training sample...', flush=True)
+    #     files = glob.glob(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_*.npy'.format(self.args['fit_param']['sampling_type'])))
+    #     files.sort()
+    #     for ii,file in enumerate(files):
+    #         res_param =  np.load(file, allow_pickle=True)[()]
+    #         if ii == 0:
+    #             name_arr = list(res_param['hod_fit_param'].dtype.names) + ['chi2', 'chi2_err']
+    #             training_set = np.zeros((len(files),len(name_arr)))
+    #         stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+    #         res = {}
+    #         comb_trs = res_param[stats[0]][0].keys() 
+    #         nreal = len(res_param[stats[0]])
+    #         res = [np.hstack([np.hstack([np.hstack(res_param[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nreal)]
 
-            chi2 = np.mean([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])
-            chi2_err = np.std([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])/np.sqrt(nreal)
-            training_set[ii] = np.hstack((res_param['hod_fit_param'].tolist(),chi2,chi2_err))
+    #         chi2 = np.mean([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])
+    #         chi2_err = np.std([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])/np.sqrt(nreal)
+    #         training_set[ii] = np.hstack((res_param['hod_fit_param'].tolist(),chi2,chi2_err))
 
-        training_set.dtype=[(name, dt) for name, dt in zip(name_arr, ['float64']*len(name_arr))]
-        return training_set
+    #     training_set.dtype=[(name, dt) for name, dt in zip(name_arr, ['float64']*len(name_arr))]
+    #     return training_set
     
         
-    def run_gp_mcmc(self, training_set, niter, logchi2=True,
-                        nb_points=1, remove_edges=0.9,
-                        random_state=None, verbose=True):
+    # def run_gp_mcmc(self, training_set, niter, logchi2=True,
+    #                     nb_points=1, remove_edges=0.9,
+    #                     random_state=None, verbose=True):
         
-        """
-        Performs Gaussian Process Regression (GPR) on a training set, runs MCMC sampling over 
-        the GPR-predicted posterior, and returns the next suggested parameter point(s) for exploration.
+    #     """
+    #     Performs Gaussian Process Regression (GPR) on a training set, runs MCMC sampling over 
+    #     the GPR-predicted posterior, and returns the next suggested parameter point(s) for exploration.
 
-        This function enables Bayesian optimization for halo model fitting by building a GP emulator
-        on existing training data, sampling from the GP posterior using MCMC, and identifying 
-        the most promising regions in parameter space.
-        Detail of the method in arxiv:2302.07056
+    #     This function enables Bayesian optimization for halo model fitting by building a GP emulator
+    #     on existing training data, sampling from the GP posterior using MCMC, and identifying 
+    #     the most promising regions in parameter space.
+    #     Detail of the method in arxiv:2302.07056
 
-        Parameters
-        ----------
-        training_set : structured array
-            Training data containing parameters and corresponding chi² values (and uncertainties).
+    #     Parameters
+    #     ----------
+    #     training_set : structured array
+    #         Training data containing parameters and corresponding chi² values (and uncertainties).
 
-        niter : int
-            Current iteration index (used for file naming and logging).
+    #     niter : int
+    #         Current iteration index (used for file naming and logging).
 
-        logchi2 : bool, optional
-            If True, the GP models log(chi²). Default is True.
+    #     logchi2 : bool, optional
+    #         If True, the GP models log(chi²). Default is True.
 
-        nb_points : int, optional
-            Number of new points to return from the GP+MCMC sampling. Default is 1.
+    #     nb_points : int, optional
+    #         Number of new points to return from the GP+MCMC sampling. Default is 1.
 
-        remove_edges : float, optional
-            Factor to shrink prior boundaries when enforcing parameter limits. Values egal to 1 
-            keep the prior boundaries. Default is 0.9.
+    #     remove_edges : float, optional
+    #         Factor to shrink prior boundaries when enforcing parameter limits. Values egal to 1 
+    #         keep the prior boundaries. Default is 0.9.
 
-        random_state : int or None, optional
-            Seed for reproducibility. Default is None.
+    #     random_state : int or None, optional
+    #         Seed for reproducibility. Default is None.
 
-        verbose : bool, optional
-            If True, print progress and diagnostics. Default is True.
+    #     verbose : bool, optional
+    #         If True, print progress and diagnostics. Default is True.
 
-        Returns
-        -------
-        new_points : ndarray
-            Array of shape (nb_points, n_parameters) with newly suggested parameter values.
+    #     Returns
+    #     -------
+    #     new_points : ndarray
+    #         Array of shape (nb_points, n_parameters) with newly suggested parameter values.
         
 
-        Notes
-        -----
-        - Trains a GP model using scikit-learn's `GaussianProcessRegressor`.
-        - Runs MCMC sampling using `emcee` or `zeus`. Default sampler is emcee.
-        - Logs GPR and MCMC diagnostics to `output_GP_*.txt`.
-        - Saves the full sampled chain with GP predictions to `chains/chain_*.txt`.
-        - The GP kernel is configured based on `self.args['fit_param']['kernel_gp']`. Default kernel is Matern 5/2.
-        - Trained GP model and MCMC output are saved for post-analysis and reproducibility.
-        - During MCMC, parameter boundaries are enforced via a likelihood mask.
-        - GPR score, prediction at the prior mean, and best predicted chi² are logged.
+    #     Notes
+    #     -----
+    #     - Trains a GP model using scikit-learn's `GaussianProcessRegressor`.
+    #     - Runs MCMC sampling using `emcee` or `zeus`. Default sampler is emcee.
+    #     - Logs GPR and MCMC diagnostics to `output_GP_*.txt`.
+    #     - Saves the full sampled chain with GP predictions to `chains/chain_*.txt`.
+    #     - The GP kernel is configured based on `self.args['fit_param']['kernel_gp']`. Default kernel is Matern 5/2.
+    #     - Trained GP model and MCMC output are saved for post-analysis and reproducibility.
+    #     - During MCMC, parameter boundaries are enforced via a likelihood mask.
+    #     - GPR score, prediction at the prior mean, and best predicted chi² are logged.
 
-        Raises
-        ------
-        ValueError
-            If an unsupported GP kernel or sampler is specified.
+    #     Raises
+    #     ------
+    #     ValueError
+    #         If an unsupported GP kernel or sampler is specified.
 
-        Example
-        -------
-        >>> new_pts = model.run_gp_mcmc(training_data, niter=5, nb_points=3, logchi2=True)
+    #     Example
+    #     -------
+    #     >>> new_pts = model.run_gp_mcmc(training_data, niter=5, nb_points=3, logchi2=True)
 
-        """
+    #     """
 
-        priors = self.args['fit_param']['priors']
-        priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
-        nvar = len(priors_array)
-        name_param = training_set.dtype.names[:-2]
-        ranges = np.hstack((priors_array, np.mean(priors_array, axis=1).reshape(nvar,-1), np.diff(priors_array, axis=1)))
+    #     priors = self.args['fit_param']['priors']
+    #     priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
+    #     nvar = len(priors_array)
+    #     name_param = training_set.dtype.names[:-2]
+    #     ranges = np.hstack((priors_array, np.mean(priors_array, axis=1).reshape(nvar,-1), np.diff(priors_array, axis=1)))
 
-        dir_output_file = self.args['fit_param']['dir_output_fit']
-        fit_name = self.args['fit_param']['fit_name']
+    #     dir_output_file = self.args['fit_param']['dir_output_fit']
+    #     fit_name = self.args['fit_param']['fit_name']
 
-        arr_training = np.concatenate(training_set.tolist(), axis=0).T
+    #     arr_training = np.concatenate(training_set.tolist(), axis=0).T
         
-        os.makedirs(dir_output_file, exist_ok=True)
-        if logchi2:
-            X_train, Y_train, Y_err = arr_training[:nvar].T, np.log(arr_training[-2]), arr_training[-1]/arr_training[-2]  
-        else:
-            X_train, Y_train, Y_err = arr_training[:nvar].T, arr_training[-2], arr_training[-1]
+    #     os.makedirs(dir_output_file, exist_ok=True)
+    #     if logchi2:
+    #         X_train, Y_train, Y_err = arr_training[:nvar].T, np.log(arr_training[-2]), arr_training[-1]/arr_training[-2]  
+    #     else:
+    #         X_train, Y_train, Y_err = arr_training[:nvar].T, arr_training[-2], arr_training[-1]
 
-        length_scale = np.ones(nvar)
-        if self.args['fit_param']['length_scale_bounds'] == "fix":
-            length_scale = length_scale
+    #     length_scale = np.ones(nvar)
+    #     if self.args['fit_param']['length_scale_bounds'] == "fix":
+    #         length_scale = length_scale
 
-        if  self.args['fit_param']['kernel_gp'] == 'RBF':
-            kernel = 1.0 * skg.kernels.RBF(length_scale=length_scale,
-                                            length_scale_bounds=self.args['fit_param']['length_scale_bounds'])
-        elif self.args['fit_param']['kernel_gp'] == 'Matern_52':
-            kernel = 1.0 * skg.kernels.Matern(length_scale=length_scale,
-                                                length_scale_bounds=self.args['fit_param']['length_scale_bounds'], nu=5/2)
+    #     if  self.args['fit_param']['kernel_gp'] == 'RBF':
+    #         kernel = 1.0 * skg.kernels.RBF(length_scale=length_scale,
+    #                                         length_scale_bounds=self.args['fit_param']['length_scale_bounds'])
+    #     elif self.args['fit_param']['kernel_gp'] == 'Matern_52':
+    #         kernel = 1.0 * skg.kernels.Matern(length_scale=length_scale,
+    #                                             length_scale_bounds=self.args['fit_param']['length_scale_bounds'], nu=5/2)
             
-        else:
-            raise ValueError('Only RBF or Matern_52 Kernel are available not {}'.format(self.args['fit_param']['kernel_gp']))
+    #     else:
+    #         raise ValueError('Only RBF or Matern_52 Kernel are available not {}'.format(self.args['fit_param']['kernel_gp']))
             
-        if verbose:
-            print(f"Running GPR iteration {niter}...", flush=True)
-            start = time.time()
+    #     if verbose:
+    #         print(f"Running GPR iteration {niter}...", flush=True)
+    #         start = time.time()
 
-        gp = skg.GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10,
-                                            alpha=Y_err**2, random_state=random_state).fit(X_train, Y_train)
-        if verbose:
-            print(
-                f"GPR computed took {time.strftime('%H:%M:%S',time.gmtime(time.time() - start))}")
-            print('#score=', gp.score(X_train, Y_train), flush=True)
-            print("#", gp.kernel_.get_params(), flush=True)
+    #     gp = skg.GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10,
+    #                                         alpha=Y_err**2, random_state=random_state).fit(X_train, Y_train)
+    #     if verbose:
+    #         print(
+    #             f"GPR computed took {time.strftime('%H:%M:%S',time.gmtime(time.time() - start))}")
+    #         print('#score=', gp.score(X_train, Y_train), flush=True)
+    #         print("#", gp.kernel_.get_params(), flush=True)
 
-        def likelihood(x):
-            if logchi2:
-                L = -np.exp(gp.predict(x.reshape(-1, nvar)))/2  
-            else:
-                L = -gp.predict(x.reshape(-1, nvar))/2
-            # print(L,x)
-            cond = np.abs(x-ranges[:, 2]) < (ranges[:, 3]/2)*remove_edges
-            # print(cond)
-            if cond.all():
-                return L
-            else:
-                return -np.inf
+    #     def likelihood(x):
+    #         if logchi2:
+    #             L = -np.exp(gp.predict(x.reshape(-1, nvar)))/2  
+    #         else:
+    #             L = -gp.predict(x.reshape(-1, nvar))/2
+    #         # print(L,x)
+    #         cond = np.abs(x-ranges[:, 2]) < (ranges[:, 3]/2)*remove_edges
+    #         # print(cond)
+    #         if cond.all():
+    #             return L
+    #         else:
+    #             return -np.inf
 
-        p0 = np.random.uniform(0, 1, (self.args['fit_param']['nwalkers'], nvar))
-        for k in range(nvar):
-            p0[:, k] = (p0[:, k]-0.5)*ranges[k, 3] * 0.8 + ranges[k, 2]  # 0.8 edges
+    #     p0 = np.random.uniform(0, 1, (self.args['fit_param']['nwalkers'], nvar))
+    #     for k in range(nvar):
+    #         p0[:, k] = (p0[:, k]-0.5)*ranges[k, 3] * 0.8 + ranges[k, 2]  # 0.8 edges
         
-        if verbose:
-            print(f"Run MCMC for iteration {niter}...", flush=True)
-            start = time.time()
-        if self.args['fit_param']['sampler'] == "zeus":
-            sampler_mcmc = zeus.EnsembleSampler(
-                self.args['fit_param']['nwalkers'], nvar, likelihood)  # , args=[nvar])
-            sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])  # per walker
-            chain = sampler_mcmc.get_chain(flat=True)
-        elif self.args['fit_param']['sampler'] == "emcee":
-            sampler_mcmc = emcee.EnsembleSampler(
-                self.args['fit_param']['nwalkers'], nvar, likelihood)  # , args=[nvar])
-            sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])  # per walker
-            '''with Pool() as pool:
-                sampler_mcmc = emcee.EnsembleSampler(self.args['fit_param']['nwalkers'], nvar, likelihood, pool=pool)
-                sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])'''
-            chain = sampler_mcmc.flatchain
-        else: 
-            raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
+    #     if verbose:
+    #         print(f"Run MCMC for iteration {niter}...", flush=True)
+    #         start = time.time()
+    #     if self.args['fit_param']['sampler'] == "zeus":
+    #         sampler_mcmc = zeus.EnsembleSampler(
+    #             self.args['fit_param']['nwalkers'], nvar, likelihood)  # , args=[nvar])
+    #         sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])  # per walker
+    #         chain = sampler_mcmc.get_chain(flat=True)
+    #     elif self.args['fit_param']['sampler'] == "emcee":
+    #         sampler_mcmc = emcee.EnsembleSampler(
+    #             self.args['fit_param']['nwalkers'], nvar, likelihood)  # , args=[nvar])
+    #         sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])  # per walker
+    #         '''with Pool() as pool:
+    #             sampler_mcmc = emcee.EnsembleSampler(self.args['fit_param']['nwalkers'], nvar, likelihood, pool=pool)
+    #             sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])'''
+    #         chain = sampler_mcmc.flatchain
+    #     else: 
+    #         raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
         
-        trimmed = chain[int(len(chain)/4):]
-        if verbose:
-            print(f'MCMC computed took {time.strftime("%H:%M:%S",time.gmtime(time.time() - start))}', flush=True)
+    #     trimmed = chain[int(len(chain)/4):]
+    #     if verbose:
+    #         print(f'MCMC computed took {time.strftime("%H:%M:%S",time.gmtime(time.time() - start))}', flush=True)
         
-        new_points = trimmed[:, :nvar][np.random.randint(len(trimmed), size=nb_points)]
+    #     new_points = trimmed[:, :nvar][np.random.randint(len(trimmed), size=nb_points)]
 
 
-        Gp_pred = gp.predict(trimmed, return_std=True)
-        ind = np.where(Gp_pred[0] == Gp_pred[0].min())[0][0]
-        pred = gp.predict(ranges[:, 2].reshape(-1, nvar),
-                            return_std=True)  # Best fit pred
-        if verbose:
-            print("#Pred at fix point (mean values of each params):",
-                    ranges[:, 2], pred, flush=True)
-            print("#best GP prediction:",
-                    trimmed[ind], Gp_pred[0][ind], Gp_pred[1][ind], flush=True)
+    #     Gp_pred = gp.predict(trimmed, return_std=True)
+    #     ind = np.where(Gp_pred[0] == Gp_pred[0].min())[0][0]
+    #     pred = gp.predict(ranges[:, 2].reshape(-1, nvar),
+    #                         return_std=True)  # Best fit pred
+    #     if verbose:
+    #         print("#Pred at fix point (mean values of each params):",
+    #                 ranges[:, 2], pred, flush=True)
+    #         print("#best GP prediction:",
+    #                 trimmed[ind], Gp_pred[0][ind], Gp_pred[1][ind], flush=True)
 
-        multi_GR = multivariate_gelman_rubin(sampler_mcmc.get_chain().transpose([1, 0, 2])[:, 2500:, :])
-        if verbose:
-            print("#multivariate_gelman_rubin: ", multi_GR, flush=True)
+    #     multi_GR = multivariate_gelman_rubin(sampler_mcmc.get_chain().transpose([1, 0, 2])[:, 2500:, :])
+    #     if verbose:
+    #         print("#multivariate_gelman_rubin: ", multi_GR, flush=True)
 
-        res = np.hstack((trimmed, np.exp(Gp_pred[0]).reshape(len(Gp_pred[0]),1) if logchi2 else Gp_pred[0].reshape(len(Gp_pred[0]),1), (np.exp(Gp_pred[0])*Gp_pred[1]).reshape(len(Gp_pred[0]),1) if logchi2 else Gp_pred[1].reshape(len(Gp_pred[0]),1)))
+    #     res = np.hstack((trimmed, np.exp(Gp_pred[0]).reshape(len(Gp_pred[0]),1) if logchi2 else Gp_pred[0].reshape(len(Gp_pred[0]),1), (np.exp(Gp_pred[0])*Gp_pred[1]).reshape(len(Gp_pred[0]),1) if logchi2 else Gp_pred[1].reshape(len(Gp_pred[0]),1)))
         
-        os.makedirs(os.path.join(dir_output_file, 'chains'), exist_ok=True)
-        np.savetxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{niter}.txt'), res)
+    #     os.makedirs(os.path.join(dir_output_file, 'chains'), exist_ok=True)
+    #     np.savetxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{niter}.txt'), res)
 
-        if niter == 0:
-            list_lenghtscale = []
-            for i in range(nvar):
-                list_lenghtscale.append("ls%d" % i)
+    #     if niter == 0:
+    #         list_lenghtscale = []
+    #         for i in range(nvar):
+    #             list_lenghtscale.append("ls%d" % i)
             
-            f = open(os.path.join(dir_output_file,
-                                    f'output_GP_{nvar}p_{fit_name}.txt'), "w")
+    #         f = open(os.path.join(dir_output_file,
+    #                                 f'output_GP_{nvar}p_{fit_name}.txt'), "w")
             
-            f.write("N_iter GPscore GP_predfix Er_predfix BestPred Er_BestPred multivariate_gelman_rubin "
-                    + ' '.join(map(str, name_param))+" "
-                    + ' '.join(map(str, list_lenghtscale))+"\n")
-            f.write(str(niter)+" "+str(gp.score(X_train, Y_train))+" "
-                    + str(pred[0][0])+" "+str(pred[1][0])+" "
-                    + str(Gp_pred[0][ind])+" "
-                    + str(Gp_pred[1][ind])+" " + str(multi_GR)+" "
-                    + ' '.join(map(str, trimmed[ind]))+" "
-                    + ' '.join(map(str, gp.kernel_.get_params(False)["k2"].length_scale))+"\n")
-            f.close()
-        else:
-            f = open(os.path.join(dir_output_file,
-                                    f'output_GP_{nvar}p_{fit_name}.txt'), "a")
+    #         f.write("N_iter GPscore GP_predfix Er_predfix BestPred Er_BestPred multivariate_gelman_rubin "
+    #                 + ' '.join(map(str, name_param))+" "
+    #                 + ' '.join(map(str, list_lenghtscale))+"\n")
+    #         f.write(str(niter)+" "+str(gp.score(X_train, Y_train))+" "
+    #                 + str(pred[0][0])+" "+str(pred[1][0])+" "
+    #                 + str(Gp_pred[0][ind])+" "
+    #                 + str(Gp_pred[1][ind])+" " + str(multi_GR)+" "
+    #                 + ' '.join(map(str, trimmed[ind]))+" "
+    #                 + ' '.join(map(str, gp.kernel_.get_params(False)["k2"].length_scale))+"\n")
+    #         f.close()
+    #     else:
+    #         f = open(os.path.join(dir_output_file,
+    #                                 f'output_GP_{nvar}p_{fit_name}.txt'), "a")
             
-            f.write(str(niter)+" "+str(gp.score(X_train, Y_train))+" "
-                    + str(pred[0][0])+" "+str(pred[1][0])+" "
-                    + str(Gp_pred[0][ind])+" "
-                    + str(Gp_pred[1][ind])+" " + str(multi_GR)+" "
-                    + ' '.join(map(str, trimmed[ind]))+" "
-                    + ' '.join(map(str, gp.kernel_.get_params(False)["k2"].length_scale))+"\n")
-            f.close()
+    #         f.write(str(niter)+" "+str(gp.score(X_train, Y_train))+" "
+    #                 + str(pred[0][0])+" "+str(pred[1][0])+" "
+    #                 + str(Gp_pred[0][ind])+" "
+    #                 + str(Gp_pred[1][ind])+" " + str(multi_GR)+" "
+    #                 + ' '.join(map(str, trimmed[ind]))+" "
+    #                 + ' '.join(map(str, gp.kernel_.get_params(False)["k2"].length_scale))+"\n")
+    #         f.close()
 
-        return new_points
+    #     return new_points
     
 
-    def run_fit(self, data_arr, inv_Cov2, training_point,
-                resume_fit=False, verbose=True):
+    # def run_fit(self, data_arr, inv_Cov2, training_point,
+    #             resume_fit=False, verbose=True):
         
+    #     """
+    #     Execute the Gaussian Process MCMC fitting routine for HOD parameter inference.
+
+    #     This method performs iterative Gaussian Process-driven MCMC sampling to explore the
+    #     Halo Occupation Distribution (HOD) parameter space, fitting mock catalog outputs to observed
+    #     clustering statistics such as the 2-point correlation function.
+
+    #     For methodological details, see: https://arxiv.org/abs/2302.07056
+
+    #     Parameters
+    #     ----------
+    #     data_arr : array_like
+    #         Observed data vector used in chi-squared comparisons (e.g., wp, xi).
+
+    #     inv_Cov2 : ndarray
+    #         Inverse of the covariance matrix used in the chi-squared computation.
+    #         Must match the dimensionality of `data_arr`.
+
+    #     training_point : structured ndarray
+    #         Existing training sample including HOD parameters and chi-squared values,
+    #         used to condition the GP model.
+
+    #     resume_fit : bool, optional
+    #         If True, resumes from a previously saved fit by loading logs and chains.
+    #         Default is False.
+
+    #     verbose : bool, optional
+    #         If True, displays detailed iteration-level logs. Default is True.
+
+    #     Returns
+    #     -------
+    #     None
+    #         All fitting results are saved to disk. No return value.
+
+    #     Notes
+    #     -----
+    #     - Creates and updates files under `dir_output_fit`, including:
+    #         - `*.txt` logs of sampled parameter values and chi² results
+    #         - Chains of samples in `chains/` directory
+    #         - Diagnostic metrics such as KL divergence
+    #     - Calls the following key internal methods:
+    #         - `make_mock_cat()`: to generate mock catalogs
+    #         - `get_cross_wp()`, `get_cross2PCF()`: for 2PCF computation
+    #         - `compute_chi2()`: to evaluate model-data fit
+    #         - `run_gp_mcmc()`: for parameter sampling via GP-MCMC
+    #     - Convergence is optionally monitored via KL divergence, but the stopping criterion is commented out.
+    #     - Handles both projected (wp) and full-space (xi) correlation functions depending on `fit_type`.
+    #     - Assumes the availability of `emcee` or `zeus` samplers for MCMC.
+    #     - Results are appended to an evolving training set across iterations.
+
+    #     Example
+    #     -------
+    #     >>> model.run_fit(data_arr, inv_cov2, training_set, resume_fit=True)
+    #     """
+    #     import pandas as pd
+    #     from .fits_functions_old import compute_chi2
+    #     if self.args['fit_param']['sampler'] == "zeus":
+    #         import zeus
+    #     elif self.args['fit_param']['sampler'] == "emcee":
+    #         import emcee 
+    #     else: 
+    #         raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
+        
+    #     import sklearn.gaussian_process as skg
+
+    #     nmock = self.args['fit_param']['nb_real']
+    #     dir_output_file= self.args['fit_param']['dir_output_fit']
+    #     fit_name = self.args['fit_param']['fit_name']
+    #     priors = self.args['fit_param']['priors']
+    #     priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
+    #     nvar = len(priors_array)  
+    #     arr_dtype = training_point.dtype
+
+    #     iter = 0
+    #     if resume_fit & os.path.exists(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt")):
+    #         output_point = pd.read_csv(os.path.join(
+    #             dir_output_file, f"{nvar}p_{fit_name}.txt"), sep=" ", comment="#")
+            
+    #         training_point = np.concatenate((np.array(training_point.tolist()).reshape(len(training_point), -1), output_point[list(training_point.dtype.names)].values))
+    #         training_point.dtype = arr_dtype
+
+    #         iter = output_point["N_iter"].loc[len(output_point)-1]+1
+    #         p = np.loadtxt(os.path.join(dir_output_file, 'chains',
+    #                                     f'chain_{nvar}p_{fit_name}_{iter-1}.txt'))[:, :nvar]
+    #         D_kl = 10
+    #         if verbose:
+    #             print("#resume fit at iteration ", iter, "len param point ", len(training_point), flush=True)
+                
+    #     print("Run gpmcmc...", flush=True)
+    #     for j in range(iter, self.args['fit_param']['n_calls']):
+    #         if verbose:
+    #             print(f'Iteration {j}...', flush=True)
+    #             time_compute_mcmc = time.time()
+
+    #         new_params = self.run_gp_mcmc(training_point, j, logchi2=self.args['fit_param']['logchi2'],
+    #                     nb_points=1, remove_edges=0.9,
+    #                     random_state=None, verbose=True)
+
+
+    #         if verbose:
+    #             print("#time_compute_gpmcmc =", time.time() - time_compute_mcmc, flush=True)
+
+    #         ### Test de Kullback Leibler
+    #         D_kl1 = 10
+    #         if j > 0:
+    #             if j == 1:
+    #                 q = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{0}.txt'))[:, :nvar]
+    #                 p = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{1}.txt'))[:, :nvar]
+    #                 D_kl = np.array([])
+    #             else:
+    #                 q = p
+    #                 p = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{j}.txt'))[:, :nvar]
+    #             n_dim = nvar
+    #             cov_q = np.cov(q.T)
+    #             cov_p = np.cov(p.T)
+    #             inv_cov_q = np.linalg.inv(cov_q)
+    #             mean_q = np.mean(q, axis=0)
+    #             mean_p = np.mean(p, axis=0)
+    #             D_kl1 = 0.5 * (np.log10(np.linalg.det(cov_q) / np.linalg.det(cov_p)) - n_dim + np.trace(np.matmul(
+    #                 inv_cov_q, cov_p)) + np.matmul((mean_q - mean_p).T, np.matmul(inv_cov_q, (mean_q - mean_p))))
+    #             D_kl = np.append(D_kl1, D_kl)
+    #             # print (j, D_kl)
+    #             # if len(D_kl) > 5:
+    #             #     if (D_kl[-5:] < 0.1).all():
+    #             #         sys.exit("Procedure converged at iteration %d!" % j)
+
+    #         #Compute chi2
+    #         new_train_point = np.zeros((len(new_params), nvar+2))
+
+    #         new_params.dtype = [(name, dt) for name, dt in zip(training_point.dtype.names, ['float64']*nvar)]
+
+    #         if verbose:
+    #             print("#run old parralel chi2 points", new_params, len(new_params))
+
+    #         if j == 0:
+    #             f = open(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt"), "w")
+    #             f.write("N_iter "+' '.join(map(str, training_point.dtype.names)) + " D_kl1\n")
+    #             f.close()
+
+    #         for i, new_p in enumerate(new_params):
+    #             for tr in self._tracers():
+    #                 for var in self.args['fit_param']['priors'][tr].keys():
+    #                     self.args[tr][var] = new_p['{}_{}'.format(var, tr)][0]
+    #                 if verbose:
+    #                     self.logger.debug(f"{tr} {[(var, self.args[tr][var]) for var in self.args['fit_param']['priors'][tr].keys()]}")
+                
+    #             time_function_compute_parralel_chi2 = time.time()
+    #             print(f'Run {nmock} galaxy catalog for iteration {j}', flush=True)
+    #             cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmock)]
+
+    #             print(f'Time to compute {nmock} cats : {time.strftime("%H:%M:%S",time.gmtime(time.time() - time_function_compute_parralel_chi2))}', flush=True)
+
+
+    #             time_function_compute_parralel_chi2 = time.time()
+    #             print('Run 2PCF...', flush=True)
+    #             result = {}
+    #             if 'wp' in self.args['fit_param']["fit_type"]:
+    #                 result['wp']= [self.get_cross_wp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
+    #             if 'xi' in self.args['fit_param']["fit_type"]:
+    #                 result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
+    #             if verbose:
+    #                 print("#Time to compute 2PCFs =", time.strftime("%H:%M:%S", time.gmtime(time.time()-time_function_compute_parralel_chi2)), flush=True)
+                    
+
+    #             stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+    #             res = {}
+    #             comb_trs = result[stats[0]][0].keys() 
+    #             res = [np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmock)]
+    #             #res_std = np.std(res, axis=0)            
+    #             #iCov2 = inv_Cov2*res_std*res_std[:, None]
+                
+
+    #             chi2 = np.mean([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])
+    #             chi2_err = np.std([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])/np.sqrt(nmock)
+
+    #             new_train_point[i] = np.hstack((new_params[i].tolist()[0], chi2, chi2_err))
+    #             if verbose:
+    #                 print('#### NEW ADDED POINT:', ' '.join(map(str, new_params[i].tolist()[0])), chi2, chi2_err, D_kl1, flush=True)
+
+    #             f = open(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt"), "a")
+    #             f.write(str(str(j)+" "+' '.join(map(str, new_params[i].tolist()[0])))+" "+str(chi2)+" "+str(chi2_err)+" "+str(D_kl1)+"\n")
+    #             f.close()
+
+    #         new_train_point.dtype = arr_dtype
+    #         training_point = np.vstack((training_point, new_train_point))
+    #         if verbose:
+    #             print(f'Iteration {j} done, took {time.strftime("%H:%M:%S",time.gmtime(time.time()-time_compute_mcmc))}', flush=True)
+
+    
+    # def initialize_fit(self, data_vec=None, inv_cov2=None, diag_err=None, add_poisson_noise=True, nmocks_std=20, **kwargs):
+
+    #     from HODDIES.fits_functions_old import load_desi_data, get_corr_small_boxes
+    #     from pycorr import utils
+
+    #     if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
+    #         raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
+
+    #     # self.args['fit_param']['pimax'] = self.args['2PCF_settings']['pimax']
+    #     # self.args['fit_param']['multipole_index'] = self.args['2PCF_settings']['multipole_index']
+    #     # self.args['fit_param']['z_simu'] = self.z_simu
+    #     # self.args['fit_param'].update(kwargs)
+        
+    #     if self.args['fit_param']['use_desi_data']:
+    #         data_dic = load_desi_data(self.args['fit_param'], self._tracers(), load_cov_jk=self.args['fit_param']['load_cov_jk'])
+
+    #         mm = [list(data_dic.keys())[i].endswith(tuple(self._tracers())) for i in range(len(data_dic.keys()))]
+    #         comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
+    #         data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+    #         diag_err = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+
+    #         if 'wp' in  data_dic['edges'].keys():
+    #             self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
+    #         if 'xi' in  data_dic['edges'].keys():
+    #             self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
+    #         if self.args['fit_param']['use_vsmear']:
+    #             for tr in self._tracers():
+    #                 print('Apply vsmear for {} at z{}-{}'.format(tr, self.args['fit_param']['zmin'], self.args['fit_param']['zmax']), flush=True)
+    #                 self.args[tr]['vsmear'] = [self.args['fit_param']['zmin'], self.args['fit_param']['zmax']]
+
+    #         if add_poisson_noise:
+    #             print('Compute poisson noise...', flush=True)
+
+    #             cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
+
+    #             result = {}
+    #             if 'wp' in self.args['fit_param']["fit_type"]:
+    #                 result['wp']= [self.get_cross_wp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+    #             if 'xi' in self.args['fit_param']["fit_type"]:
+    #                 result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+
+    #             stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+
+    #             comb_trs = result[stats[0]][0].keys() 
+    #             std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
+    #             print('Done', flush=True)
+    #         else: 
+    #             std_poisson = np.zeros_like(diag_err)
+
+    #         if self.args['fit_param']['load_cov_jk']:
+    #             std_2 = np.sqrt(np.diag(data_dic['cov_jk']) + std_poisson**2)
+    #             corr_jk = utils.cov_to_corrcoef(data_dic['cov_jk'])
+    #             inv_cov2 = np.linalg.inv(corr_jk*std_2*std_2[:,None])
+    #         else:
+    #             corr = get_corr_small_boxes(self.args['fit_param'], self._tracers())
+    #             sig_all = np.sqrt(diag_err**2 + std_poisson**2)
+    #             cov = corr*sig_all*sig_all[:,None]
+    #             hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
+    #             inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+
+    #             if np.isnan(diag_err).any():
+    #                 mask = np.isnan(cov)
+    #                 cov = np.nan_to_num(cov, nan=1)
+    #                 inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+    #                 for i, mm in enumerate(mask):
+    #                     inv_cov2[i, mm] = 0
+    #                 data_vec = np.nan_to_num(data_vec, nan=0)
+    #                 diag_err = np.nan_to_num(diag_err, nan=0)
+    #         self.data = data_vec
+    #         self.inv_cov2 = inv_cov2
+    #         self.sig = diag_err
+    #         self.sig_model = std_poisson
+    #         self.name_params, self.priors = self.get_param_and_prior()
+    #         return 0
+
+    #     elif add_poisson_noise:
+    #         print('Compute poisson noise...', flush=True)
+
+    #         cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
+
+    #         result = {}
+    #         if 'wp' in self.args['fit_param']["fit_type"]:
+    #             result['wp']= [self.get_cross_wp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+    #         if 'xi' in self.args['fit_param']["fit_type"]:
+    #             result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+
+    #         stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+
+    #         comb_trs = result[stats[0]][0].keys() 
+    #         std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
+            
+    #         print('Done', flush=True)
+            
+    #     else:
+    #         std_poisson = 0
+
+    #     if inv_cov2 is not None:
+    #         mask = inv_cov2.diagonal() == 0
+    #         if mask.sum() != 0:
+    #             idx = mask.sum()
+    #             cov_re = np.linalg.inv(inv_cov2[idx:,idx:])
+    #             sig2 = np.zeros_like(inv_cov2.diagonal())
+    #             sig2[idx:] = cov_re.diagonal()
+    #             diag_err = np.sqrt(sig2)
+    #             sig_all = np.sqrt(diag_err**2 + std_poisson**2)
+    #             # Manque add poisson noise to cov +hartlap
+    #         else:
+    #             sig_all = np.sqrt((np.linalg.inv(inv_cov2).diagonal()))
+
+    #         if data_vec.size != inv_cov2.diagonal().size:
+    #             raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
+        
+    #     else:
+    #         sig_all = np.sqrt(diag_err**2 + std_poisson**2)
+    #         if data_vec.size != sig_all.size:
+    #             raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, sig_all.size))
+
+    #     self.data = data_vec
+    #     self.inv_cov2 = inv_cov2
+    #     self.sig = sig_all
+    #     self.sig_model = std_poisson
+    #     self.name_params, self.priors = self.get_param_and_prior()
+
+    def _get_fit_model_name(self):
+        fit_model_name = []
+
+        for tr in self._tracer_to_fit:
+            ext = '+conf' if self.args[tr]['conformity_bias'] else ''
+            ext += '+exp' if ('exp_frac' in self.args['fit_param']['priors'][tr].keys()) else ''
+            ext += '+' + '+'.join([f'ab_{var}' for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys()]) if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys() else ''
+            ext += '+nu' if ('nu' in self.args['fit_param']['priors'][tr].keys()) else ''
+            ext += '+vsmear' if ('vsmear' in self.args['fit_param']['priors'][tr].keys()) else ''
+            ext += '_with_zerr' if  (self.args[tr]['vsmear'] != 0)  else ''
+            fit_model_name += ['{}_{}_{}p'.format(tr, self.args[tr]['HOD_model'] + ext, len(self.name_params))]
+        return '_'.join(fit_model_name)
+
+    def _initialize_fit_params(self, **kwargs):
         """
-        Execute the Gaussian Process MCMC fitting routine for HOD parameter inference.
-
-        This method performs iterative Gaussian Process-driven MCMC sampling to explore the
-        Halo Occupation Distribution (HOD) parameter space, fitting mock catalog outputs to observed
-        clustering statistics such as the 2-point correlation function.
-
-        For methodological details, see: https://arxiv.org/abs/2302.07056
+        Initialize the fitting parameters.
 
         Parameters
         ----------
-        data_arr : array_like
-            Observed data vector used in chi-squared comparisons (e.g., wp, xi).
-
-        inv_Cov2 : ndarray
-            Inverse of the covariance matrix used in the chi-squared computation.
-            Must match the dimensionality of `data_arr`.
-
-        training_point : structured ndarray
-            Existing training sample including HOD parameters and chi-squared values,
-            used to condition the GP model.
-
-        resume_fit : bool, optional
-            If True, resumes from a previously saved fit by loading logs and chains.
-            Default is False.
-
-        verbose : bool, optional
-            If True, displays detailed iteration-level logs. Default is True.
+        **kwargs
+            Additional keyword arguments of the fitting parameters to update the default settings.
 
         Returns
         -------
         None
-            All fitting results are saved to disk. No return value.
-
-        Notes
-        -----
-        - Creates and updates files under `dir_output_fit`, including:
-            - `*.txt` logs of sampled parameter values and chi² results
-            - Chains of samples in `chains/` directory
-            - Diagnostic metrics such as KL divergence
-        - Calls the following key internal methods:
-            - `make_mock_cat()`: to generate mock catalogs
-            - `get_cross_wp()`, `get_cross2PCF()`: for 2PCF computation
-            - `compute_chi2()`: to evaluate model-data fit
-            - `run_gp_mcmc()`: for parameter sampling via GP-MCMC
-        - Convergence is optionally monitored via KL divergence, but the stopping criterion is commented out.
-        - Handles both projected (wp) and full-space (xi) correlation functions depending on `fit_type`.
-        - Assumes the availability of `emcee` or `zeus` samplers for MCMC.
-        - Results are appended to an evolving training set across iterations.
-
-        Example
-        -------
-        >>> model.run_fit(data_arr, inv_cov2, training_set, resume_fit=True)
         """
-        import pandas as pd
-        from .fits_functions_old import compute_chi2
-        if self.args['fit_param']['sampler'] == "zeus":
-            import zeus
-        elif self.args['fit_param']['sampler'] == "emcee":
-            import emcee 
-        else: 
-            raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
-        
-        import sklearn.gaussian_process as skg
-
-        nmock = self.args['fit_param']['nb_real']
-        dir_output_file= self.args['fit_param']['dir_output_fit']
-        fit_name = self.args['fit_param']['fit_name']
-        priors = self.args['fit_param']['priors']
-        priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
-        nvar = len(priors_array)  
-        arr_dtype = training_point.dtype
-
-        iter = 0
-        if resume_fit & os.path.exists(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt")):
-            output_point = pd.read_csv(os.path.join(
-                dir_output_file, f"{nvar}p_{fit_name}.txt"), sep=" ", comment="#")
-            
-            training_point = np.concatenate((np.array(training_point.tolist()).reshape(len(training_point), -1), output_point[list(training_point.dtype.names)].values))
-            training_point.dtype = arr_dtype
-
-            iter = output_point["N_iter"].loc[len(output_point)-1]+1
-            p = np.loadtxt(os.path.join(dir_output_file, 'chains',
-                                        f'chain_{nvar}p_{fit_name}_{iter-1}.txt'))[:, :nvar]
-            D_kl = 10
-            if verbose:
-                print("#resume fit at iteration ", iter, "len param point ", len(training_point), flush=True)
-                
-        print("Run gpmcmc...", flush=True)
-        for j in range(iter, self.args['fit_param']['n_calls']):
-            if verbose:
-                print(f'Iteration {j}...', flush=True)
-                time_compute_mcmc = time.time()
-
-            new_params = self.run_gp_mcmc(training_point, j, logchi2=self.args['fit_param']['logchi2'],
-                        nb_points=1, remove_edges=0.9,
-                        random_state=None, verbose=True)
-
-
-            if verbose:
-                print("#time_compute_gpmcmc =", time.time() - time_compute_mcmc, flush=True)
-
-            ### Test de Kullback Leibler
-            D_kl1 = 10
-            if j > 0:
-                if j == 1:
-                    q = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{0}.txt'))[:, :nvar]
-                    p = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{1}.txt'))[:, :nvar]
-                    D_kl = np.array([])
-                else:
-                    q = p
-                    p = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{j}.txt'))[:, :nvar]
-                n_dim = nvar
-                cov_q = np.cov(q.T)
-                cov_p = np.cov(p.T)
-                inv_cov_q = np.linalg.inv(cov_q)
-                mean_q = np.mean(q, axis=0)
-                mean_p = np.mean(p, axis=0)
-                D_kl1 = 0.5 * (np.log10(np.linalg.det(cov_q) / np.linalg.det(cov_p)) - n_dim + np.trace(np.matmul(
-                    inv_cov_q, cov_p)) + np.matmul((mean_q - mean_p).T, np.matmul(inv_cov_q, (mean_q - mean_p))))
-                D_kl = np.append(D_kl1, D_kl)
-                # print (j, D_kl)
-                # if len(D_kl) > 5:
-                #     if (D_kl[-5:] < 0.1).all():
-                #         sys.exit("Procedure converged at iteration %d!" % j)
-
-            #Compute chi2
-            new_train_point = np.zeros((len(new_params), nvar+2))
-
-            new_params.dtype = [(name, dt) for name, dt in zip(training_point.dtype.names, ['float64']*nvar)]
-
-            if verbose:
-                print("#run old parralel chi2 points", new_params, len(new_params))
-
-            if j == 0:
-                f = open(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt"), "w")
-                f.write("N_iter "+' '.join(map(str, training_point.dtype.names)) + " D_kl1\n")
-                f.close()
-
-            for i, new_p in enumerate(new_params):
-                for tr in self._tracers():
-                    for var in self.args['fit_param']['priors'][tr].keys():
-                        self.args[tr][var] = new_p['{}_{}'.format(var, tr)][0]
-                    if verbose:
-                        self.logger.debug(f"{tr} {[(var, self.args[tr][var]) for var in self.args['fit_param']['priors'][tr].keys()]}")
-                
-                time_function_compute_parralel_chi2 = time.time()
-                print(f'Run {nmock} galaxy catalog for iteration {j}', flush=True)
-                cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmock)]
-
-                print(f'Time to compute {nmock} cats : {time.strftime("%H:%M:%S",time.gmtime(time.time() - time_function_compute_parralel_chi2))}', flush=True)
-
-
-                time_function_compute_parralel_chi2 = time.time()
-                print('Run 2PCF...', flush=True)
-                result = {}
-                if 'wp' in self.args['fit_param']["fit_type"]:
-                    result['wp']= [self.get_cross_wp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
-                if 'xi' in self.args['fit_param']["fit_type"]:
-                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
-                if verbose:
-                    print("#Time to compute 2PCFs =", time.strftime("%H:%M:%S", time.gmtime(time.time()-time_function_compute_parralel_chi2)), flush=True)
-                    
-
-                stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
-                res = {}
-                comb_trs = result[stats[0]][0].keys() 
-                res = [np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmock)]
-                #res_std = np.std(res, axis=0)            
-                #iCov2 = inv_Cov2*res_std*res_std[:, None]
-                
-
-                chi2 = np.mean([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])
-                chi2_err = np.std([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])/np.sqrt(nmock)
-
-                new_train_point[i] = np.hstack((new_params[i].tolist()[0], chi2, chi2_err))
-                if verbose:
-                    print('#### NEW ADDED POINT:', ' '.join(map(str, new_params[i].tolist()[0])), chi2, chi2_err, D_kl1, flush=True)
-
-                f = open(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt"), "a")
-                f.write(str(str(j)+" "+' '.join(map(str, new_params[i].tolist()[0])))+" "+str(chi2)+" "+str(chi2_err)+" "+str(D_kl1)+"\n")
-                f.close()
-
-            new_train_point.dtype = arr_dtype
-            training_point = np.vstack((training_point, new_train_point))
-            if verbose:
-                print(f'Iteration {j} done, took {time.strftime("%H:%M:%S",time.gmtime(time.time()-time_compute_mcmc))}', flush=True)
-
-    
-    def initialize_fit(self, data_vec=None, inv_cov2=None, diag_err=None, add_poisson_noise=True, nmocks_std=20, **kwargs):
-
-        from HODDIES.fits_functions_old import load_desi_data, get_corr_small_boxes
-        from pycorr import utils
-
-        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
-            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
-
-        # self.args['fit_param']['pimax'] = self.args['2PCF_settings']['pimax']
-        # self.args['fit_param']['multipole_index'] = self.args['2PCF_settings']['multipole_index']
-        # self.args['fit_param']['z_simu'] = self.z_simu
-        # self.args['fit_param'].update(kwargs)
-        
-        if self.args['fit_param']['use_desi_data']:
-            data_dic = load_desi_data(self.args['fit_param'], self._tracers(), load_cov_jk=self.args['fit_param']['load_cov_jk'])
-
-            mm = [list(data_dic.keys())[i].endswith(tuple(self._tracers())) for i in range(len(data_dic.keys()))]
-            comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
-            data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
-            diag_err = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
-
-            if 'wp' in  data_dic['edges'].keys():
-                self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
-            if 'xi' in  data_dic['edges'].keys():
-                self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
-            if self.args['fit_param']['use_vsmear']:
-                for tr in self._tracers():
-                    print('Apply vsmear for {} at z{}-{}'.format(tr, self.args['fit_param']['zmin'], self.args['fit_param']['zmax']), flush=True)
-                    self.args[tr]['vsmear'] = [self.args['fit_param']['zmin'], self.args['fit_param']['zmax']]
-
-            if add_poisson_noise:
-                print('Compute poisson noise...', flush=True)
-
-                cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
-
-                result = {}
-                if 'wp' in self.args['fit_param']["fit_type"]:
-                    result['wp']= [self.get_cross_wp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
-                if 'xi' in self.args['fit_param']["fit_type"]:
-                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
-
-                stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
-
-                comb_trs = result[stats[0]][0].keys() 
-                std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
-                print('Done', flush=True)
-            else: 
-                std_poisson = np.zeros_like(diag_err)
-
-            if self.args['fit_param']['load_cov_jk']:
-                std_2 = np.sqrt(np.diag(data_dic['cov_jk']) + std_poisson**2)
-                corr_jk = utils.cov_to_corrcoef(data_dic['cov_jk'])
-                inv_cov2 = np.linalg.inv(corr_jk*std_2*std_2[:,None])
-            else:
-                corr = get_corr_small_boxes(self.args['fit_param'], self._tracers())
-                sig_all = np.sqrt(diag_err**2 + std_poisson**2)
-                cov = corr*sig_all*sig_all[:,None]
-                hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
-                inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
-
-                if np.isnan(diag_err).any():
-                    mask = np.isnan(cov)
-                    cov = np.nan_to_num(cov, nan=1)
-                    inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
-                    for i, mm in enumerate(mask):
-                        inv_cov2[i, mm] = 0
-                    data_vec = np.nan_to_num(data_vec, nan=0)
-                    diag_err = np.nan_to_num(diag_err, nan=0)
-            self.data = data_vec
-            self.inv_cov2 = inv_cov2
-            self.sig = diag_err
-            self.sig_model = std_poisson
-            self.name_params, self.priors = self.get_param_and_prior()
-            return 0
-
-        elif add_poisson_noise:
-            print('Compute poisson noise...', flush=True)
-
-            cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
-
-            result = {}
-            if 'wp' in self.args['fit_param']["fit_type"]:
-                result['wp']= [self.get_cross_wp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
-            if 'xi' in self.args['fit_param']["fit_type"]:
-                result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
-
-            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
-
-            comb_trs = result[stats[0]][0].keys() 
-            std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
-            
-            print('Done', flush=True)
-            
-        else:
-            std_poisson = 0
-
-        if inv_cov2 is not None:
-            mask = inv_cov2.diagonal() == 0
-            if mask.sum() != 0:
-                idx = mask.sum()
-                cov_re = np.linalg.inv(inv_cov2[idx:,idx:])
-                sig2 = np.zeros_like(inv_cov2.diagonal())
-                sig2[idx:] = cov_re.diagonal()
-                diag_err = np.sqrt(sig2)
-                sig_all = np.sqrt(diag_err**2 + std_poisson**2)
-                # Manque add poisson noise to cov +hartlap
-            else:
-                sig_all = np.sqrt((np.linalg.inv(inv_cov2).diagonal()))
-
-            if data_vec.size != inv_cov2.diagonal().size:
-                raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
-        
-        else:
-            sig_all = np.sqrt(diag_err**2 + std_poisson**2)
-            if data_vec.size != sig_all.size:
-                raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, sig_all.size))
-
-        self.data = data_vec
-        self.inv_cov2 = inv_cov2
-        self.sig = sig_all
-        self.sig_model = std_poisson
-        self.name_params, self.priors = self.get_param_and_prior()
-
-    def _initialize_fit_params(self, fit_params):
-
         self.init_logger('Fit HOD')        
-        self._tracer_to_fit = list(fit_params['priors'].keys())
+        update_dic(self.args['fit_param'], kwargs)
+        self._tracer_to_fit = list(self.args['fit_param']['priors'].keys())
         self.name_params, self.priors = self.get_param_and_prior()
-        self._stats_to_fit = fit_params["fit_statistics"] if isinstance(fit_params["fit_statistics"], list) else [fit_params["fit_statistics"]]
+        self._stats_to_fit = self.args['fit_param']["fit_statistics"] if isinstance(self.args['fit_param']["fit_statistics"], list) else [self.args['fit_param']["fit_statistics"]]
         self._comb_tr_list = ['_'.join(comb_tr) for comb_tr in self.get_comb_tr_list(self._tracer_to_fit)]
-
+        self.fit_model_name = self._get_fit_model_name()
 
     def initialize_fit(self, data_vec, err, **kwargs):
+        """
+        Initialize the fitting process by setting up the data vector, error vector or covariance matrix, and preparing the fitting parameters.
+        Parameters
+        ----------
+        data_vec : array_like
+            The data vector.
+        err : array_like
+            The error vector or covariance matrix.
+        **kwargs
+            Additional keyword arguments.
+
+        Returns
+        -------
+        None
+        """
+
         fit_params = self.args['fit_param']
         update_dic(fit_params, kwargs)
-        self._initialize_fit_params(fit_params)
+        self._initialize_fit_params(**fit_params)
         
         hartlap_fac = fit_params.get('hartlap_factor', 0)
         self.data = np.asarray(data_vec)
@@ -2592,6 +2765,7 @@ class HOD(BaseLogger):
         if fit_params['add_poisson_noise']:
             nmocks_std = fit_params.get('neval_poisson_noise', 50)
             self.logger.info(f'Compute poisson noise using {nmocks_std} mocks.')            
+            # Generate mock catalogs
             cats = [self.make_mock_cat(self._tracer_to_fit, verbose=False) for jj in range(nmocks_std)]
             result = [self.compute_stats(cats[i], stat=self._stats_to_fit, tracers=self._tracer_to_fit, verbose=False) for i in range(nmocks_std)]
             std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[i][stat][comb_tr][-1])for stat in self._stats_to_fit]) for comb_tr in self._comb_tr_list]) for i in range(nmocks_std)], axis=0)    
@@ -2604,14 +2778,30 @@ class HOD(BaseLogger):
         self.inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
         if np.isnan(self.inv_cov2).any():
             raise ValueError('The covariance matrix contains NaN values, please check the input covariance matrix.')
+
         
     def get_init_params(self, seed=None):
+        """
+        Get initial parameter values for the minimization.
+
+        Parameters
+        ----------
+        seed : int, optional
+            Random seed for reproducibility. Default is None.
+
+        Returns
+        -------
+        init_values : array_like
+            Initial parameter values.
+        """
+
         if seed is not None:
             np.random.seed(seed)
         low, high = np.vstack(self.priors).T
         u = np.random.beta(2, 2, size=(len(low)))
         init_values = low + u * (high - low)
         return init_values
+    
     
     def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, **kwargs):
         """
@@ -2630,10 +2820,20 @@ class HOD(BaseLogger):
         """
 
         from stochopy.optimize import minimize
-        from fit_functions.fits_functions import func_stochopy
+        from .fit_functions import func_stochopy
                 
         self.args['fit_param']['minimizer'].update(kwargs)
+        self.logger.info('Run minimizer')
         self.logger.info('Priors: '+(', ').join([f'{nn}: {val}' for nn, val in zip(self.name_params, self.priors)]))
+        #Create directory to store the results
+        if self.args['fit_param']['minimizer']['save_fn']:
+            filename = self.args['fit_param']['minimizer']['save_fn']
+        else:
+            filename = 'best_fit_result_{}.npy'.format(self.fit_model_name)
+            
+        os.makedirs(self.args['fit_param']['dir_output_fit'], exist_ok=True)
+        path_to_save_result = os.path.join(self.args['fit_param']['dir_output_fit'], filename)
+
         if init_params is None:
             init_params = self.get_init_params()
         self.logger.info('First point: '+(', ').join([f'{nn}: {val}' for nn, val in zip(self.name_params, init_params)]))
@@ -2655,9 +2855,10 @@ class HOD(BaseLogger):
         
         self.result_fit = res
         res['param_fit'] = self.args.copy()
-        if isinstance(self.args['fit_param']['minimizer'].get('save_fn', None), str) & (mpi_rank==0):
-            self.logger.info('Save fit result to: {}'.format(self.args['fit_param']['minimizer']['save_fn']))
-            np.save(self.args['fit_param']['minimizer']['save_fn'], res)
+        
+        if mpi_rank==0:
+            self.logger.info('Save fit result to: {}'.format(path_to_save_result))
+            np.save(path_to_save_result, res)           
         return res
 
     
@@ -2705,7 +2906,7 @@ class HOD(BaseLogger):
         return result
 
 
-    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=0, max_sig = 5, fix_seed=None, add_no_vsmear=False, save_bf_cat=None, **kwargs):
+    def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save_fn=None, fig=None, show=False, shift=0, max_sig = 5, fix_seed=None, add_no_vsmear=False, save_bf_cat=None, **kwargs):
 
         from HODDIES.fits_functions_old import load_desi_data
         from matplotlib.gridspec import GridSpec
@@ -2827,8 +3028,6 @@ class HOD(BaseLogger):
                     if col == 0:
                         ax_res.set_ylabel(r"$\Delta/\sigma$")
 
-                    
-
                     if (ii == 0) &  (col == 0) & ('chi2' in result_bf.keys()):
                         props = dict(boxstyle='round', facecolor='w', alpha=0.5)
 
@@ -2838,8 +3037,8 @@ class HOD(BaseLogger):
                     col +=1     
                     i_ax += 2
         fig.tight_layout()                  
-        if save: 
-            fig.savefig(save, facecolor='w',  bbox_inches='tight', pad_inches=0.1)
+        if save_fn: 
+            fig.savefig(save_fn, facecolor='w',  bbox_inches='tight', pad_inches=0.1)
         if show:
             plt.show()
         return fig
@@ -2911,6 +3110,8 @@ class HOD(BaseLogger):
             ax[2].legend(fontsize=fontsize)
         if show: 
             fig.show()
+        if save_fn:
+            fig.savefig(save_fn, facecolor='w',  bbox_inches='tight', pad_inches=0.1)
         return fig
 
     
@@ -2918,7 +3119,7 @@ class HOD(BaseLogger):
                     data=None, residuals=True, fig=None, show=True,
                     figsize=None, fontsize=11, colors=None, by_tracer='rows',
                     residual_band=2.0, height_ratios=(3, 1), cmap='gist_heat_r',
-                    norm2d=None, block_hspace=0.55, wspace=0.32,
+                    norm2d=None, block_hspace=0.55, wspace=0.32, save_fn=None,
                     data_color=None, cross=True, max_cols=4, **kwargs):
         """ 
         Plot one statistic per panel, with optional data and residuals.
@@ -2938,14 +3139,18 @@ class HOD(BaseLogger):
         tracers : str, sequence of str, or None
             Tracers to overplot. ``None`` uses ``np.unique(cat['TRACER'])``.
         data : dict or None
-            Measured data to compare against, keyed by statistic name, and
-            optionally nested by tracer::
+            Measured data to compare against, keyed by statistic name and
+            then by tracer::
 
-                data = {'wp': {'x': rp, 'y': wp, 'err': sigma_wp}}
-                data = {'ELG': {'wp': (rp, wp, err), 'xi0': (s, xi0, cov)}}
+                data = {'wp': {'LRG': (rp, wp, err), 'QSO': (rp, wq, eq)},
+                        'xi0': {'LRG': {'x': s, 'y': xi0, 'cov': C}}}
+
+            A single leaf entry may be given in place of the tracer level,
+            in which case it is assigned to the first tracer block::
+
+                data = {'wp': (rp, wp, sigma_wp)}
 
             ``err`` may be a 1D vector or a full covariance matrix.
-            A residual sub-panel is added for every statistic that has data.
         residuals : bool
             Draw residual sub-panels where data are available.
         cross : bool
@@ -2971,18 +3176,21 @@ class HOD(BaseLogger):
         -------
         fig : matplotlib Figure
         """
-        from plot_utils import _expand_stats, _unpack_data, get_STATS, _fetch, _mirror_quadrants
+        from .plot_utils import (_expand_stats, _unpack_data, get_STATS,
+                                 _fetch, _mirror_quadrants, _resolve_name,
+                                 _split_group_entry, STAT_GROUPS)
         import matplotlib.pyplot as plt
         from matplotlib.gridspec import GridSpec
         from matplotlib.colors import LogNorm
         import warnings
+        from collections.abc import Mapping
         
         default_colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red',
                         'BGS': 'goldenrod'}
         colors = {**default_colors, **(colors or {})}
-        STATS = get_STATS()
         stats = [stats] if isinstance(stats, str) else list(stats)
         stats = _expand_stats(self, stats)          # 'xi_ells' -> xi0, xi2, ...
+        STATS = get_STATS()                         # after expansion
         unknown = [s for s in stats if s not in STATS]
         if unknown:
             raise ValueError(f'unknown statistic(s) {unknown}; available: '
@@ -3010,10 +3218,44 @@ class HOD(BaseLogger):
         labels = [lbl for lbl, _, _, _ in blocks]
         all_keys = [k for _, _, ks, _ in blocks for k in ks]
 
-        # --- normalise the data dict to data[tracer][stat] ---------------
-        data = data or {}
-        if data and not any(k in data for k in all_keys):
-            data = {labels[0]: data}           # single-block shorthand
+        # --- normalise the data dict to data[stat][tracer] ----------------
+        # A statistic's value is either a tracer-keyed mapping, or a single
+        # leaf entry -- (x, y[, err]) or {'x':..., 'y':...} -- which is taken
+        # to belong to the first block.
+        def _is_leaf(v):
+            return isinstance(v, (tuple, list)) or (
+                isinstance(v, Mapping) and 'x' in v and 'y' in v)
+
+        data = {s: (v if not _is_leaf(v) else {labels[0]: v})
+                for s, v in (data or {}).items()}
+
+        stray = [s for s in data if s not in STATS]
+        if stray:
+            warnings.warn(
+                f'data keys {stray} are not known statistics and will be '
+                'ignored; `data` is keyed data[stat][tracer], e.g. '
+                f"{{'wp': {{'{labels[0]}': (x, y, err)}}}}")
+
+
+        # --- expand group keys in `data`: 'xi_ells' -> xi0, xi2, ... ------
+        # Group resolvers are consulted directly rather than reusing the
+        # expansion of `stats`, so data may be keyed by the group even when
+        # the panels were requested individually.
+        for key in [k for k in data if _resolve_name(k, STAT_GROUPS)]:
+            names = STAT_GROUPS[_resolve_name(key, STAT_GROUPS)](self)
+            block = data.pop(key)
+            if not isinstance(block, Mapping):
+                raise ValueError(f"data['{key}'] must be a mapping")
+            # already split by the caller: {'xi_ells': {'xi0': ..., ...}}
+            if block and all(k in names for k in block):
+                for n, v in block.items():
+                    data.setdefault(n, {}).update(
+                        {labels[0]: v} if _is_leaf(v) else v)
+                continue
+            for tracer, entry in block.items():
+                for n, leaf in zip(names,
+                                   _split_group_entry(entry, names, key)):
+                    data.setdefault(n, {})[tracer] = leaf
 
         # When overplotting onto an existing figure, fall back to the data
         # that were supplied when that figure was built, so residuals can be
@@ -3027,11 +3269,15 @@ class HOD(BaseLogger):
                 data = merged
 
         def _data_for(keys, stat):
-            """First matching key wins; `keys` may be a single key or a list."""
+            """First matching tracer key wins; `keys` may be a key or a list."""
+
             if isinstance(keys, str):
                 keys = [keys]
+            block = data.get(stat)
+            if not isinstance(block, Mapping):
+                return None
             for k in keys:
-                entry = data.get(k, {}).get(stat)
+                entry = block.get(k)
                 if entry is not None:
                     return _unpack_data(entry)
             return None
@@ -3065,10 +3311,13 @@ class HOD(BaseLogger):
             figs = []
             for lbl, tr, ks, sks in blocks:
                 sub = {}
-                for k in ks:
-                    if k in data:
-                        sub[lbl] = data[k]
-                        break
+                for s, per_tracer in data.items():
+                    if not isinstance(per_tracer, Mapping):
+                        continue
+                    for k in ks:
+                        if k in per_tracer:
+                            sub[s] = {lbl: per_tracer[k]}
+                            break
                 figs.append(self.plot_stats(
                     self, cat, stats=stats,
                     tracers=tr if isinstance(tr, list) else [tr],
@@ -3333,5 +3582,7 @@ class HOD(BaseLogger):
             fig.tight_layout()
         if show:
             fig.show()
+        if save_fn:
+            fig.savefig(save_fn, facecolor='w',  bbox_inches='tight', pad_inches=0.1)
         return fig
 

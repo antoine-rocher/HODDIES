@@ -15,6 +15,7 @@ from typing import Callable, Optional
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+import torch 
 
 
 # ----------------------------------------------------------------------
@@ -159,10 +160,45 @@ def _ylabel(p):
 
 
 # ----------------------------------------------------------------------
+# Emulator predictions on the test set
+# ----------------------------------------------------------------------
+def _predict_test_set(train_Dataset, model, show_normalized=False, rescale_var=1):
+    """Run ``model`` on ``train_Dataset``'s test set and denormalize.
+
+    Returns ``(X_test, Y_test, Y_pred, err_pred)`` where ``Y_test``/``Y_pred``
+    are in physical units unless ``show_normalized`` is set, in which case
+    they are left in the normalizer's internal scale.
+    """
+    import torch
+    X_test = train_Dataset.X_test
+    Y_test = train_Dataset.y_test if not show_normalized else train_Dataset.y_test_norm
+    x_norm = torch.tensor(train_Dataset.x_test_norm, dtype=torch.float32)
+
+    Y_pred, var_pred = model.predict(x_norm, no_grad=True)
+    if not show_normalized:
+        Y_pred, var_pred = train_Dataset.normalizer.denormalize_y(
+            Y_pred.cpu().numpy(), var_pred.cpu().numpy())
+    else:
+        Y_pred = Y_pred.cpu().numpy()
+        var_pred = var_pred.cpu().numpy()
+    err_pred = np.sqrt(np.asarray(var_pred)) * rescale_var
+    return X_test, np.asarray(Y_test), np.asarray(Y_pred), err_pred
+
+
+def _block_name(p):
+    """Short display name for a panel, e.g. 'xi_0_LRG' instead of 'xi_ells_0_LRG'."""
+    stat = p['stat'][:-5] if p['stat'].endswith('_ells') else p['stat']
+    if p.get('comp') is not None:
+        stat = f"{stat}_{p['ell']}"
+    return f'{stat}_{p["tracer"]}' if p['tracer'] else stat
+
+
+# ----------------------------------------------------------------------
 # Main entry point
 # ----------------------------------------------------------------------
 def plot_verif(train_Dataset, model, nb_plots=5, stats=None,
-               std_emu=False, max_cols=4, indices=None, seed=None,
+               std_emu=None, rescale_var=1, show_normalized=False,
+               max_cols=4, indices=None, seed=None,
                fontsize=11, residual_ylim=(-5, 5), block_hspace=0.55,
                wspace=0.30, height_ratios=(3, 1), colors=None, show=True):
     """Compare emulator predictions with the test set.
@@ -186,18 +222,9 @@ def plot_verif(train_Dataset, model, nb_plots=5, stats=None,
     indices : sequence of int or None
         Explicit test-set indices to plot.
     """
-    import torch
     # ---- predictions -------------------------------------------------
-    X_test = train_Dataset.X_test
-    Y_test = train_Dataset.y_test
-    x_norm = torch.tensor(train_Dataset.x_test_norm, dtype=torch.float32)
-
-    y_pred_norm, var_norm = model.predict(x_norm, no_grad=True)
-    Y_pred, var_pred = train_Dataset.normalizer.denormalize_y(
-        y_pred_norm.squeeze().cpu().numpy(),
-        var_norm.squeeze().cpu().numpy())
-    err_pred = np.sqrt(np.asarray(var_pred))
-    print(err_pred.shape)
+    X_test, Y_test, Y_pred, err_pred = _predict_test_set(
+        train_Dataset, model, show_normalized=show_normalized, rescale_var=rescale_var)
 
     # ---- panels ------------------------------------------------------
     panels = _panels(train_Dataset, stats)
@@ -301,8 +328,110 @@ def plot_verif(train_Dataset, model, nb_plots=5, stats=None,
 
         figs.append(fig)
         if show:
+            fig.tight_layout()
             plt.show()
     return figs
+
+
+def plot_error_diagnostics(train_Dataset, model, stats=None, show_normalized=False,
+                           rescale_var=1, target_frac_err=0.01, residual_ylim=None,
+                           figsize=(9, 4), show=True):
+    """Emulator error diagnostics over the full test set.
+
+    Three figures summarizing prediction error across the whole test set
+    (as opposed to `plot_verif`, which shows individual test samples):
+
+    1. per-bin fractional error, median with 68%/95% bands
+    2. predicted vs. true scatter, one panel per statistic block
+    3. per-bin residual bias, mean +/- std
+
+    Parameters
+    ----------
+    train_Dataset : Training_DatasetManager
+        Must expose ``slices``/``stats`` (see `plot_verif`).
+    model : object with ``predict``
+    stats : sequence of str or None
+        Restrict to these statistics. ``None`` uses everything in
+        ``slices``.
+    target_frac_err : float or None
+        Reference line drawn on the fractional-error plot. ``None`` omits it.
+    residual_ylim : (float, float) or None
+        y-limits for the residual-bias plot. ``None`` autoscales.
+
+    Returns
+    -------
+    (fig_frac_err, fig_pred_vs_true, fig_residual_bias)
+    """
+    _, Y_test, Y_pred, _ = _predict_test_set(
+        train_Dataset, model, show_normalized=show_normalized, rescale_var=rescale_var)
+
+    panels = [p for p in _panels(train_Dataset, stats) if p['spec'].ndim != 2]
+    if not panels:
+        raise ValueError(
+            f'no 1D panels for stats={stats}; available slices: '
+            f'{sorted(train_Dataset.slices)}')
+    panels = sorted(panels, key=lambda p: p['sl'].start)
+    boundaries = [p['sl'].start for p in panels] + [panels[-1]['sl'].stop]
+
+    resid = Y_pred - Y_test
+    with np.errstate(divide='ignore', invalid='ignore'):
+        frac = np.abs(resid) / np.abs(Y_test)
+    x = np.arange(Y_pred.shape[1])
+
+    # ---------- 1. Per-bin fractional error (median + 68/95 band) -----
+    med = np.nanmedian(frac, axis=0)
+    lo68, hi68 = np.nanpercentile(frac, [16, 84], axis=0)
+    hi95 = np.nanpercentile(frac, 97.5, axis=0)
+
+    fig1, ax = plt.subplots(figsize=figsize)
+    ax.fill_between(x, lo68, hi68, alpha=0.3, label='68%')
+    ax.plot(x, med, lw=1.5, label='median')
+    ax.plot(x, hi95, lw=1, ls='--', label='95%')
+    for b in boundaries[1:-1]:
+        ax.axvline(b, color='k', ls=':', alpha=0.5)
+    if target_frac_err is not None:
+        ax.axhline(target_frac_err, color='r', ls='--', alpha=0.5)
+    ax.set_yscale('log')
+    ax.set_xlabel('bin')
+    ax.set_ylabel('fractional error')
+    ax.set_title('Per-bin fractional error')
+    ax.legend()
+    fig1.tight_layout()
+
+    # ---------- 2. Predicted vs true (one panel per statistic) --------
+    n = len(panels)
+    fig2, axes = plt.subplots(1, n, figsize=(4 * n, 4))
+    axes = np.atleast_1d(axes)
+    for ax, p in zip(axes, panels):
+        t, y = Y_test[:, p['sl']].ravel(), Y_pred[:, p['sl']].ravel()
+        ax.scatter(t, y, s=3, alpha=0.3)
+        lim = [min(t.min(), y.min()), max(t.max(), y.max())]
+        ax.plot(lim, lim, 'k--', lw=1)
+        ax.set_xlabel('true')
+        ax.set_ylabel('pred')
+        ax.set_title(_block_name(p))
+    fig2.tight_layout()
+
+    # ---------- 3. Residual (bias) per bin: mean +/- std ---------------
+    fig3, ax = plt.subplots(figsize=figsize)
+    mean_r, std_r = resid.mean(axis=0), resid.std(axis=0)
+
+    ax.plot(x, mean_r, lw=1.5, label='mean residual (bias)')
+    ax.fill_between(x, mean_r - std_r, mean_r + std_r, alpha=0.3, label=r'$\pm 1\sigma$')
+    ax.axhline(0, color='k', lw=0.8)
+    for b in boundaries[1:-1]:
+        ax.axvline(b, color='k', ls=':', alpha=0.5)
+    if residual_ylim is not None:
+        ax.set_ylim(*residual_ylim)
+    ax.set_xlabel('bin')
+    ax.set_ylabel('pred - true')
+    ax.set_title('Residual bias per bin')
+    ax.legend()
+    fig3.tight_layout()
+
+    if show:
+        plt.show()
+    return fig1, fig2, fig3
 
 
 def _plot_2d_residual(fig, ax, rax, p, yt_full, yp_full, err_pred, fontsize):
@@ -355,3 +484,149 @@ def _plot_2d_residual(fig, ax, rax, p, yt_full, yp_full, err_pred, fontsize):
     ax.set_xscale(spec.xscale)
     ax.set_xlabel(spec.xlabel, fontsize=fontsize)
     ax.set_ylabel(spec.ylabel, fontsize=fontsize)
+
+
+def plot_bf_results(train_Dataset, model, x_best_fit, data_vec, err_data_vec,x_truth=None, stats=None,
+               show_normalized=False, save_fn=None,
+               max_cols=4,
+               fontsize=11, residual_ylim=(-5, 5), block_hspace=0.55,
+               wspace=0.30, height_ratios=(3, 1), colors=None, show=True):
+    """Compare emulator predictions with the test set.
+
+    One figure per test sample, one row of panels per tracer, wrapped at
+    ``max_cols`` columns, with a ``(truth - prediction)/sigma`` sub-panel
+    flush beneath each panel.
+
+    Parameters
+    ----------
+    train_Dataset : Training_DatasetManager
+        Must expose ``slices``; ``coords`` (see note in the module
+        docstring) is needed to split multipole blocks into panels.
+    model : object with ``predict``
+    stats : sequence of str or None
+        Restrict to these statistics. ``None`` plots everything in
+        ``slices``.
+    indices : sequence of int or None
+        Explicit test-set indices to plot.
+    """
+    # ---- predictions -------------------------------------------------
+    if x_truth is not None:
+        x_norm_truth = torch.tensor(train_Dataset.normalizer.normalize_x(x_truth), dtype=torch.float32)
+        Y_pred_truth, var_pred_truth = model.predict(x_norm_truth, no_grad=True)
+        if not show_normalized:
+            Y_pred_truth, var_pred_truth = train_Dataset.normalizer.denormalize_y(
+                Y_pred_truth.cpu().numpy(), var_pred_truth.cpu().numpy())
+        else:
+            Y_pred_truth = np.asarray(Y_pred_truth.cpu().numpy())
+            var_pred_truth = np.asarray(var_pred_truth.cpu().numpy())
+        err_pred_truth = np.sqrt(np.asarray(var_pred_truth))
+
+    x_norm_bf = torch.tensor(train_Dataset.normalizer.normalize_x(x_best_fit), dtype=torch.float32)
+    Y_pred_bf, var_pred_bf = model.predict(x_norm_bf, no_grad=True)
+    if not show_normalized:
+        Y_pred_bf, var_pred_bf = train_Dataset.normalizer.denormalize_y(
+            Y_pred_bf.cpu().numpy(), var_pred_bf.cpu().numpy())
+    else:
+        Y_pred_bf = np.asarray(Y_pred_bf.cpu().numpy())
+        var_pred_bf = np.asarray(var_pred_bf.cpu().numpy())
+    err_pred_bf = np.sqrt(np.asarray(var_pred_bf))
+        
+    # ---- panels ------------------------------------------------------
+    from HODDIES.fit_functions.plotting_emulator_func import _plot_2d_residual, _ylabel, _panels
+    panels = _panels(train_Dataset, stats)
+    if not panels:
+        raise ValueError(
+            f'no panels for stats={stats}; available slices: '
+            f'{sorted(train_Dataset.slices)}')
+
+    tracers = list(dict.fromkeys(p['tracer'] for p in panels))
+    per_tracer = {t: [p for p in panels if p['tracer'] == t] for t in tracers}
+    npanel = max(len(v) for v in per_tracer.values())
+    ncol = max(1, min(max_cols, npanel))
+    nsub = int(np.ceil(npanel / ncol))
+    nblock = len(tracers)
+
+    default_colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen',
+                      'LRG': 'red', 'BGS': 'goldenrod'}
+    colors = {**default_colors, **(colors or {})}
+
+    # ---- which samples ----------------------------------------------
+
+    
+    fig = plt.figure(figsize=(4.6 * ncol,
+                                4.4 * nsub * nblock + 0.9 * (nsub * nblock - 1)))
+    outer = GridSpec(nsub * nblock, ncol, figure=fig,
+                        hspace=block_hspace, wspace=wspace,
+                        left=0.08, right=0.98, top=0.92, bottom=0.08)
+
+    for b, tracer in enumerate(tracers):
+        plist = per_tracer[tracer]
+        color = colors.get(tracer, f'C{b}')
+
+        for j, p in enumerate(plist):
+            r, c = b * nsub + j // ncol, j % ncol
+            sl, x, spec = p['sl'], p['x'], p['spec']
+
+            if spec.ndim == 2:      # maps get the full cell
+                ax = fig.add_subplot(outer[r, c])
+                _plot_2d_residual(fig, ax, None, p, data_vec, Y_pred_bf[sl],
+                                    err_pred_bf[sl], fontsize)
+                if j == 0 and ax.get_visible():
+                    ax.set_title(tracer, fontsize=fontsize + 1, loc='left')
+                continue
+
+            inner = outer[r, c].subgridspec(
+                2, 1, height_ratios=height_ratios, hspace=0.0)
+            ax = fig.add_subplot(inner[0])
+            rax = fig.add_subplot(inner[1], sharex=ax)
+            ax.tick_params(labelbottom=False)
+
+
+
+            f = (lambda v: spec.scale(x, v)) if spec.scale else (lambda v: v)
+
+            if x_truth is not None:
+                ax.plot(x, f(Y_pred_truth[sl]), lw=2, color='firebrick', label='Truth')
+                ax.fill_between(x, f(Y_pred_truth[sl] - err_pred_truth[sl]), f(Y_pred_truth[sl] + err_pred_truth[sl]), alpha=0.3,
+                                            color='firebrick', label=r'$\sigma_\mathrm{emu}$')
+            
+            ax.plot(x, f(Y_pred_bf[sl]), ls='--', lw=1.6, color=color, label='Best fit')
+            ax.fill_between(x, f(Y_pred_bf[sl] - err_pred_bf[sl]), f(Y_pred_bf[sl] + err_pred_bf[sl]), alpha=0.3,
+                            color=color, label=r'$\sigma_\mathrm{emu}$')
+
+            ax.errorbar(x, f(data_vec[sl]), f(err_data_vec[sl]), fmt='o', color=color, label='Data')
+
+            
+            ax.set_ylabel(_ylabel(p), fontsize=fontsize)
+            ax.set_xscale(spec.xscale)
+            ax.set_yscale(spec.yscale)
+            ax.grid(alpha=0.25)
+            if j == 0:
+                ax.set_title(tracer, fontsize=fontsize + 1, loc='left')
+            if j == len(plist) - 1:
+                ax.legend(fontsize=fontsize - 1)
+
+            with np.errstate(divide='ignore', invalid='ignore'):
+                err_bf = np.sqrt(err_pred_bf[sl]**2 + err_data_vec[sl]**2)
+                res = np.where(err_bf != 0, (data_vec[sl] - Y_pred_bf[sl]) / err_bf, np.nan)
+            rax.plot(x, res, color=color, lw=1.3)
+            if x_truth is not None:
+                err_truth = np.sqrt(err_pred_truth[sl]**2 + err_data_vec[sl]**2)
+                res_truth = np.where(err_truth != 0, (data_vec[sl] - Y_pred_truth[sl]) / err_truth, np.nan)
+                rax.plot(x, res_truth, color='firebrick', lw=1.3, ls='--')
+            
+            rax.axhline(0, ls='--', color='grey', lw=1)
+            rax.axhspan(-1, 1, color='grey', alpha=0.2)
+            rax.set_ylim(*residual_ylim)
+            rax.set_xscale(spec.xscale)
+            rax.set_xlabel(spec.xlabel, fontsize=fontsize)
+            rax.set_ylabel(r'$\delta/\sigma$', fontsize=fontsize)
+            rax.grid(alpha=0.25)
+
+        if show:
+            fig.tight_layout()
+            plt.show()
+        if save_fn:
+            fig.tight_layout()
+            fig.savefig(save_fn, dpi=600, bbox_inches='tight')
+    return fig

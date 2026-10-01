@@ -1,0 +1,44 @@
+rsd: True  # Use redshift-space distortions
+los: z  # Line of sight direction (z, x, y, or midpoint)
+
+xi_rppi:
+  bin_logscale: true  # Use Logarithmic binning in rp
+  pimax: 40  # Max radial separation for wp integration (Mpc/h)
+  n_rp_bins: 25  # Number of rp (projected separation) bins
+  rp_max: 30  # Maximum transverse separation (Mpc/h) 
+  rp_min: 0.01  # Minimum transverse separation (Mpc/h)
+  
+xi_smu:
+  bin_logscale: true  # Use logarithmic binning in r
+  mu_max: 1  # Max mu=cos(theta) for 2PCF (s,mu) correlation
+  n_mu_bins: 101  # Number of mu bins
+  multipole_index:
+    - 0  # Monopole
+    - 2  # Quadrupole
+  n_s_bins: 25  # Number of s bins
+  smax: 30  # Maximum separation (Mpc/h) 
+  smin: 0.01  # Minimum separation (Mpc/h) 
+
+power_spectrum:
+  bin_logscale: False  # Use logarithmic binning in k
+  nmesh: 128  # Number of mesh points for FFT
+  kmin: 0.01  # Minimum k value (h/Mpc)
+  kmax: 0.5  # Maximum k value (h/Mpc)
+  n_k_bins: 25  # Number of k bins
+  resampler: tsc  # Resampling method for FFT (ngp, cic, tsc)
+  interlacing: 2  # Interlacing factor for FFT
+  multipole_index:
+    - 0
+    - 2
+
+delta_sigma:
+  bin_logscale: true  # Use logarithmic binning in r
+  pimax: 40  # Max radial separation for wp integration (Mpc/h)
+  n_rp_bins: 25  # Number of rp (projected separation) bins
+  rp_max: 30  # Maximum transverse separation (Mpc/h) 
+  rp_min: 0.1  # Minimum transverse separation (Mpc/h) 
+
+CIC:
+  R_max: 5  # cylinders of radius R_max (Mpc/h)
+  L_max: 15  # cylinders length (Mpc/h)
+

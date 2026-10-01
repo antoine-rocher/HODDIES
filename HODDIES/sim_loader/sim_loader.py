@@ -80,10 +80,125 @@ class BaseLogger:
         (e.g. at the top of a script or notebook) to choose the level, or to redirect
         records to a file.
         """
-        if not logging.root.handlers and setup_logger:
+        if not setup_logger:
+            self.logger = logging.getLogger(self.__class__.__name__ if name is None else name)
+            self.logger.addHandler(logging.NullHandler())
+            self.logger.propagate = False
+            return
+
+        if not logging.root.handlers:
             setup_logging()
         self.logger = logging.getLogger(self.__class__.__name__ if name is None else name)
         self.logger.info(f'Initializing {self.__class__.__name__}.')
+
+import numpy as np
+import numba
+import logging
+import sys
+import time
+
+PACKAGE_LOGGER = 'hoddies'   # root of this package's logger namespace
+
+
+def setup_logging(level=logging.INFO, stream=sys.stdout, filename=None, filemode='w'):
+    """
+    Activate logging with an elapsed-time and date prefix, e.g.::
+
+        [000000.05]  05-02 06:57 AbacusSummitSim              INFO     message
+
+    The leading ``[...]`` is the number of seconds elapsed since this call, and
+    ``05-02 06:57`` is the wall-clock date/time (``%m-%d %H:%M``). Call this once
+    (typically at the top of a script or notebook) so the loggers created in
+    :meth:`Base_catalogue.init_logger` actually emit their messages.
+
+    The handler is attached to the ``hoddies`` logger rather than the root logger,
+    so third-party libraries (pycorr, numba, matplotlib, ...) are not made verbose
+    as a side effect. To see their records as well, configure the root logger
+    separately, e.g. ``logging.basicConfig(level=logging.INFO)``.
+
+    Parameters
+    ----------
+    level : int or str, default=logging.INFO
+        Logging level, either a ``logging`` constant or one of
+        ``('info', 'debug', 'warning', 'error')``.
+    stream : file-like, default=sys.stdout
+        Stream to write log records to (ignored when ``filename`` is given).
+    filename : str, default=None
+        If provided, write log records to this file instead of ``stream``.
+    filemode : str, default='w'
+        Mode used to open ``filename``.
+    """
+    levels = {'info': logging.INFO, 'debug': logging.DEBUG,
+              'warning': logging.WARNING, 'error': logging.ERROR}
+    if isinstance(level, str):
+        level = levels[level.lower()]
+
+    logger = logging.getLogger(PACKAGE_LOGGER)
+
+    # Remove existing handlers so repeated calls do not duplicate output.
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+
+    t0 = time.time()
+
+    class _ElapsedFormatter(logging.Formatter):
+        def format(self, record):
+            # Strip the package prefix so records read 'AbacusSummitSim',
+            # not 'hoddies.AbacusSummitSim'.
+            record.shortname = record.name.split('.', 1)[-1]
+            self._style._fmt = ('[%09.2f] ' % (time.time() - t0)
+                                + ' %(asctime)s %(shortname)-28s %(levelname)-8s %(message)s')
+            return super().format(record)
+
+    fmt = _ElapsedFormatter(datefmt='%m-%d %H:%M')
+
+    if filename is not None:
+        handler = logging.FileHandler(filename, mode=filemode)
+    else:
+        handler = logging.StreamHandler(stream=stream)
+    handler.setFormatter(fmt)
+
+    logger.addHandler(handler)
+    logger.setLevel(level)
+    logger.propagate = False   # do not hand records to the root logger
+
+
+class BaseLogger:
+    """
+    Mixin providing a :mod:`logging` logger named after the concrete class.
+
+    Any class calling ``self.init_logger()`` in its ``__init__`` gets a ``self.logger``.
+    """
+
+    def init_logger(self, setup_logger=True, name=None):
+        """
+        Initialize the logger for the class.
+
+        The logger is named ``hoddies.<ClassName>``, so configuring the ``hoddies``
+        logger controls this package without affecting libraries such as pycorr.
+        Logging is activated with :func:`setup_logging` if this package's logger has
+        not been configured yet, so messages are visible by default. Call
+        :func:`setup_logging` explicitly (e.g. at the top of a script or notebook)
+        to choose the level, or to redirect records to a file.
+
+        Parameters
+        ----------
+        setup_logger : bool, default=True
+            If ``False``, ``self.logger`` is created but emits nothing.
+        name : str, default=None
+            Logger name suffix; defaults to the concrete class name.
+        """
+        package = logging.getLogger(PACKAGE_LOGGER)
+
+        if setup_logger and not package.handlers:
+            setup_logging()
+
+        self.logger = logging.getLogger(
+            f'{PACKAGE_LOGGER}.{self.__class__.__name__ if name is None else name}')
+        self.logger.propagate = bool(setup_logger)
+
+        if setup_logger:
+            self.logger.info(f'Initializing {self.__class__.__name__}.')
 
 
 class Base_catalogue(BaseLogger):
@@ -97,7 +212,7 @@ class Base_catalogue(BaseLogger):
         self.init_logger(kwargs.get('setup_logger', True))
         self.init_params(**kwargs)
         
-        self.init_cat(halo_data, particle_data, **kwargs)
+        self.init_cat(halo_data, particle_data)
         self.check_hcat_cols()
         self.check_hcat_args()
 
@@ -141,6 +256,7 @@ class Base_catalogue(BaseLogger):
         
         """
         from mpytools import Catalog
+
         if mapping_halo_cols is None:
             mapping_halo_cols = {col: col for col in self._init_halo_cols}
         else:
@@ -155,16 +271,17 @@ class Base_catalogue(BaseLogger):
             if not isinstance(mapping_part_cols, dict):
                 raise TypeError(f'mapping_part_cols must be a dictionary, got {type(mapping_part_cols)}')
             if not all(col in mapping_part_cols for col in self._init_part_cols):
-                missing = [col for col in self._init_halo_cols if col not in mapping_halo_cols]
-                raise ValueError(f'mapping_halo_cols is missing required columns: {missing}. Required columns are: {self._init_halo_cols}. Current mapping_halo_cols keys are: {list(mapping_halo_cols.keys())}')
+                missing = [col for col in self._init_part_cols if col not in mapping_part_cols]
+                raise ValueError(f'mapping_part_cols is missing required columns: {missing}. Required columns are: {self._init_part_cols}. Current mapping_part_cols keys are: {list(mapping_part_cols.keys())}')
 
+        
+        
         if hasattr(halo_data, '__getitem__'):
             all_cols = np.unique(list(mapping_halo_cols.keys())+ self._init_halo_cols)
             self.hcat = Catalog()
             self.hcat.data = {col: Catalog.from_dict(halo_data)[mapping_halo_cols[col]] for col in all_cols}
         else:
             raise TypeError(f'Invalid type for halo catalog: {type(halo_data)}. halo_data should be in a format that supports __getitem__ (e.g., dict, structured ndarray, astropy table, pandas DataFrame).')
-
         
         if particle_data is None:
             self.part_subsamples = None
@@ -174,7 +291,6 @@ class Base_catalogue(BaseLogger):
                 self.part_subsamples.data = {col: Catalog.from_dict(particle_data)[mapping_part_cols[col]] for col in self._init_part_cols}
             else:
                 raise TypeError(f'Invalid type for particle catalog: {type(particle_data)}. particle_data should be in a format that supports __getitem__ (e.g., dict, structured ndarray, astropy table, pandas DataFrame).')
-            
         
 
     def cosmo(self, **cosmo_params):
@@ -270,7 +386,7 @@ class Base_catalogue(BaseLogger):
             self.hcat[name] = interpn(grid_axes, mesh, GroupPos)
             self.logger.info("Done!")
 
-    def set_assembly_bias_values(self, columns, bins=50):
+    def set_assembly_bias_values(self, columns, bins=50, **kwargs):
 
         """
         Assign ranked values for assembly bias computation based on a specific column.
@@ -320,7 +436,7 @@ class Base_catalogue(BaseLogger):
                 continue  # Skip if assembly bias column already exists
             
             if ((col == 'env') & ('env' not in self.columns)) | ((col == 'shear') & ('shear' not in self.columns)):
-                self.load_env_based_properties()
+                self.load_env_based_properties(**kwargs)
                 if self.density_mesh is None or self.shear_mesh is None:
                     self.logger.info(f"Continue without assembly bias for {col}.")
                     col_to_remove.append(col)   

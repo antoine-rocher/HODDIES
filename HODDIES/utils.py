@@ -256,10 +256,10 @@ def cmp_lambda_from_mean(mu, nu):
 
 
 @njit(fastmath=True, cache=True)
-def cmp_lambda_from_mu_allscale(mu, nu, sig=0.2):
+def cmp_lambda_from_mu_allscale(mu, nu, sig=0.1):
     """Use small-lambda approximation for small mu, otherwise use large-lambda."""
     # Threshold for switching between approximations
-    threshold = 0.8  # Adjust this value as needed
+    threshold = 0.9  # Adjust this value as needed
 
     #  ---------- Adaptive blending ----------
     w = 0.5*(math.erf((mu - threshold)/sig)+1)
@@ -430,7 +430,7 @@ def getPointsOnSphere_jit(nPoints, Nthread=32, seed=None):
 
 
 @njit(parallel=True, fastmath=True, cache=True)
-def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, conformity=False, link_sat_to_central=False):
+def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None, conformity=False, link_sat_to_central=False):
     """
     Compute total number of galaxies and satellite fraction from a given HOD parameter set.
 
@@ -892,3 +892,91 @@ def update_dic(d, u):
         else:
             d[k] = v
     return d
+
+@njit(parallel=True)
+def _assign_bin_values(bin_idx, col, bins, out):
+    """
+    Assign scaled values to elements within each bin, in parallel.
+
+    Parameters
+    ----------
+    bin_idx : ndarray of shape (N,)
+        Integer array giving the bin index of each element.
+    col : ndarray of shape (N,)
+        Array of values used for sorting within each bin.
+    bins : ndarray of shape (nbins+1,)
+        The bin edges used to compute `bin_idx`.
+    out : ndarray of shape (N,)
+        Preallocated output array to be filled in place.
+
+    Notes
+    -----
+    - For each bin, elements are sorted by `col` in descending order.
+    - Within a bin of size `m`, values are assigned as
+      linspace(-0.5, 0.5, m).
+    - Runs in parallel across bins using `numba.prange`.
+    """
+    nbins = len(bins) - 1
+    n = len(col)
+
+    for b in numba.prange(nbins):
+        # collect indices of elements in this bin
+        idx_in_bin = []
+        for i in range(n):
+            if bin_idx[i] == b:
+                idx_in_bin.append(i)
+        if len(idx_in_bin) == 0:
+            continue
+
+        idx_in_bin = np.array(idx_in_bin)
+
+        # argsort by col descending
+        vals = col[idx_in_bin]
+        order = np.argsort(vals)[::-1]
+
+        # assign linspace
+        size = len(order)
+        step = 1.0 / (size - 1) if size > 1 else 0.0
+        for j in range(size):
+            out[idx_in_bin[order[j]]] = -0.5 + j * step
+
+
+def initialize_assembly_bias_value(logMh, col, bins=50):
+    """
+    Vectorized and parallelized version of binning + ranking.
+
+    Parameters
+    ----------
+    logMh : ndarray of shape (N,)
+        Array of values to be binned (e.g., log10 halo masses).
+    col : ndarray of shape (N,)
+        Values used for ranking within bins.
+    bins : int or array-like, optional (default=50)
+        If int, the number of bins. If array, explicit bin edges.
+
+    Returns
+    -------
+    out : ndarray of shape (N,)
+        Output array where each element has been assigned a value
+        in [-0.5, 0.5] based on its rank within its bin.
+
+    Notes
+    -----
+    - Uses `np.histogram_bin_edges` if `bins` is an integer.
+    - Bin assignment is done with `np.digitize`.
+    - The heavy computation is offloaded to `_assign_bin_values`
+      (Numba parallel kernel).
+    - Designed to scale to very large arrays (10^7–10^8 elements).
+    """
+    # ensure bins are edges
+    if np.isscalar(bins):
+        bins = np.histogram_bin_edges(logMh, bins=bins)
+
+    # assign bin indices
+    bin_idx = np.digitize(logMh, bins) - 1
+    out = np.zeros_like(logMh)
+
+    # fill in parallel
+    _assign_bin_values(bin_idx, col, bins, out)
+
+    return out

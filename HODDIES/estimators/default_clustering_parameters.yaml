@@ -36,9 +36,10 @@ delta_sigma:
   pimax: 40  # Max radial separation for wp integration (Mpc/h)
   n_rp_bins: 25  # Number of rp (projected separation) bins
   rp_max: 30  # Maximum transverse separation (Mpc/h) 
-  rp_min: 0.01  # Minimum transverse separation (Mpc/h) 
+  rp_min: 0.1  # Minimum transverse separation (Mpc/h) 
 
 CIC:
   R_max: 5  # cylinders of radius R_max (Mpc/h)
   L_max: 15  # cylinders length (Mpc/h)
+  max_count: null  # Max CIC count for the CIC histogram
 

@@ -68,81 +68,163 @@ def compute_twopoint(pos1, mode, edges, boxsize=None, los='z', nthreads=32, R1R2
 
 
 
-def compute_delta_sigma(
-    pos_lens,
-    pos_particles,
-    rbins,
-    boxsize,
-    rho_m,
-    los='z',
-    pimax=30,
-    nthreads=32,
-):
+# def compute_delta_sigma(
+#     pos_lens,
+#     pos_particles,
+#     rbins,
+#     boxsize,
+#     rho_m,
+#     los='z',
+#     pimax=30,
+#     nthreads=32,
+# ):
+#     """
+#     Compute excess surface density ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2] 
+#     using rp–π pair counts and fast vectorized Gauss–Legendre integration.
+
+#     Parameters
+#     ----------
+#     pos_lens : (N_lens, 3) array
+#         Lens positions.
+#     pos_particles : (N_part, 3) array
+#         Particle positions.
+#     rbins : array
+#         Projected-radius bin edges.
+#     boxsize : float
+#         Periodic-box size [Mpc/h].
+#     rho_m : float
+#         Mean matter density [Msun/h / (Mpc/h)^3].
+#     pimax : float
+#         Maximum LOS half-depth for Σ(R).
+#     los : str
+#         LOS axis for Corrfunc 'x', 'y' or 'z'. Default 'z'.
+#     nthreads : int
+#         number of threads to use for Corrfunc.
+
+#     Returns
+#     -------
+#     delta_sigma : array
+#         ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2].
+#     """
+
+#     # --- 1) rp–pi bins
+#     rpbins = np.geomspace(0.001, rbins.max()*1.2, 100)
+#     pibins = np.linspace(-pimax, pimax, 2 * pimax + 1)
+#     rp_centres = 0.5 * (rpbins[1:] + rpbins[:-1])
+#     # --- 2) Measure ξ(rp,pi)
+#     rp, wp = TwoPointCorrelationFunction(
+#         "rppi",
+#         edges=[rpbins, pibins],
+#         data_positions1=pos_lens,
+#         data_positions2=pos_particles,
+#         boxsize=boxsize,
+#         los=los,
+#         nthreads=nthreads
+#     )(return_sep=True, pimax=pimax)
+#     if np.any(np.isnan(rp)):
+#         rp[np.isnan(rp)] = rp_centres[np.isnan(rp)]
+#     mask = ~np.isnan(wp)
+
+
+#     # --- 4) Sigma(R) = rho_m * w_p(R)
+#     Sigma = rho_m *wp[mask]
+
+#     # --- 5) Compute Σ(<R)
+#     spline_S = interp1d(rp[mask], Sigma, kind="cubic",
+#                         bounds_error=False, fill_value="extrapolate")
+
+#     def integrand(r):
+#         return r * spline_S(r)
+    
+#     Sigma_mean = np.array([2.0 / R**2 * quad(integrand, 0, R, limit=200)[0] for R in rp])
+
+#     # --- 6) Excess surface density
+#     DeltaSigma = (Sigma_mean - Sigma) /1e12 
+#     spline_Dsigma = interp1d(rp, DeltaSigma) 
+#     rp_cent = 0.5 * (rbins[1:] + rbins[:-1])
+
+#     return rp_cent, spline_Dsigma(rp_cent)
+
+
+
+def compute_delta_sigma(gal_pos, part_pos, boxsize, rbins, rho_m,
+                       pimax=None, dpi=1., los='z', nthreads=64,
+                       rp_min_int=1e-3, n_int=200):
     """
-    Compute excess surface density ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2] 
-    using rp–π pair counts and fast vectorized Gauss–Legendre integration.
+    Compute excess surface density ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2] via the galaxy-matter cross-correlation.
+    
+    Sigma_bar(<R) requires the enclosed mass from r = 0, so first wp is measured with a
+    fine binning extending well inside the first output bin, with an
+    analytic power-law continuation below it. Truncating the cumulative
+    integral at the first bin instead makes DeltaSigma go negative at small rp.
 
     Parameters
     ----------
-    pos_lens : (N_lens, 3) array
-        Lens positions.
-    pos_particles : (N_part, 3) array
-        Particle positions.
+    gal_pos, part_pos : (N, 3) arrays
+        Positions in Mpc/h. Assumed already wrapped into [0, boxsize).
     rbins : array
-        Projected-radius bin edges.
-    boxsize : float
-        Periodic-box size [Mpc/h].
+        Output projected bin edges, Mpc/h.
     rho_m : float
-        Mean matter density [Msun/h / (Mpc/h)^3].
-    pimax : float
-        Maximum LOS half-depth for Σ(R).
-    los : str
-        LOS axis for Corrfunc 'x', 'y' or 'z'. Default 'z'.
-    nthreads : int
-        number of threads to use for Corrfunc.
+        Comoving mean matter density, (Msun/h) / (Mpc/h)^3.
+    pimax : float, optional
+        LOS half-depth. Default boxsize/2 (full projection, matches halotools).
+    dpi : float
+        LOS bin width, Mpc/h.
+    rp_min_int : float
+        Inner edge of the internal rp grid. Should sit at or above the
+        simulation softening; everything below is handled analytically.
+    n_int : int
+        Number of internal rp bins.
 
     Returns
     -------
-    delta_sigma : array
-        ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2].
+    rp, delta_sigma
+        rp and delta_sigma on the output binning.
     """
+    if pimax is None:
+        pimax = boxsize / 2.
 
-    # --- 1) rp–pi bins
-    rpbins = np.geomspace(0.001, rbins.max(), 100)
-    pibins = np.linspace(-pimax, pimax, 2 * pimax + 1)
+    npi      = int(round(2 * pimax / dpi))
+    pi_edges = np.linspace(-pimax, pimax, npi + 1)
 
-    # --- 2) Measure ξ(rp,pi)
-    rp, wp = TwoPointCorrelationFunction(
-        "rppi",
-        edges=[rpbins, pibins],
-        data_positions1=pos_lens,
-        data_positions2=pos_particles,
-        boxsize=boxsize,
-        los=los,
-        nthreads=nthreads
-    )(return_sep=True, pimax=pimax)
+    # Internal grid: finer than the output binning and extended inward
+    rp_int = np.geomspace(rp_min_int, 1.2 * rbins[-1], n_int + 1)
 
-    # --- 4) Sigma(R) = rho_m * w_p(R)
-    Sigma = rho_m * wp
+    result = TwoPointCorrelationFunction(
+        'rppi', edges=[rp_int, pi_edges],
+        data_positions1=gal_pos.T,
+        data_positions2=part_pos.T,
+        boxsize=boxsize, los=los,
+        position_type='xyz',
+        engine='corrfunc', nthreads=nthreads)
 
-    # --- 5) Compute Σ(<R)
-    spline_S = interp1d(rp, Sigma, kind="cubic",
-                        bounds_error=False, fill_value="extrapolate")
+    wp = np.nan_to_num(result(pimax=pimax))     # integrated over pi, Mpc/h
 
-    def integrand(r):
-        return r * spline_S(r)
+    rp_c = np.sqrt(rp_int[:-1] * rp_int[1:])
 
-    Sigma_mean = np.array([2.0 / R**2 * quad(integrand, 0, R, limit=200)[0] for R in rp])
+    # Enclosed contribution from r < rp_c[0], assuming wp ~ r^slope there:
+    #   int_0^r0 r' wp(r') dr' = wp(r0) r0^2 / (2 + slope)
+    slope = np.log(wp[1:] / wp[:-1]) / np.log(rp_c[1:] / rp_c[:-1])
+    inner = wp[0] * rp_c[0]**2 / (2. + slope[~np.isnan(slope)][0])  # Use the first non-NaN slope value
 
-    # --- 6) Excess surface density
-    DeltaSigma = (Sigma_mean - Sigma) /1e12 
-    spline_Dsigma = interp1d(rp, DeltaSigma) 
-    rp_cent = 0.5 * (rbins[1:] + rbins[:-1])
+    # integrand = rp_c * wp * np.diff(rp_int)
+    # cum       = inner + np.concatenate([[0.], np.cumsum(integrand)])
+    # wp_bar    = np.interp(rp_c, rp_int[1:], 2. * cum[1:] / rp_int[1:]**2)
 
-    return rp_cent, spline_Dsigma(rp_cent)
+    # int r wp dr = int r^2 wp dln(r), trapezoid in ln r
+    lnr  = np.log(rp_c)
+    f    = rp_c**2 * wp
+    seg  = 0.5 * (f[1:] + f[:-1]) * np.diff(lnr)
+    cum  = inner + np.concatenate([[0.], np.cumsum(seg)])
+    wp_bar = np.interp(rp_c, rp_c[1:], 2. * cum[1:] / rp_c[1:]**2)
+
+    ds_int = rho_m * (wp_bar - wp) / 1e12       # -> h Msun / pc^2
+
+    rp = np.sqrt(rbins[:-1] * rbins[1:])
+    return rp, np.interp(rp, rp_c, ds_int) 
 
 
-def compute_power_spectrum(pos1, boxsize, kedges, los='z', nmesh=256, resampler='tsc', interlacing=2, ells=(0, 2), **kwargs):
+def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256, resampler='tsc', interlacing=2, ells=(0, 2), **kwargs):
     """
     Compute the power spectrum multipoles from a catalog using FFT-based methods.
 
@@ -178,6 +260,7 @@ def compute_power_spectrum(pos1, boxsize, kedges, los='z', nmesh=256, resampler=
 
     result = CatalogFFTPower(
         data_positions1=pos1,
+        data_positions2=pos2,
         boxsize=boxsize, nmesh=nmesh, edges=kedges,
         los=los, resampler=resampler,
         interlacing=interlacing, ells=ells,

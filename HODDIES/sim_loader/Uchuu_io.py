@@ -8,13 +8,13 @@ import multiprocessing
 import time 
 from mpytools import Catalog
 import os 
-from sim_loader import Base_catalogue
+from .sim_loader import Base_catalogue
 
 
 class UchuuSim(Base_catalogue):
     
     def __init__(self, **kwargs):
-        self.init_logger()
+        self.init_logger(kwargs.get('setup_logger', True))
         self.init_params(**kwargs)
         self.init_uchuu_args(**kwargs)     
         if self.z_simu is None:
@@ -192,7 +192,7 @@ class UchuuSim(Base_catalogue):
 
         if self.use_particles & (self.sim_name!='Uchuu2Gpc'):
             self.use_particles=False
-            self.logger.info('Can not use subhalos with Uchuu DDE simulations')
+            self.logger.warning('Can not use subhalos with Uchuu DDE simulations')
         subh = 'with subhalos' if self.use_particles else ''
         self.logger.info(f'Load Uchuu {self.sim_name} simulation at z={self.z_simu:.3f} {subh}')
         filenames = glob.glob(dirname_hcat)
@@ -201,7 +201,6 @@ class UchuuSim(Base_catalogue):
         with multiprocessing.Pool(nchuncks) as p:
             uchuu_halo, uchuu_subhalo = [], []
             for fn in filenames:
-                self.logger.info(f'Reading file {fn}')
                 if self.sim_name=='Uchuu2Gpc':
                     cat = Catalog.read(fn, group='main')
                     chunk = np.linspace(0, cat.csize, nchuncks, dtype=int)

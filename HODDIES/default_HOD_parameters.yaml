@@ -21,7 +21,7 @@ LRG: # Name of tracer 1
   sat_HOD_model: Nsat_pow_law  # Satellite galaxy HOD model 
   link_sat_to_central: False # Wheter to multiply the mean satellite number Nsat by the central mean number Ncen (often use for LRG)  
   As: 1  # Normalization amplitude for satellite distribution
-  M_0: 12.5  # Minimum halo mass for satellites
+  M_0: 13  # Minimum halo mass for satellites
   M_1: 13.5  # Characteristic mass for satellites
   alpha: 1  # Power-law slope of the satellite HOD
   f_sigv: 1  # Scaling factor for velocity dispersion

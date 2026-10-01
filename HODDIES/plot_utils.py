@@ -325,6 +325,80 @@ def _unpack_data(entry):
         x, y = np.asarray(x), np.asarray(y)
     return x, y, (None if err is None else _sigma(err))
 
+def _split_group_entry(entry, names, group=''):
+    """Split one stacked group entry into one leaf per component.
+
+    ``entry`` is the measured counterpart of a group source such as
+    ``'xi_ells'``: the values for all multipoles in a single array, in the
+    same order as ``names`` (i.e. the configured ``multipole_index``).
+
+    Accepted shapes, with ``nell = len(names)`` and ``n`` points per
+    multipole:
+
+    * ``y``   -- ``(nell, n)``, or a flat ``(nell * n,)`` concatenation.
+    * ``x``   -- ``(n,)`` shared by all components, ``(nell, n)``, or a
+      flat ``(nell * n,)`` concatenation.
+    * ``err`` -- ``None``; ``(nell, n)`` or flat ``(nell * n,)`` sigmas;
+      or a full ``(nell * n, nell * n)`` covariance, of which only the
+      diagonal is used.
+
+    Returns a list of ``(x, y, sigma)`` triples, one per name.
+    """
+    if isinstance(entry, Mapping):
+        x, y = entry['x'], entry['y']
+        err = entry.get('err', entry.get('cov', entry.get('sigma')))
+    else:
+        entry = tuple(entry)
+        if len(entry) == 3:
+            x, y, err = entry
+        elif len(entry) == 2:
+            (x, y), err = entry, None
+        else:
+            raise ValueError(f"data entry for group '{group}' must be "
+                             '(x, y) or (x, y, err)')
+    nell = len(names)
+    x, y = np.asarray(x), np.asarray(y)
+
+    if y.ndim == 1:
+        if nell == 1:
+            y = y[None, :]
+        elif y.size % nell == 0:
+            y = y.reshape(nell, -1)
+    if y.ndim != 2 or y.shape[0] != nell:
+        raise ValueError(
+            f"data for group '{group}' must stack {nell} component(s) "
+            f'{names} as (({nell}, n) or flat); got y of shape {y.shape}')
+    n = y.shape[1]
+
+    if x.ndim == 1 and x.size == n:
+        xs = [x] * nell
+    elif x.ndim == 2 and x.shape == (nell, n):
+        xs = list(x)
+    elif x.ndim == 1 and x.size == nell * n:
+        xs = list(x.reshape(nell, n))
+    else:
+        raise ValueError(
+            f"data for group '{group}': x of shape {x.shape} matches "
+            f'neither ({n},) nor ({nell}, {n})')
+
+    if err is None:
+        sigs = [None] * nell
+    else:
+        err = np.asarray(err)
+        if err.ndim == 2 and err.shape == (nell * n, nell * n):
+            # full covariance: cross-component blocks are discarded
+            sigs = list(np.sqrt(np.diag(err)).reshape(nell, n))
+        elif err.ndim == 2 and err.shape == (nell, n):
+            sigs = list(err)
+        elif err.ndim == 1 and err.size == nell * n:
+            sigs = list(err.reshape(nell, n))
+        else:
+            raise ValueError(
+                f"data for group '{group}': error array of shape "
+                f'{err.shape} is none of ({nell}, {n}), ({nell * n},) or '
+                f'({nell * n}, {nell * n})')
+
+    return [(xs[i], y[i], sigs[i]) for i in range(nell)]
 
 def _mirror_quadrants(x, y, z):
     """Reflect a first-quadrant map about both axes.

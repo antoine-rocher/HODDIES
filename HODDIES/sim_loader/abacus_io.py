@@ -6,9 +6,10 @@ import time
 from numba import njit, numba
 import os 
 from mpytools import Catalog
-from sim_loader import Base_catalogue
+from . import Base_catalogue
 import glob 
-
+from pathlib import Path
+from abacusnbody.data.read_abacus import read_asdf
 
 class AbacusSummitSim(Base_catalogue):
     """
@@ -16,13 +17,13 @@ class AbacusSummitSim(Base_catalogue):
     """
     def __init__(self, **kwargs):
         
-        self.init_logger()
+        self.init_logger(kwargs.get('setup_logger', True))
         self.init_params(**kwargs)
         if self.z_simu is None:
             raise ValueError('Redshift is not provided, please provide z_simu.')
         self.init_abacus_args(**kwargs)
         self.read_Abacus_hcat()
-         
+
 
     def init_abacus_args(self, **kwargs):
         """
@@ -153,6 +154,129 @@ class AbacusSummitSim(Base_catalogue):
         hcat = hcat_i[hcat_i[n_p] > N]
         self.logger.info(f"Done took {time.strftime('%H:%M:%S', time.gmtime(time.time() - start))}")
         return hcat
+
+    def load_particle_subsample(
+        self,
+        subsample="A",
+        fraction=1 / 10,
+        seed=42,
+        load=("pos",),
+        populations=("halo", "field"),
+        verbose=True,
+    ):
+        """
+        Randomly subsample Abacus snapshot particles, one file at a time.
+
+        Parameters
+        ----------
+        sim_dir : str or Path
+            Snapshot directory, e.g. ".../halos/z0.500".
+        subsample : {"A", "B", "AB", "both"}
+            Particle subsample(s) to read.
+        fraction : float
+            Independent retention probability for each available particle.
+            Relative to the selected A/B particles, not the full simulation.
+        seed : int or None
+            Random seed.
+        load : tuple of str
+            Columns to return: ("pos",), ("vel",), or ("pos", "vel").
+        populations : tuple of str
+            Default ("halo", "field") includes the full matter distribution.
+            Use ("field",) for only particles in the raw field files.
+        verbose : bool
+            Print progress.
+
+        Returns
+        -------
+        particles : dict
+            NumPy arrays with shape (N_selected, 3), keyed by "pos"/"vel".
+        info : dict
+            Particle counts, selection settings, and box size.
+
+        Notes
+        -----
+        Each file is fully read and decoded before subsampling.
+        Memory holds one decoded file plus the accumulated selected particles.
+        """
+
+        from pathlib import Path
+        from abacusnbody.data.read_abacus import read_asdf
+
+        start = time.time()
+        sim_dir = Path(self.__path_to_sim)
+        selection = str(subsample).upper()
+        if selection == "BOTH":
+            selection = "AB"
+        if 'small' in str(sim_dir):
+            selection = "A"
+        if selection not in ("A", "B", "AB"):
+            raise ValueError("subsample must be 'A', 'B', 'AB', or 'both'.")
+
+        fraction = float(fraction)
+        if not np.isfinite(fraction) or not 0 < fraction <= 1:
+            raise ValueError("fraction must satisfy 0 < fraction <= 1.")
+
+        load = (load,) if isinstance(load, str) else tuple(load)
+        if not load or len(set(load)) != len(load) or not set(load) <= {"pos", "vel"}:
+            raise ValueError("load must contain 'pos', 'vel', or both, without duplicates.")
+
+        populations = (
+            (populations,) if isinstance(populations, str) else tuple(populations)
+        )
+        if (
+            not populations
+            or len(set(populations)) != len(populations)
+            or not set(populations) <= {"halo", "field"}
+        ):
+            raise ValueError("populations must contain 'halo', 'field', or both.")
+
+        self.logger.info(f"Load {fraction:.3%} Abacus particles using {populations} for subsample {subsample}...")
+        # Validate all requested directories before starting expensive reads.
+        files = []
+        n_all = 0 
+        for sample in selection:
+            for population in populations:
+                directory = sim_dir / f"{population}_rv_{sample}"
+                matches = sorted(
+                    directory.glob(f"{population}_rv_{sample}_*.asdf")
+                )
+                if not matches:
+                    raise FileNotFoundError(
+                        f"No particle RV files found in {directory}. "
+                        "Check availability for this simulation and redshift."
+                    )
+                files.extend(matches)
+
+        rng = np.random.default_rng(seed)
+        table_all = []
+        for i, filename in enumerate(files):
+            table_tmp = read_asdf(
+                str(filename),
+                load=list(load),
+                dtype=np.float32,
+                verbose=False,
+            )
+
+
+            # A binomial count followed by uniform selection without replacement
+            # is equivalent to independently retaining each particle with
+            # probability `fraction`, without allocating N random floats.
+            n = len(table_tmp)
+            nkeep = int(np.round(n * fraction))
+            indices = rng.choice(n, size=nkeep, replace=False, shuffle=False)
+
+            if verbose:
+                self.logger.info(
+                    f"[{i}/{len(files)}] {filename.name}: "
+                    f"{nkeep:,} / {n:,} particles retained"
+                )
+            n_all += nkeep
+
+            table_all.append(table_tmp[indices])
+            del table_tmp
+
+        self.logger.info(f"Compiled {n_all} particles, took time: {time.time() - start}")
+        return np.concatenate(table_all, axis=0)
 
 
     @staticmethod
@@ -303,7 +427,7 @@ class AbacusSummitSim(Base_catalogue):
             raise ValueError(f"Redshift z={self.z_simu} not available for AbacusSummit. Available redshifts are: {available_z}")
 
 
-    def load_env_based_properties(self, cell_size=5, R=1.5, dir_to_save_env_mesh='tmp/', **kwargs):
+    def load_env_based_properties(self, **kwargs):
         """
         Load or compute environment-based properties (density and shear) from Abacus simulation to compute assembly bias. This method checks for precomputed density and shear meshes, and if not found, computes them from particle outputs.
         """ 
@@ -311,9 +435,12 @@ class AbacusSummitSim(Base_catalogue):
         from abacusnbody.data.read_abacus import read_asdf
         import hdf5plugin
         import h5py    
-        from HODDIES.environment_func import calc_env, calc_shear_from_dsmo
+        from .. import calc_env, calc_shear_from_dsmo
 
-        dir_to_save_env_mesh = kwargs.get('dir_to_save_env_mesh', dir_to_save_env_mesh)
+        cell_size = kwargs.get('cell_size', 5)
+        R = kwargs.get('R', 1.5)
+        dir_to_save_env_mesh = kwargs.get('dir_to_save_env_mesh', '/tmp')
+        
 
         if dir_to_save_env_mesh and os.path.isdir(dir_to_save_env_mesh):
             path_to_save_env_mesh = os.path.join(
@@ -348,24 +475,15 @@ class AbacusSummitSim(Base_catalogue):
             self.density_mesh = None
             self.shear_mesh = None 
             return
-        if self.part_subsamples is None:
+        if getattr(self, "field_particles", None) is None:
             self.logger.info('Particles are not loaded. Load Abacus particles to compute density and shear mesh')
-            fns = glob.glob(os.path.join(path, 'field_rv_A/*asdf')) + glob.glob(os.path.join(path, 'halo_rv_A/*asdf'))
-            start = time.time()
+            self.field_particles = self.load_particle_subsample(subsample="A", fraction=1/10, seed=42, load=("pos",), populations=("halo", "field"))
 
-            partpos = []
-            for efn in fns:
-                self.logger.info(f'Reading particle file: {efn}')
-                ecat = read_asdf(efn, load=['pos'])
-                partpos += [ecat['pos']]
-            self.part_subsamples = np.concatenate(partpos)
-            self.logger.info(f'Compiled all particles: {len(self.part_subsamples)}, took time: {time.time() - start}')
-
-        dsmo = calc_env(self.part_subsamples['pos'], self.boxsize, cell_size=cell_size, R=R) 
+        dsmo = calc_env(self.field_particles['pos'], self.boxsize, cell_size=cell_size, R=R) 
         shear = calc_shear_from_dsmo(dsmo, self.boxsize, cell_size=cell_size, R=R, workers=-1) 
         
         
-        self.logger.info(f'Save to {path_to_save}')
+        # self.logger.info(f'Save to {path_to_save}')
         with h5py.File(path_to_save, "w") as f:
             f.create_dataset(
                 'density',

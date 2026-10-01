@@ -2,7 +2,7 @@
 
 hcat:
   boxsize: null  # Simulation box size (to be set if path_to_sim is provided)
-  path_to_sim: /home/antoine/Bureau/Transfert/postdoc/Abacus_sim  # Path to halo catalogs
+  path_to_sim: /path/to/halo/catalogue  # Path to halo catalogue
   path_to_part: null  # Path to particle or subhalos data for satellites sampling
   mass_cut: null  # Minimum halo mass cut in log10(Msun/h) e.g. 12 to cut M < 10**12
   z_simu: 0.95  # Redshift of simulation snapshot

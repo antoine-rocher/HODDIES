@@ -1,9 +1,6 @@
 #fitting settings
 
-
-fit_name: myhodfit  # Name identifier for this fitting run
-path_to_training_point: null  # Path to save or read precomputed training samples
-dir_output_fit: path_to_save_fit_outputs  # Directory where output from this fitting will be saved
+dir_output_fit: tmp/result_fit  # Directory where output from this fitting will be saved
 fit_statistics:  # List of statistics to fit. Options include: rppi, smu, CIC, delta_sigma, wp, xi_ells, power_spectrum
   - wp
   - xi_ells
@@ -12,7 +9,7 @@ fit_statistics:  # List of statistics to fit. Options include: rppi, smu, CIC, d
 
 data_path: path_to_data  # Path to the observational data file
 error_path: path_to_errors  # Path to the error data file, either covariance matrix or error bars
-add_poisson_noise: True  # Whether to add Poisson noise to the model predictions (evalutated from n realisations of a single HOD model)
+add_poisson_noise: False  # Whether to add Poisson noise to the model predictions (evalutated from n realisations of a single HOD model)
 neval_poisson_noise: 50  # Number of realisations to estimate the poisson noise of the model predictions. Only used if add_poisson_noise is True
 
 
@@ -33,7 +30,7 @@ minimizer:
   popsize: 10  # Population size for the minimizer
   xtol: 1e-6  # Tolerance for convergence
   method: cmaes  # Minimization method to use (e.g., cmaes, nelder-mead, etc.)
-  save_fn: 'results_fit.npy'
+  save_fn: null  # File name to save the best fit result. If None, default is 'best_fit_result_model_name.npy' in the output directory. If a string is provided, it will be used as the file name.
 
 
 sampler: 
@@ -42,7 +39,8 @@ sampler:
   nwalkers: 20  # Number of walkers for the MCMC sampler
 
 emulator:
-  emu_type: 'FCNN'  # Type of emulator to use (e.g., FCNN, GP, etc.)
+  emu_type: 'FCNN'  # Type of emulator to use (only FCNN atm)
   N_training_points: 10  # Number of training points to generate for the emulator
   sampling_type: Hammersley  # Sampling method for generating training points. Available sampling types are "lhs", "hammersley", "uniform", "halton", "cvt", or "random"
-  path_to_save_training_point: tmp/training_set  # Path to save or read precomputed training samples
+  test_sampling_type: null # Sampling method for generating test points. Available sampling types are "lhs", "hammersley", "uniform", "halton", "cvt", or "random". If None, lhs is used.
+  path_to_training_point: tmp/training_set  # Path to save or read precomputed training samples

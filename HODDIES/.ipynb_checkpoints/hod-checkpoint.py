@@ -1,178 +1,111 @@
 """ Base HOD class """
 
-from HODDIES import read_uchuu
-from numba import njit, jit, numba
+import numba
 import time 
 import os
 from .utils import *
-from .clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat
-from .HOD_models import _SHOD, _GHOD, _SFHOD, _SHOD, _LNHOD, _HMQ, _mHMQ, _Nsat_pow_law
+from .estimators.clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat, compute_CIC, compute_power_spectrum
+from . import HOD_models
 import yaml 
 import glob
 from mpytools import Catalog
 import collections.abc
-from .fits_functions import compute_chi2
+from .fit_functions.fits_functions import compute_chi2
 import numbers
 import numpy as np
+from .sim_loader import BaseLogger
 
-
-class HOD:
+class HOD(BaseLogger):
 
     """Class with tools to generate HOD mock catalogs and plotting functions"""
 
-    def __init__(self, param_file=None, args=None, hcat_file=None, path_to_abacus_sim=None, read_pinnochio=None, read_Uchuu=None, subsample=None, **kwargs):
+    def __init__(self, base_catalog, param_file=None, **kwargs):
         
         """
         Initialize :class:`HOD`. 
 
         Parameters
         ----------
+        base_catalog : Base_catalogue
+            An instance of the :class:`Base_catalogue` class, which contains the halo catalog and associated data.
         param_file : str, default=None
             Input parameter file to initialize the HOD class. If None, the default parameter file 'default_HOD_parameters.yaml' is used.
-
-        args : dict, default=None
-            Optional
-            Input dictonary to initialize  the HOD class. Carefull ``args`` is prefered against ``param_file``. 
-        hcat_file : dict, ndarray, Catalog, default=None
-            Optional
-            Input halo catalog. The halo catalog must have at least these columns names: ['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'c', 'Vrms', 'halo_id']. 
-            'x', 'y', 'z', and 'vx', 'vy', 'vz' are halo positions and velocities. 
-            Mh and Rh are halo mass and radius (most of the time consider as Mvir and Rvir). 
-            'c' is the halo concentration, 'Vrms' is the velocity dispersion of the halo particles (used for NFW satellites). 
-            'halo_id' is a unique integer to identify each halo.
-        boxsize : int, default = None
-            Simulation box size, to be set if hcat is provide. Prefered if boxsize value is also provided in the parameter file.
-
-        path_to_abacus_sim : str, default=None
-            Optional,
-            Path to Abacus simulation directory. In this case, it automatically load the Abacus box/LC at the corresponding redshift snapshots and initialze boxsize and cosmology.
-
-        read_pinnochio : bool, default=None
-            Optional, load Pinnochio simulation catalog. Need to provide the path in the input parameter file.
-
-        subsample : dict, ndarray, Catalog, default=None
-            Optional, Not yet ready!
-            Input of particles or subhalo catalog. The subsample catalog must have at least these columns names: ['x', 'y', 'z', 'vx', 'vy', 'vz', 'halo_id']. 
         kwargs : dict
             Optional arguments that can be added that will replace the one provided in the parameter file.
 
         """
-        
-        # self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)  
-        self.args = self._get_default_parameters()
-        self.cosmo = None
-        self.H_0 = 100 # H_0 is always set to 100 km/s/Mpc
+        setup_logger=kwargs.get('setup_logger', True)
+        print('setup_logger', setup_logger)
+        self.init_logger(setup_logger=kwargs.get('setup_logger', True))
 
-        def update_dic(d, u):
-            for k, v in u.items():
-                if isinstance(v, collections.abc.Mapping):
-                    d[k] = update_dic(d.get(k, {}), v)
-                else:
-                    d[k] = v
-            return d
+        # self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)
+        self._get_default_parameters()
+        self.H_0 = 100 # H_0 is always set to 100 km/s/Mpc
+        self.base_catalog = base_catalog
+        self.nthreads = min(numba.get_num_threads(), kwargs.get('nthreads', 32))
+
         
-        new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else args if args is not None else self.args
+        new_args = yaml.load(open(param_file), Loader=yaml.FullLoader) if param_file is not None else self.args
         # if new_args['fit_param'].get('priors') is not None:
         #     self.args['fit_param'].pop('priors')
         # if kwargs.get('fit_param') is not None:
         #     if kwargs['fit_param'].get('priors') is not None:
         #         self.args['fit_param'].pop('priors')
-
+        
         update_dic(self.args, new_args)
         update_dic(self.args, kwargs)
-        
+        self._initialize_tracer_params(self.args['tracers'])
         # if 'tracers' not in self.args:
         #     raise(ValueError('need to provide tracer names'))
 
-        self._initialize_tracer_params(self.args['tracers'])
-        self._initialize_fit_params(self.args['tracers'])
-
-        self.boxsize = self.args['hcat']['boxsize']
-
-        self.args['nthreads'] = min(numba.get_num_threads(), self.args['nthreads'])
-        print('Set number of threads to {}'.format(self.args['nthreads']), flush=True)
-        self.part_subsamples = subsample
         
-        self.__is_sim_abacus = False
-        self.__is_sim_uchuu = False
-        if path_to_abacus_sim is not None:
-            self._root_dir_abacus = path_to_abacus_sim
-            from .abacus_io import read_Abacus_hcat, check_particles_available
-            self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Abacus']
-            if self.args['use_particles']:
-                self.args['use_particles'] = check_particles_available(self.args['hcat']["z_simu"])
-            self.hcat, self.part_subsamples, self.boxsize, self.origin = read_Abacus_hcat(self.args, path_to_abacus_sim)
-            self.__is_sim_abacus = True
+        if self.base_catalog.z_simu is None:
+            self.logger.warning('Redshift of the simulation is not provided cannot compute statistics with RSD, please provide z_simu of the snapshot.')
+            self.args['clustering_settings']['rsd'] = False
+        # self.use_particles = kwargs.get('use_particles', None)
 
-        elif read_Uchuu is not None:
-            self.__is_sim_uchuu=True
-            from .read_uchuu import read_Uchuu
-            self.args['hcat'] = self.args['hcat'] | self.args['hcat']['Uchuu']
-            start = time.time()
-            # (sim_name, z_snapshot, path_to_sim='/pscratch/sd/a/arocher/Uchuu/', nchuncks=32, load_subhalos=False, mass_cut=10.8)
-            self.hcat, self.part_subsamples = read_Uchuu(self.args['hcat']['sim_name'], self.args['hcat']['z_simu'], self.args['hcat']['path_to_sim'], self.args['nthreads'], self.args['hcat']['load_subhalos'], self.args['hcat']['mass_cut'])
-            self.boxsize = 2000
-            print('Done {:.2f}'.format(time.time()-start), flush=True)
-                            
-        elif read_pinnochio  is not None:
-            from .pinnochio_io import read_pinnochio_hcat
-            print('Read Pinnochio simulation', flush=True)
-            start = time.time()
-            self.hcat, self.boxsize, self.cosmo = read_pinnochio_hcat(self.args)
-            print('Done {:.2f}'.format(time.time()-start), flush=True)  
+        self.z_simu = self.base_catalog.z_simu
+        self.boxsize = self.base_catalog.boxsize
+        self.hcat = self.base_catalog.hcat
+        self.part_subsamples = self.base_catalog.part_subsamples
+
         
-        elif hcat_file is not None:
-            init_cols = ['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'c', 'Vrms', 'halo_id']
-
-            if isinstance(hcat_file, str):
-                self.hcat = Catalog.read(hcat_file)
-
-            elif isinstance(hcat_file, Catalog):
-                self.hcat = hcat_file
-
-            elif isinstance(hcat_file, dict):
-                self.hcat = Catalog.from_dict(hcat_file)
-
-            elif isinstance(hcat_file, np.ndarray):
-                if hcat_file.dtype.names is None:
-                    raise TypeError(f'Halo catalog must be a structured ndarray with field {init_cols}')
-                self.hcat = Catalog.from_array(hcat_file)
-
-        else: 
-            if self.args['hcat']['path_to_sim'] is None:
-                raise FileNotFoundError('Provide a halo catalog or a filename to read it')
-            if not os.path.exists(self.args['hcat']['path_to_sim']): 
-                raise FileNotFoundError('{} not found'.format(self.args['hcat']['path_to_sim']))
-            self.hcat = Catalog.read(self.args['hcat'][['path_to_sim']]) 
-
-        if self.boxsize is None: raise ValueError('Boxsize not provided')
+        self.logger.info(f'Set number of threads to {self.nthreads}')
 
         # init cosmology 
-        if self.cosmo is None:
-            self.init_cosmology()
-
-        if 'log10_Mh' not in self.hcat.columns(): 
-            self.hcat['log10_Mh'] = np.log10(self.hcat['Mh'])
-        
-
-        if 'c' not in self.hcat.columns():
-            print('Concentration column "c" is not provided. The concentration is computed from colossus package using mass-concentration relation of {} with {} as mass definition'.format(self.args['cm_relation'], self.args['mass_def']), flush=True)
-            from pinnochio_io import get_concentration
-            self.hcat['c'] = get_concentration(self.hcat['Mh'], cosmo=self.cosmo, mdef=self.args['mass_def'], cmrelation=self.args['cm_relation'], z=self.args['hcat']['z_simu'])
+        self.cosmo = self.base_catalog.cosmo(**self.args['cosmo'])
         
         try :
             self._fun_cHOD, self._fun_sHOD = {}, {}
             for tr in self._tracers():
-                self._fun_cHOD[tr] = globals()['_'+self.args[tr]['HOD_model']]
-                self._fun_sHOD[tr] = globals()['_'+self.args[tr]['sat_HOD_model']]
-        except :
-            from . import HOD_models 
+                self._fun_cHOD[tr] = getattr(HOD_models, '_'+self.args[tr]['HOD_model'])
+                self._fun_sHOD[tr] = getattr(HOD_models, '_'+self.args[tr]['sat_HOD_model'])
+        except AttributeError:
             help(HOD_models)
-            raise ValueError('{} not implemented in HOD models'.format(self.args['HOD_param']['HOD_model']))
+            raise ValueError('HOD model or satellite HOD model not implemented in HOD_models '
+                             '(available functions listed above). Requested: {}'.format(
+                                 {tr: (self.args[tr].get('HOD_model'), self.args[tr].get('sat_HOD_model'))
+                                  for tr in self._tracers()}))
                 
         if self.args['use_assembly_bias']:
                 self._compute_assembly_bias_columns()
         self.rng = np.random.RandomState(seed=self.args['seed'])
+    
+    
+    def _warn_once(self, msg):
+        """
+        Log `msg` at WARNING level only the first time it is seen.
+
+        Mimics the de-duplication of :func:`warnings.warn`, which these messages used
+        previously, so configuration warnings raised inside :meth:`make_mock_cat` do
+        not repeat on every call during a fit.
+        """
+        if not hasattr(self, '_warned_msgs'):
+            self._warned_msgs = set()
+        if msg not in self._warned_msgs:
+            self._warned_msgs.add(msg)
+            self.logger.warning(msg)
+
 
     def _initialize_tracer_params(self, tracer):
         """
@@ -244,56 +177,56 @@ class HOD:
             # Set the merged parameters
             self.args[t] = params_to_set
 
-    def _initialize_fit_params(self, tracer):
-        """
-        Initializes HOD fit parameters for one or more tracers in-place.
-        """
-        fit_param_template = {
-            'nb_real': 20, 'fit_name': 'myhodfit', 'path_to_training_point': None, 'dir_output_fit': 'path_to_save_fit_outputs',
-            'fit_type': 'wp+xi', 'generate_training_sample': True, 'sampling_type': 'Hammersley',
-            'N_training_points': 800, 'seed_training': 18, 'n_calls': 800, 'logchi2': True,
-            'sampler': 'emcee', 'n_iter': 10000, 'nwalkers': 20, 'func_aq': 'EI',
-            'length_scale_bounds': [0.001, 10], 'length_scale': False, 'kernel_gp': 'Matern_52',
-            'save_fn': 'results_fit.npy', 'use_desi_data': True, 'zmin': 0.8, 'zmax': 1.1,
-            'dir_data': '/global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP', 'region': 'GCcomb',
-            'weights_type': 'pip_angular_bitwise', 'njack': 128, 'nran': 4, 'bin_type': 'log',
-            'load_cov_jk': False, 'corr_dir': '/dvs_ro/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/',
-            'nb_mocks': 1883,
-            'priors': {}
-        }
+    # def _initialize_fit_params(self, tracer):
+    #     """
+    #     Initializes HOD fit parameters for one or more tracers in-place.
+    #     """
+    #     fit_param_template = {
+    #         'nb_real': 20, 'fit_name': 'myhodfit', 'path_to_training_point': None, 'dir_output_fit': 'path_to_save_fit_outputs',
+    #         'fit_type': 'wp+xi', 'generate_training_sample': True, 'sampling_type': 'Hammersley',
+    #         'N_training_points': 800, 'seed_training': 18, 'n_calls': 800, 'logchi2': True,
+    #         'sampler': 'emcee', 'n_iter': 10000, 'nwalkers': 20, 'func_aq': 'EI',
+    #         'length_scale_bounds': [0.001, 10], 'length_scale': False, 'kernel_gp': 'Matern_52',
+    #         'save_fn': 'results_fit.npy', 'use_desi_data': True, 'zmin': 0.8, 'zmax': 1.1,
+    #         'dir_data': '/global/homes/a/arocher/users_arocher/Y3/loa-v1/v1.1/PIP', 'region': 'GCcomb',
+    #         'weights_type': 'pip_angular_bitwise', 'njack': 128, 'nran': 4, 'bin_type': 'log',
+    #         'load_cov_jk': False, 'corr_dir': '/dvs_ro/cfs/cdirs/desi/users/arocher/Y1/2PCF_for_corr/Abcaus_small_boxes/',
+    #         'nb_mocks': 1883,
+    #         'priors': {}
+    #     }
 
-        priors_templates = {
-            'LRG': {
-                'M_0': [12.5, 13.5], 'M_1': [13, 14.5], 'alpha': [0.5, 1.5], 'f_sigv': [0.5, 1.5],
-                'log_Mcent': [12.4, 13.5], 'sigma_M': [0.05, 1]
-            },
-            'ELG': {
-                'M_0': [11.0, 12.5], 'M_1': [11.0, 12.5], 'alpha': [0.3, 1.2], 'f_sigv': [0.5, 1.5],
-                'log_Mcent': [11.0, 12.5], 'sigma_M': [0.1, 1]
-            },
-            'QSO': {
-                'M_0': [12.5, 14.0], 'M_1': [13.5, 15.0], 'alpha': [0.8, 1.8], 'f_sigv': [0.5, 1.5],
-                'log_Mcent': [12.5, 14.0], 'sigma_M': [0.1, 1.0]
-            }
-        }
+    #     priors_templates = {
+    #         'LRG': {
+    #             'M_0': [12.5, 13.5], 'M_1': [13, 14.5], 'alpha': [0.5, 1.5], 'f_sigv': [0.5, 1.5],
+    #             'log_Mcent': [12.4, 13.5], 'sigma_M': [0.05, 1]
+    #         },
+    #         'ELG': {
+    #             'M_0': [11.0, 12.5], 'M_1': [11.0, 12.5], 'alpha': [0.3, 1.2], 'f_sigv': [0.5, 1.5],
+    #             'log_Mcent': [11.0, 12.5], 'sigma_M': [0.1, 1]
+    #         },
+    #         'QSO': {
+    #             'M_0': [12.5, 14.0], 'M_1': [13.5, 15.0], 'alpha': [0.8, 1.8], 'f_sigv': [0.5, 1.5],
+    #             'log_Mcent': [12.5, 14.0], 'sigma_M': [0.1, 1.0]
+    #         }
+    #     }
         
 
-        if 'fit_param' not in self.args:
-            self.args['fit_param'] = {}
+    #     if 'fit_param' not in self.args:
+    #         self.args['fit_param'] = {}
         
-        params_to_set = fit_param_template.copy()
-        params_to_set.update(self.args['fit_param'])
-        self.args['fit_param'] = params_to_set
+    #     params_to_set = fit_param_template.copy()
+    #     params_to_set.update(self.args['fit_param'])
+    #     self.args['fit_param'] = params_to_set
         
-        tracers = tracer
-        if isinstance(tracer, str):
-            tracers = [tracer]
+    #     tracers = tracer
+    #     if isinstance(tracer, str):
+    #         tracers = [tracer]
         
-        for t in tracers:
-            if t not in self.args['fit_param']['priors']:
-                # a default prior is assigned if the tracer is not defined
-                template = priors_templates.get(t, priors_templates['LRG'])
-                self.args['fit_param']['priors'][t] = template.copy()
+    #     for t in tracers:
+    #         if t not in self.args['fit_param']['priors']:
+    #             # a default prior is assigned if the tracer is not defined
+    #             template = priors_templates.get(t, priors_templates['LRG'])
+    #             self.args['fit_param']['priors'][t] = template.copy()
 
     def _get_default_parameters(self):
         """
@@ -301,92 +234,34 @@ class HOD:
         """
         default_params = {
             'tracers': 'LRG',
-
-            'hcat': {
-                'boxsize': None, 'path_to_sim': None, 'path_to_part': None, 'mass_cut': None, 'z_simu': 0.95,
-                'Abacus': {'sim_name': 'AbacusSummit_highbase_c000_ph100', 'load_particles': False, 'halo_lc': False},
-                'Pinnochio': {'dir_sim': None}, 'Uchuu': {}, 
-                'Uchuu': {'sim_name': 'Uchuu2Gpc', 'load_subhalos': False, 'path_to_sim': '/pscratch/sd/a/arocher/Uchuu'}
-            },
-            '2PCF_settings': {
-                'rsd': True, 'bin_logscale': True, 'mu_max': 1, 'n_mu_bins': 101, 'multipole_index': [0, 2],
-                'n_r_bins': 25, 'n_rp_bins': 25, 'rmax': 30, 'rmin': 0.01, 'rp_max': 30, 'rp_min': 0.01,
-                'edges_rppi': None, 'edges_smu': None, 'los': 'z', 'pimax': 40
-            },
-            'Dsigma_settings': {
-                'bin_logscale': True, 'n_rp_bins': 25, 'rp_max': 30, 'rp_min': 0.1,
-                'los': 'z', 'pimax': 30
-            },
-
             'cosmo': {
                 'fiducial_cosmo': None, 'engine': 'class', 'h': None, 'Omega_m': None, 'Omega_cdm': None,
                 'Omega_L': None, 'Omega_b': None, 'sigma_8': None, 'n_s': None, 'w0_fdl': None, 'wa_fdl': None
             },
 
-            'seed': None, 'nthreads': 32, 'cm_relation': 'diemer19', 'mass_def': '200c',
-            'use_assembly_bias': False, 'use_particles': False, 'path_to_density_mesh':None,
-
+            'seed': None, 'nthreads': 32, 'use_assembly_bias': False, 'use_particles': False, 'path_to_density_mesh':None,
         }
-        return default_params
-
-
-    def init_cosmology(self):
-        """
-        Initialize the cosmology model using Cosmoprimo.
-
-        This method attempts to set the `self.cosmo` attribute using cosmological parameters
-        defined in the input configuration (`self.args['cosmo']`). It supports loading:
         
-        - AbacusSummit cosmologies if the simulation name (`sim_name`) is present
-        - Custom cosmology from provided parameters if no Abacus name is specified
+        default_params['clustering_settings'] = self.__get_default_clustering_parameters()
+        default_params['fit_param'] = self.__get_default_fit_parameters()
+        self.args = default_params
 
-        It uses the `cosmoprimo` package to construct the cosmology and raises a warning if
-        the library is not available.
 
-        Returns
-        -------
-        None
-            Sets the `self.cosmo` attribute to an instance of `cosmoprimo.Cosmology`
-            or leaves it as `None` if the initialization fails.
-
-        Raises
-        ------
-        ImportWarning
-            If `cosmoprimo` is not installed, a warning is issued and no cosmology is set.
-
-        Notes
-        -----
-        - Required fields in `self.args['cosmo']` are passed as keyword arguments to
-        `cosmoprimo.fiducial.Cosmology`.
-        - For AbacusSummit cosmologies, the cosmology identifier is extracted from
-        the `sim_name` string.
-        - Cosmology is used later for computing RSD and distance-based statistics.
+    @staticmethod
+    def __get_default_clustering_parameters():
         """
+        Returns a dictionary with the default clustering analysis parameters.
+        """
+        return yaml.load(open(os.path.join(os.path.dirname(__file__), 'estimators/default_clustering_parameters.yaml')), Loader=yaml.FullLoader)
 
-        try: 
-            if self.__is_sim_abacus:
-                from cosmoprimo.fiducial import AbacusSummit
-                print('Initialize Abacus c{} cosmology'.format(self.args['hcat']['sim_name'].split('_c')[-1][:3]))
-                self.cosmo = AbacusSummit(self.args['hcat']['sim_name'].split('_c')[-1][:3], engine=self.args['cosmo']['engine'])    
-            elif self.__is_sim_uchuu:
-                from .read_uchuu import Uchuu
-                DDE_sims = ['Planck18', 'Planck18_DDE', 'DESIY1_DDE', 'Uchuu2Gpc']
-                cosmo_name= 'Planck2018' if self.args['hcat']['sim_name'] == 'Planck18' else 'Planck2018DDE' if self.args['hcat']['sim_name'] == 'Planck18_DDE' else 'DESIY1DDE' if self.args['hcat']['sim_name'] == 'DESIY1_DDE' else 'Planck2015'
-                print('Initialize Uchuu {} cosmology'.format(cosmo_name), flush=True)
-                self.cosmo =  Uchuu(cosmo_name, engine=self.args['cosmo']['engine'])
-            elif self.args['cosmo']['fiducial_cosmo'] is not None:
-                import cosmoprimo.fiducial
-                fd_cosmo = getattr(cosmoprimo.fiducial, self.args['cosmo']['fiducial_cosmo'])
-                self.cosmo = fd_cosmo(self.args['hcat']['sim_name'].split('_c')[-1][:3], engine=self.args['cosmo']['engine'])    
-            else:
-                from cosmoprimo.fiducial import Cosmology
-                print('Initialize custom cosmology from the "cosmo" parameters', flush=True)
-                self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
-        except ImportError:
-            import warnings
-            warnings.warn('Could not import cosmoprimo. Install cosmoprimo with "python -m pip install git+https://github.com/cosmodesi/cosmoprimo[class,camb,extras]".\n'\
-                  'Cosmology needed to apply RSD when computing correlations. No cosmology set.')
-            self.cosmo = None
+
+    @staticmethod
+    def __get_default_fit_parameters():
+        """
+        Returns a dictionary with the default fit parameters.
+        """
+        return yaml.load(open(os.path.join(os.path.dirname(__file__), 'fit_functions/default_HOD_fit_parameters.yaml')), Loader=yaml.FullLoader)
+
 
     def __init_hod_param(self, tracer):
 
@@ -430,24 +305,148 @@ class HOD:
         """
 
         hod_list_param_sat, hod_param_ab = None, None
-        if self.args[tracer]['HOD_model'] == 'HMQ':
-            hod_list_param_cen = [self.args[tracer]['Ac'], self.args[tracer]['log_Mcent'], self.args[tracer]['sigma_M'], self.args[tracer]['gamma'], self.args[tracer]['Q'], self.args[tracer]['pmax']]               
-        elif ('GHOD' in self.args[tracer]['HOD_model']) | ('LNHOD' in self.args[tracer]['HOD_model']) | ('SHOD' in self.args[tracer]['HOD_model']):
-            hod_list_param_cen = [self.args[tracer]['Ac'], self.args[tracer]['log_Mcent'], self.args[tracer]['sigma_M']]
-        elif ('SFHOD' in self.args[tracer]['HOD_model']) | ('mHMQ' in self.args[tracer]['HOD_model']):
-            hod_list_param_cen = [self.args[tracer]['Ac'], self.args[tracer]['log_Mcent'], self.args[tracer]['sigma_M'], self.args[tracer]['gamma']]
-        else: 
-            raise ValueError('{} not implemented in HOD models'.format(self.args['HOD_param']['HOD_model']))
-        
+        hod_list_param_cen = [self.args[tracer][name] for name in self._cen_param_names(self.args[tracer]['HOD_model'])]
+
         if self.args[tracer]['satellites']:
-            hod_list_param_sat = np.array([self.args[tracer]['As'], self.args[tracer]['M_0'], self.args[tracer]['M_1'], self.args[tracer]['alpha']], dtype='float64')
+            hod_list_param_sat = np.array([self.args[tracer][name] for name in self._sat_param_names(self.args[tracer]['sat_HOD_model'])], dtype='float64')
 
         if self.args['use_assembly_bias']:
             hod_param_ab = np.array(list(self.args[tracer]['assembly_bias'].values()), dtype='float64').T
 
         return np.float64(hod_list_param_cen), hod_list_param_sat, hod_param_ab
 
-    
+
+    def _hod_param_names(self, model):
+        """
+        Return the ordered list of tracer-dictionary parameter names declared on
+        the ``_<model>`` HOD function in HOD_models (its ``hod_param_names``
+        attribute, set with the ``hod_model`` decorator there).
+
+        This keeps the code model-agnostic: adding a new HOD model only requires
+        defining and tagging its ``_<model>`` function in HOD_models.py -- nothing
+        here (parameter loading in :meth:`__init_hod_param`, validation in
+        :meth:`check_HOD_params`) needs to change.
+
+        Raises
+        ------
+        ValueError
+            If ``model`` is not implemented, or is implemented but not tagged with
+            its parameter names.
+        """
+        try:
+            func = getattr(HOD_models, '_' + model)
+        except AttributeError:
+            raise ValueError('{} not implemented in HOD models'.format(model))
+        try:
+            return func.hod_param_names
+        except AttributeError:
+            raise ValueError("HOD model '{0}' has no declared parameters: tag its "
+                             "`_{0}` function in HOD_models.py with @hod_model([...]).".format(model))
+
+
+    def _cen_param_names(self, HOD_model):
+        """Return the ordered central-HOD parameter names required by ``HOD_model`` (see :meth:`_hod_param_names`)."""
+        return self._hod_param_names(HOD_model)
+
+
+    def _sat_param_names(self, sat_HOD_model):
+        """Return the ordered satellite-HOD parameter names required by ``sat_HOD_model`` (see :meth:`_hod_param_names`)."""
+        return self._hod_param_names(sat_HOD_model)
+
+
+    def check_HOD_params(self, tracers=None, raise_error=True):
+        """
+        Check that every parameter required by each tracer's HOD model is defined
+        in that tracer's parameter dictionary ``self.args[tracer]``.
+
+        For each tracer, the required parameters are:
+
+        - ``HOD_model`` itself, and the central-HOD parameters it needs
+          (see :meth:`_cen_param_names`);
+        - when ``self.args[tracer]['satellites']`` is True, ``sat_HOD_model`` and the
+          satellite-HOD parameters (see :meth:`_sat_param_names`).
+
+        Parameters
+        ----------
+        tracers : str or list of str, optional
+            Tracer(s) to check. If None, all tracers in ``self._tracers()`` are checked.
+        raise_error : bool, default=True
+            If True, raise a ``ValueError`` listing the missing parameters. If False,
+            only return the dictionary of missing parameters.
+
+        Returns
+        -------
+        missing : dict
+            ``{tracer: [missing_param_names]}`` for tracers with missing parameters
+            (empty dict if every required parameter is defined).
+
+        Raises
+        ------
+        ValueError
+            If ``raise_error`` is True and at least one required parameter is missing,
+            or if a tracer uses an HOD model that is not implemented.
+        """
+        if tracers is None:
+            tracers = self._tracers()
+        elif isinstance(tracers, str):
+            tracers = [tracers]
+
+        missing = {}
+        for tracer in tracers:
+            if tracer not in self.args:
+                raise ValueError(f'{tracer} HOD parameters are not defined in the arguments.')
+            tr_args = self.args[tracer]
+
+            required = ['HOD_model']
+            if 'HOD_model' in tr_args:
+                required += self._cen_param_names(tr_args['HOD_model'])
+            if tr_args.get('satellites', False):
+                required += ['sat_HOD_model']
+                if 'sat_HOD_model' in tr_args:
+                    required += self._sat_param_names(tr_args['sat_HOD_model'])
+                if (tr_args['nu'] >= 4) | (tr_args['nu'] <= 0.5):
+                    self.logger.warning(f"nu must satisfy {0.5} <= nu <= {4}; got {tr_args['nu']}. Outside that range, fix it to {np.clip(tr_args['nu'], 0.5, 4)}")
+                tr_args['nu'] = np.clip(tr_args['nu'], 0.5, 4)
+
+                if (tr_args['vel_sat'] != 'NFW') and (tr_args['vel_sat'] != 'rd_normal') and (tr_args['vel_sat'] != 'infall'):
+                    raise ValueError(f'vel_sat={tr_args["vel_sat"]} is not a valid argument for satellite velocities, only "rd_normal", "infall", "NFW" are available.')
+
+            miss = [name for name in required if name not in tr_args]
+            if miss:
+                missing[tracer] = miss
+
+        if missing and raise_error:
+            details = '; '.join('{} (HOD_model={}): missing {}'.format(tr, self.args[tr].get('HOD_model', '?'), names)
+                                for tr, names in missing.items())
+            raise ValueError('Undefined HOD parameters -> ' + details)
+        return missing
+
+    def check_clustering_settings(self, stat):
+        """
+        Check that the clustering settings are valid.
+
+        Raises
+        ------
+        ValueError
+            If any of the clustering settings are invalid.
+        """
+
+        if self.args['clustering_settings'].get(stat, None) is None:
+            raise ValueError(f"Clustering settings for {stat} are implemented.")
+        
+
+    def check_cat_tracers(self, cat, tracers=None):
+        uniq_tr = list(np.unique(cat['TRACER']))
+        if tracers is None: 
+            tracers = uniq_tr
+        else:
+            tracers = tracers if isinstance(tracers, list) else [tracers]
+
+        missing_tr = [tr for tr in tracers if tr not in uniq_tr]
+        if missing_tr:
+            raise ValueError(f'{missing_tr} not found in the catalog. Available: {sorted(uniq_tr)}')
+        return tracers
+
     def _tracers(self):
         """
         Helper function to return the list of tracers defined in the parameter file
@@ -487,19 +486,20 @@ class HOD:
         - The density scaling factor will be calculated as `0.01 * 100^3 / self.ngal(tracer)[0]`.
         If no density is specified, the function simply returns 1.
 
-        If `verbose` is set to True, the following message will be printed:
+        If `verbose` is set to True, the following message will be logged:
         - "Set density to 0.01 gal/Mpc/h".
         """
-        
+
         if isinstance(self.args[tracer]['density'], float):
             if verbose:
-                print('Set density to {} gal/Mpc/h'.format(self.args[tracer]['density']))
+                self.logger.debug(f"Set density to {self.args[tracer]['density']} gal/Mpc/h")
             return self.args[tracer]['density']*self.boxsize**3 /self.ngal(tracer)[0]
         else:
-            if verbose: print('No density set')
-            return 1 
+            if verbose:
+                self.logger.debug('No density set')
+            return 1
     
-    def ngal(self, tracer, verbose=False):
+    def ngal(self, tracer, return_mass=False, verbose=False):
         """
         Return the number of galaxy and the satelitte fraction 
         
@@ -507,6 +507,7 @@ class HOD:
         ----------
             tracer: str
                 Name of the galaxy tracer in self.tracers 
+            return_mass (bool, optional): Defaults to False.
             verbose (bool, optional): Defaults to False.
 
         Returns
@@ -516,48 +517,21 @@ class HOD:
         
         fsat: float
             Expected fraction of satellite galaxy (n_sat/ngal)
+        
+        mean_hmass: float, optional
+            Mean halo mass of the galaxies in log10(Msun/h) (only returned if return_mass is True)
+        
         """
         start = time.time()
         hod_list_param_cen, hod_list_param_sat, _ = self.__init_hod_param(tracer)
-        ngal, fsat = compute_ngal(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], self.args['nthreads'], 
+        ngal, fsat, mean_hmass = compute_ngal(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer],
                                 hod_list_param_cen, hod_list_param_sat, self.args[tracer]['conformity_bias'], self.args[tracer]['link_sat_to_central'])
         if verbose:
-            print(time.time()-start)
-        return ngal, fsat   
-
-
-    def calc_env_factor(self, cellsize=5, resampler='cic'):
-
-        """
-        Not used anymore
-        Compute density around each halos on a mesh. Based on pypower CatalogMesh https://pypower.readthedocs.io/en/latest/api/api.html#pypower.mesh.CatalogMesh
-
-        Parameters
-        ----------
-        cellsize : array, float, default=5
-            Physical size of mesh cells.
-        
-        resampler : string, ResampleWindow, default='tsc'
-            Resampler used to assign particles to the mesh.
-            Choices are ['ngp', 'cic', 'tcs', 'pcs'].
-
-        Returns
-        -------
-        None
-            Add column named ``env`` in the halo catalog self.hcat 
-        """
-        from pypower import CatalogMesh
-
-        print(f'Compute environment in cellsize {cellsize}...', flush=True)
-        import warnings
-        warnings.warn('Enviroment factor computed on halo not particles, need to be updated. Assume boxcenter to 0')
-        positions = [self.hcat['x'], self.hcat['y'], self.hcat['z']]
-        mesh = CatalogMesh(data_positions=positions, cellsize=cellsize, boxsize=self.boxsize,
-                            boxcenter=0., resampler=resampler, interlacing=0)
-        painted_mesh = mesh.to_mesh(field='data')
-        self.hcat['env'] = painted_mesh.readout(
-            np.array(positions).T, resampler=resampler)
-        print('Done !', flush=True)
+            self.logger.debug(f'ngal computed in {time.time()-start:.2f} sec')
+        if return_mass:
+            return ngal, fsat, np.log10(mean_hmass)   
+        else:
+            return ngal, fsat
 
 
     def _compute_assembly_bias_columns(self):
@@ -587,261 +561,38 @@ class HOD:
         If there are multiple tracers defined in `self.args['tracers']` and each tracer has specific assembly bias
         columns defined in `self.args[tracer]['assembly_bias']`, this method will iterate over all of them and create
         the corresponding assembly bias columns in the halo catalog.
-        """
+        """        
+
         ab_proxy = []
         for tr in self._tracers():
             if self.args[tr].get('assembly_bias'):
                 ab_proxy += [list(self.args[tr]['assembly_bias'].keys())]
         ab_proxy = list(set().union(*ab_proxy))
-        for ab in ab_proxy:
-            self.set_assembly_bias_values(ab)
-
-    def get_env_col(self, verbose: bool = True):
-        """
-        Interpolate environment-based quantities (density and shear) 
-        from precomputed meshes onto halo positions.
-
-        This function assigns two new columns to `self.hcat`:
-        - `'env'`: interpolated density environment value at each halo position.
-        - `'shear'`: interpolated shear value at each halo position.
-
-        Method
-        ------
-        - The halo positions (`x, y, z` in `self.hcat`) are normalized by the 
-        mesh cell size and mapped into grid indices.
-        - `scipy.interpolate.interpn` is used to interpolate values from 
-        `self.density_mesh` and `self.shear_mesh` at those halo positions.
-        - Periodic wrapping (`% N_dim`) is applied to positions to ensure 
-        indices lie within mesh bounds.
-
-        Parameters
-        ----------
-        verbose : bool, optional (default=True)
-            If True, prints progress messages to stdout. Set False for silent execution.
-
-        Notes
-        -----
-        - Requires `self.density_mesh` and `self.shear_mesh` to be already loaded.
-        - Modifies `self.hcat` in-place by adding two new columns.
-        """
-        from scipy.interpolate import interpn
-
-        N_dim = self.density_mesh.shape[0]
-        cell_size = self.boxsize / N_dim
-
-        # Halo positions in grid index space (apply periodic wrapping)
-        GroupPos = (
-            np.array([self.hcat['x'], self.hcat['y'], self.hcat['z']]).T / cell_size
-        ).astype(int) % N_dim
-
-        grid_axes = (np.arange(N_dim), np.arange(N_dim), np.arange(N_dim))
-
-        for name, mesh in [('env', self.density_mesh), ('shear', self.shear_mesh)]:
-            if verbose:
-                print(f"Initializing {name} column...", flush=True)
-            self.hcat[name] = interpn(grid_axes, mesh, GroupPos)
-            if verbose:
-                print("Done!", flush=True)
+        
+        abproxy_to_remove = self.base_catalog.set_assembly_bias_values(ab_proxy)
+        self._remove_env_bias(abproxy_to_remove)
 
 
+    def _remove_env_bias(self, ab_proxy_to_remove):
+            """
+            Remove assembly bias parameters from a list of columns for all tracers.
+            Parameters
+            ----------
+            ab_proxy_to_remove : list
+                List of assembly bias column names to remove from the tracers' parameters.
 
-    def load_env_based_properties(self):
-        """
-        Load environment-based properties (density and shear meshes) for HOD assembly bias modeling.
-
-        This method attaches density and shear information to the catalog for use in 
-        environment-based assembly bias models. It handles multiple cases:
-
-        1. **Abacus simulation (`self.__is_sim_abacus` is True)**:
-        - If `path_to_density_mesh` is a directory, attempts to construct a file path of the form:
-            `env_shear_map_<sim_name>_z<z_simu>.h5`.
-        - If that file exists, loads precomputed meshes using `Catalog.read`.
-        - Otherwise, attempts to compute meshes on the fly via 
-            `.environment_func.compute_env_shear_abacus`.
-        - If the redshift snapshot is not supported for particle outputs, issues a warning 
-            and removes environment-based assembly bias parameters.
-
-        2. **No mesh path provided (`path_to_density_mesh is None`)**:
-        - Issues a warning and removes 'env' and 'shear' assembly bias parameters 
-            from tracer and fit parameter dictionaries.
-
-        3. **Mesh file exists** (`os.path.exists(path_to_density_mesh)`):
-        - Reads meshes from file using `Catalog.read`.
-        - Assigns them to `self.density_mesh` and `self.shear_mesh`.
-        - Calls `self.get_env_col()` to attach environment columns to `self.hcat`.
-
-        4. **Invalid mesh path**:
-        - Issues a warning and removes 'env' and 'shear' assembly bias parameters.
-
-        Notes
-        -----
-        - This function modifies `self.args` in place by removing environment-based 
-        assembly bias entries if meshes cannot be loaded.
-        - If meshes are successfully loaded or computed, they are stored in 
-        `self.density_mesh` and `self.shear_mesh`, and `self.hcat` is updated with 
-        corresponding 'env' and 'shear' columns.
-        """
-
-        path = self.args.get('path_to_density_mesh', None)
-        print(f'Load environment-based properties for assembly bias HOD from {path}...', flush=True)
-        def _remove_env_bias():
-            """Remove 'env' and 'shear' assembly bias parameters from all tracers."""
+            Notes
+            -----
+            This function iterates over all tracers and removes the specified assembly bias parameters from both the
+            tracer-specific assembly bias dictionary and the fit parameter priors dictionary. If a specified column
+            does not exist in the dictionaries, it is ignored (no error is raised).
+            """
+            
             for tr in self._tracers():
-                for c in ['env', 'shear']:
+                for c in ab_proxy_to_remove:
                     self.args.get(tr, {}).get('assembly_bias', {}).pop(c, None)
                     self.args.get('fit_param', {}).get('priors', {}).get(tr, {}).get('assembly_bias', {}).pop(c, None)
-                
 
-        # --- Case 1: Abacus simulation ---
-        if self.__is_sim_abacus:
-            if os.path.isdir(path):
-                path = os.path.join(
-                    path,
-                    f'env_shear_map_{self.args["hcat"]["sim_name"]}_z{self.args["hcat"]["z_simu"]:.3f}.h5'
-                )
-            if os.path.exists(path):
-                env_prop = Catalog.read(path)
-                self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
-                self.get_env_col()
-
-            else:
-                from .environment_func import compute_env_shear_abacus
-                valid_snapshots = [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 1.1, 1.4, 1.7, 2.0, 2.5, 3.0]
-                z_simu = self.args['hcat']['z_simu']
-
-                if z_simu not in valid_snapshots:
-                    import warnings
-                    warnings.warn(
-                        f"Redshift snapshot {z_simu:.3f} does not have particle outputs. "
-                        "Continuing without shear/environment-based assembly bias."
-                    )
-                    _remove_env_bias()
-                else:
-                    print('Compute density and shear from particle distributions...', flush=True)
-                    self.density_mesh, self.shear_mesh = compute_env_shear_abacus(
-                        self.args['hcat']['sim_name'],
-                        z_simu,
-                        cell_size=5,
-                        R=1.5,
-                        root_abacus_dir=self._root_dir_abacus,
-                        dir_to_save=path,
-                    )
-                    self.get_env_col()
-
-        # --- Case 2: Uchuu sim ---
-        elif self.__is_sim_uchuu:
-            # DDE_sims = ['Planck18', 'Planck18_DDE', 'DESIY1_DDE', 'Uchuu2Gpc']
-            print('Uchuu simulation detected...', flush=True)
-            if self.args['hcat']['sim_name'] == 'Uchuu2Gpc':   
-                if path and os.path.isdir(path):
-                    snapshot_num = read_uchuu.get_Uchuu_snapshot_file('{:.3f}'.format(self.args['hcat']['z_simu']))
-                    path = os.path.join(
-                        path,
-                        f'env_shear_map_Uchuu_snapdir_{snapshot_num:03d}.h5'
-                    )
-                    print(f'Looking for Uchuu env/shear mesh at {path}...', flush=True)
-                if path and os.path.exists(path):
-                    print('Load precomputed density and shear mesh for Uchuu...', flush=True)
-                    env_prop = Catalog.read(path)
-                    self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
-                    self.get_env_col()
-
-            else:
-                    import warnings
-                    warnings.warn(
-                        f"No particle outputs for DDE simulatioms. "
-                        "Continuing without shear/environment-based assembly bias."
-                    )
-                    _remove_env_bias()
-
-        # --- Case 3: Mesh file exists ---
-        elif path is None:
-            import warnings
-            warnings.warn(
-                "Path to density/shear mesh not set. "
-                "To generate density and shear mesh for assembly bias HOD, use compute_env_shear.py. "
-                "Continuing without shear/environment-based assembly bias."
-            )
-            _remove_env_bias()
-
-        elif os.path.exists(path):
-            env_prop = Catalog.read(path)
-            self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
-            self.get_env_col()
-
-        # --- Case 4: Invalid path ---
-        else:
-            import warnings
-            warnings.warn(
-                f"Path to density/shear mesh not valid ({path}). "
-                "To generate density and shear mesh for assembly bias HOD, use compute_env_shear.py. "
-                "Continuing without shear/environment-based assembly bias."
-            )
-            _remove_env_bias()
-            
-
-    def set_assembly_bias_values(self, col):
-
-        """
-        Assign ranked values for assembly bias computation based on a specific column.
-
-        This method assigns ranked values linearly between -0.5 and 0.5 for the assembly bias computation. The
-        values are based on a histogram of halo masses (`log10_Mh`), and the `col` parameter specifies the column
-        in the halo catalog that will be used for the ranking. The method first checks if the required column 
-        (`ab_{col}`) already exists; if not, it computes the values based on the input column and adds them to the
-        halo catalog.
-
-        Parameters
-        ----------
-        col : str
-            The column name in the halo catalog used to compute assembly bias values. 
-            This column is expected to be present in the halo catalog.
-        bins : int, optional
-            The number of bins used for mass binning in the histogram of halo masses. Default is 50.
-
-        Returns
-        -------
-        None
-
-        Raises
-        ------
-        ValueError
-            If the specified column is not present in the halo catalog, a `ValueError` is raised.
-
-        Notes
-        -----
-        The method uses `log10_Mh` values to bin the halos and ranks the halos in each bin based on the specified column.
-        The assembly bias values are assigned linearly between -0.5 and 0.5 within each bin.
-        If the column `env` is requested but not present, the `calc_env_factor()` method is called to compute it first.
-        Additionally, the `ab_{col}` column is only added if it does not already exist in the halo catalog.
-
-        Example
-        -------
-        If `col = 'env'`, the method checks if an assembly bias column for `env` exists. If not, it computes and adds it.
-        The halos are binned based on their mass, and each halo is ranked within its mass bin. A value between -0.5 and 0.5
-        is assigned to each halo in the catalog based on the ranking of the `env` column.
-        """
-
-        if f'ab_{col}' in self.hcat.columns():
-            return 0
-        
-        if ((col == 'env') & ('env' not in self.hcat.columns())) | ((col == 'shear') & ('shear' not in self.hcat.columns())):
-            self.load_env_based_properties()
-            if col not in self.hcat.columns():
-                return
-            else:
-                for col in ['env', 'shear']:
-                    print(f'Set value for assembly bias according to {col}...', flush=True)
-                    self.hcat[f'ab_{col}'] = initialize_assembly_bias_value(self.hcat['log10_Mh'], self.hcat[col])
-                return
-        if col not in self.hcat.columns():
-            raise ValueError(f'{col} not in halo catalog columns')
-        
-        print(f'Set value for assembly bias according to {col}...', flush=True)
-
-        self.hcat[f'ab_{col}'] = initialize_assembly_bias_value(self.hcat['log10_Mh'], self.hcat[col])
-        
-        print(f'Done !', flush=True)
 
 
     def make_mock_cat(self, tracers=None, fix_seed=None, verbose=True):
@@ -875,7 +626,7 @@ class HOD:
         - The method relies on HOD models defined for each tracer in `self.args[tracer]['HOD_model']` and `self.args[tracer]['sat_HOD_model']`.
         - If `self.args['assembly_bias']` is enabled, assembly bias columns will be computed and included in the mock catalog.
         - The `fix_seed` parameter ensures that the mock catalogs are generated in a reproducible manner, but it requires consistent 
-        thread configurations (`self.args['nthreads']`).
+        thread configurations (`self.nthreads`).
         - When `tracers` includes both 'ELG' and 'LRG', the method handles the case where both tracers share the same halo by placing
         one LRG at the center and positioning other galaxies (like ELGs) based on the NFW profile.
 
@@ -896,33 +647,39 @@ class HOD:
             for tr in tracers:
                 if tr not in self._tracers():
                     raise ValueError(f'{tr} not in defined tracers {self._tracers()}')
+        # Fail early with a clear message if any required HOD parameter is missing.
+        self.check_HOD_params(tracers)
         if verbose:
-            print('Create mock catalog for {}'.format(tracers), flush=True)         
-        
+            self.logger.info(f'Create mock catalog for {tracers}')
+
+
         if self.args['use_assembly_bias']:
             self._compute_assembly_bias_columns()
 
         final_cat = {}
-        # mask_id = np.ones(self.hcat.size, dtype=bool)
-        # count_gal = {}
+
+        
+        weight = np.ones(self.hcat['log10_Mh'].size, dtype=np.float64)
+        if len(tracers) > 1:
+            cc, bins = np.histogram(self.hcat['log10_Mh'], bins=100)
+        
         for tracer in tracers:
             start = time.time()
-            self._fun_cHOD[tracer] = globals()['_'+self.args[tracer]['HOD_model']]
-            self._fun_sHOD[tracer] = globals()['_'+self.args[tracer]['sat_HOD_model']]
+            self._fun_cHOD[tracer] = getattr(HOD_models, '_'+self.args[tracer]['HOD_model'])
+            self._fun_sHOD[tracer] = getattr(HOD_models, '_'+self.args[tracer]['sat_HOD_model'])
             if verbose:
-                print('Run HOD for {}'.format(tracer), flush=True)         
+                self.logger.info(f'Run HOD for {tracer}')
             hod_list_param_cen, hod_list_param_sat, hod_list_ab_param = self.__init_hod_param(tracer)
-            
+
             ds = self.get_ds_fac(tracer, verbose=verbose)
             if (hod_list_param_cen[0]*ds > 1):
-                import warnings
-                warnings.warn('Ac={} is > 1, the density is not fixed to {}'.format(hod_list_param_cen[0]*ds, self.args[tracer]["density"]))
+                self._warn_once(f'Ac={hod_list_param_cen[0]*ds} is > 1, the density is not fixed to {self.args[tracer]["density"]}')
             else : 
                 hod_list_param_cen[0] *= ds
                 hod_list_param_sat[0] *= 1 if self.args[tracer]['link_sat_to_central'] else ds
 
             if fix_seed is not None:
-                seed = rng.randint(0, 4294967295, self.args['nthreads'])
+                seed = rng.randint(0, 4294967295, self.nthreads)
             else:
                 seed = None
             
@@ -931,26 +688,35 @@ class HOD:
                 if np.all([col in self.hcat.columns() for col in cols_ab]):
                     ab_arr =  np.vstack([self.hcat[col] for col in cols_ab]).T
                 else:
-                    import warnings
-                    warnings.warn('Precomputed columns for assembly bias have not been found {}. Continue without assembly bias.'.format(cols_ab))
+                    self._warn_once(f'Precomputed columns for assembly bias have not been found {cols_ab}. Continue without assembly bias.')
                     hod_list_ab_param=None
             else:
                 hod_list_ab_param, ab_arr = None, None
             if verbose:
-                print("Initialisation in {:.2f} sec".format(time.time()-start), flush=True)
+                self.logger.debug(f'Initialisation in {time.time()-start:.2f} sec')
                 st = time.time()
             cond_cent, proba_sat, Nb_sat = compute_N(self.hcat['log10_Mh'], self._fun_cHOD[tracer], self._fun_sHOD[tracer], hod_list_param_cen, 
-                                                   hod_list_param_sat, self.args[tracer]['nu'], hod_list_ab_param, self.args['nthreads'], ab_arr, 
+                                                   hod_list_param_sat, self.args[tracer]['nu'], hod_list_ab_param, self.nthreads, ab_arr, weight,
                                                    self.args[tracer]['conformity_bias'], self.args[tracer]['link_sat_to_central'], seed)
+            if len(tracers) > 1:
+                # Update the weight using the halo mass function to ensure the total number of galaxies is correct when multiple tracers are used. The weight is set to zero if the halo is already populated by a central galaxy.
+                mm = weight > 0
+                cc_1, bins = np.histogram(self.hcat['log10_Mh'][~cond_cent & mm], bins=bins)
+                idx = np.digitize(self.hcat['log10_Mh'][~cond_cent & mm], bins) - 1    # -1 because digitize is 1-based
+                idx = np.clip(idx, 0, len(cc) - 1)  # guard the rightmost edge
+                weight[cond_cent] = 0
+                weight[weight > 0] = cc[idx] / cc_1[idx]                    # one value per element of `masses`
+            
             if verbose:
-                print('Ncent, Nsat computed in {:.2f} sec'.format(time.time()-st), flush=True)
+                self.logger.debug(f'Ncent, Nsat computed in {time.time()-st:.2f} sec')
                 st = time.time()
+            
             cent_cat = self.hcat[cond_cent]
             cent_cat['Central'] = np.ones(cent_cat['x'].size,dtype='int')
 
             if verbose:
-                print('Central catalog in {:.2f} sec'.format(time.time()-st), flush=True)
-                print("HOD computed for {} in {:.2f} sec".format(tracer, time.time()-start), flush=True)
+                self.logger.debug(f'Central catalog in {time.time()-st:.2f} sec')
+                self.logger.debug(f'HOD computed for {tracer} in {time.time()-start:.2f} sec')
             
             if (not self.args[tracer]['satellites']) | (Nb_sat == 0):
                 Nb_sat=0
@@ -960,70 +726,43 @@ class HOD:
             else:
                 start_sat = time.time()
                 if verbose:
-                    print("Start satellite assignement", flush=True)
+                    self.logger.debug('Start satellite assignement')
                 mask_sat = proba_sat > 0
                 list_nsat = proba_sat[mask_sat]
-                sat_cat = Catalog.from_array(np.repeat(self.hcat[mask_sat].to_array(), list_nsat))
-                
+                # sat_cat = Catalog.from_array(np.repeat(self.hcat[mask_sat].to_array(), list_nsat))
+                sat_cat = Catalog()
+                sat_cat.data = {col: np.repeat(self.hcat[col][mask_sat], list_nsat) for col in self.hcat.columns()}
                 if self.args['use_particles'] & (self.part_subsamples is not None):
-                    if verbose: print('Using particles', flush=True)
-                    if self.__is_sim_abacus:
-                        if verbose: 
-                            print('Using Abacus particles', flush=True)
-                            start = time.time()
-                        if fix_seed is not None:
-                            seed = rng.randint(0, 4294967295, self.args['nthreads'])
-                        else:
-                            seed = None
-                        mask_nfw = compute_sat_from_abacus_part(self.part_subsamples['pos'].T[0],self.part_subsamples['pos'].T[1],self.part_subsamples['pos'].T[2],
-                            self.part_subsamples['vel'].T[0], self.part_subsamples['vel'].T[1],self.part_subsamples['vel'].T[2],
-                            sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
-                            self.hcat['npoutA'][mask_sat], self.hcat['npstartA'][mask_sat], list_nsat, np.insert(np.cumsum(list_nsat), 0, 0), self.args['nthreads'], seed=seed)
-                        if verbose: 
-                            print('sat from part done', time.time() - start, flush=True)
-                            print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
-
-                    elif self.part_subsamples is not None:
-                        if fix_seed is not None:
-                            seed = rng.randint(0, 4294967295, sat_cat.size)
-                        else:
-                            seed = None
-                        start = time.time()
+                    if verbose:
                         start_part = time.time()
-                        uniq_sat_id = np.unique(sat_cat['halo_id'])
-                        if not hasattr(self, '_order_part_index'):
-                            self._order_part_index = np.argsort(self.part_subsamples['upid'])
-                        flat, offsets = halo_to_particle_indices(self.part_subsamples['upid'][self._order_part_index], self._order_part_index, uniq_sat_id, self.args['nthreads'])
-                        # result = [flat[offsets[i]:offsets[i+1]] for i in range(len(uniq_sat_id))]
-                        start = time.time()
-                        sat_cat = sat_cat[sat_cat['halo_id'].argsort()]
-                        start = time.time()
-                        # mask_nfw = compute_sat_from_part(sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
-                        #                                  self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
-                        #                                  self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'], result,
-                        #                                  list_nsat, np.insert(np.cumsum(list_nsat),0,0), self.args['nthreads'], seed=seed)
+                        self.logger.info("Assign satellites to particles...")
+                    if fix_seed is not None:
+                        seed = rng.randint(0, 4294967295, self.nthreads)
+                    else:
+                        seed = None
 
-                        mask_nfw = sample_satellites_from_particles(sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
-                                                         self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
-                                                         self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'], flat, offsets,
-                                                         list_nsat, self.args['nthreads'], seed=seed)
-                        if verbose: 
-                            print('sample_satellites_from_particles done', time.time() - start, flush=True)
-                            print('sat from part done', time.time() - start_part, flush=True)
-                            print(f'{mask_nfw.sum()} satellites will be positioned using NFW', flush=True)
+                    sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'], mask_nfw = self.base_catalog.assign_sat_to_part(mask_sat, list_nsat, seed=seed)
+                    if verbose:
+                        self.logger.debug(f'Sample satellites from particles done in {time.time() - start_part:.2f} sec')
+                        self.logger.debug(f'{mask_nfw.sum()} satellites will be positioned using NFW')
                 else:
+                    if self.args['use_particles']:
+                        self._warn_once('use_particles is set to True but no particle subsample found, continue with NFW profile for satellites')
+                    if self.part_subsamples is not None:
+                        self._warn_once('Particle subsample loaded but use_particles is set to False, continue with NFW profile for satellites. To use particles, set use_particles to True.')
                     mask_nfw = np.ones(Nb_sat, dtype=bool)
+                    
                 
                 if mask_nfw.sum() > 0:
-                    start = time.time()
+                    start_nfw = time.time()
                     if fix_seed is not None:
-                        seed1 = rng.randint(0, 4294967295, self.args['nthreads'])
+                        seed1 = rng.randint(0, 4294967295, self.nthreads)
                     else:
                         seed1 = None
-                    rd_pos = getPointsOnSphere_jit(Nb_sat, np.minimum(Nb_sat, self.args['nthreads']), seed1)
+                    rd_pos = getPointsOnSphere_jit(Nb_sat, np.minimum(Nb_sat, self.nthreads), seed1)
                     if self.args[tracer]['vel_sat'] == 'NFW':
-                        seed2 = rng.randint(0, 4294967295, self.args['nthreads'])
-                        rd_v = getPointsOnSphere_jit(Nb_sat, np.minimum(Nb_sat, self.args['nthreads']), seed2)
+                        seed2 = rng.randint(0, 4294967295, self.nthreads)
+                        rd_v = getPointsOnSphere_jit(Nb_sat, np.minimum(Nb_sat, self.nthreads), seed2)
                         ut = np.cross(rd_pos,rd_v, axis=1) 
                         rd_vel = (ut.T / np.linalg.norm(ut, axis=1).flatten()).T
                     else:
@@ -1038,133 +777,41 @@ class HOD:
                     rd_pos, rd_vel, exp_frac=self.args[tracer]['exp_frac'], 
                     exp_scale=self.args[tracer]['exp_scale'], nfw_rescale=self.args[tracer]['nfw_rescale'],
                     vrms_h=vrms_h, f_sigv=self.args[tracer]['f_sigv'], v_infall=self.args[tracer]['v_infall'], 
-                    vel_sat=self.args[tracer]['vel_sat'], Nthread=self.args['nthreads'], seed=seed)
+                    vel_sat=self.args[tracer]['vel_sat'], Nthread=self.nthreads, seed=seed)
+
                     if verbose:
-                        print("NFW Computed", time.time() - start, flush=True)
+                        self.logger.debug(f'NFW satellite assignment done in {time.time() - start_nfw:.2f} sec')
                 sat_cat['Central'] = sat_cat.zeros()
 
                 if verbose:
-                    print("Satellite assignement done", time.time() - start_sat, flush=True)
+                    self.logger.debug(f'Satellite assignement done in {time.time() - start_sat:.2f} sec')
 
                 if verbose:
-                    print("Make final catalog", flush=True)
-                    start = time.time()
+                    self.logger.debug('Make final catalog')
                 final_cat[tracer] = Catalog.concatenate((cent_cat,sat_cat))
                 # final_cat[tracer]['TRACER'] = [tracer]*final_cat[tracer].size
                 final_cat[tracer]['TRACER'] = np.full(final_cat[tracer].size, tracer)
-                if verbose:
-                    print('{} mock catalogue done'.format(tracer), time.time()-start, flush=True)
-                    
-                
-            # mask_id &= (mask_cent | mask_sat)
-            # count_gal[tracer] = np.int64(proba_sat + cond_cent)
-
             if verbose:
-                print("Done overall time ", tracer, time.time() - start_all, flush=True)
+                self.logger.info(f'{tracer} mock catalogue done in {time.time()-start:.2f} sec')
 
-        # When LRG and ELG are in the same halo, put 1 LRG at the center and all other galaxies are position following NFW profile
-        # if ((tracers == ['ELG', 'LRG']) | (tracers == ['LRG', 'ELG'])) & (mask_id.sum() >0):
-        #     mask_elg = np.in1d(final_cat['ELG']['halo_id'], final_cat['LRG']['halo_id'])
-        #     mask_lrg = np.in1d(final_cat['LRG']['halo_id'], final_cat['ELG']['halo_id'])
-            
-        #     cen_LRG = self.hcat[mask_id]
-        #     cen_LRG['Central'] = cen_LRG.ones()
 
-        #     if ((count_gal['LRG'] > 1) & mask_id).sum() > 0:
-        #         sat_LRG = Catalog.from_array(np.repeat(self.hcat[(count_gal['LRG'] > 1) & mask_id].to_array(), count_gal['LRG'][(count_gal['LRG'] > 1) & mask_id]-1))
-        #         sat_LRG = self.init_elg_sat_for_lrg('LRG', sat_LRG, fix_seed=fix_seed)
-        #         final_cat['LRG'][mask_lrg] = Catalog.concatenate(cen_LRG, sat_LRG)
-        #     else:
-        #         final_cat['LRG'][mask_lrg] = cen_LRG
-            
-        #     sat_ELG = Catalog.from_array(np.repeat(self.hcat[mask_id].to_array(), count_gal['ELG'][mask_id]))
-        #     sat_ELG = self.init_elg_sat_for_lrg('ELG', sat_ELG, fix_seed=fix_seed)
-        #     final_cat['ELG'][mask_elg] = sat_ELG
-        
+        final_cat = Catalog.concatenate(list(final_cat.values()))
+
         if verbose:
-            st = time.time()
-            final_cat = Catalog.concatenate(list(final_cat.values())) 
-            Nb_sat = np.count_nonzero(final_cat['Central'])
-            # print("{} central galaxies, {} satellites, fraction of satellite {:.2f} ".format(final_cat.size-Nb_sat,Nb_sat, Nb_sat/final_cat.size), flush=True)
-            print('Total time to create the mock catalog: {:.2f} seconds'.format((time.time() - start_all)), flush=True)
-            return final_cat
-        return Catalog.concatenate(list(final_cat.values())) 
+            self.logger.info(f'Total time to create the mock catalog: {time.time() - start_all:.2f} seconds')
+            for tr in tracers:
+                mask_tr = final_cat['TRACER'] == tr
+                Ncen = np.count_nonzero(final_cat['Central'][mask_tr])
+                Nsa = mask_tr.sum()-Ncen
+                self.logger.info(f'Total number of {tr}: {mask_tr.sum()} with {Ncen} central, {Nsa} satellite and a satellites fraction: {Nsa / mask_tr.sum():.2f}')
+            Nb_sat = np.count_nonzero(final_cat['Central'] == 0)
+            self.logger.info(f'Total number of galaxies in the catalog: {final_cat.size}')
+            self.logger.info(f'Total number of centrals: {final_cat.size-Nb_sat}')
+            self.logger.info(f'Total number of satellites: {Nb_sat}')
+            
+        return final_cat
 
 
-
-    def init_elg_sat_for_lrg(self, tracer, sat_cat, fix_seed=None):
-
-        """
-        Draft function to assign ELG satellites around LRG central galaxies in a NFW profile 
-        if they are in the same halo.
-
-        This function generates the positions and velocities of Emission Line Galaxies (ELGs) 
-        around Luminous Red Galaxies (LRGs) using a Navarro–Frenk–White (NFW) profile. It 
-        ensures that the ELG satellites are placed according to the halo's mass distribution, 
-        and their velocities are assigned based on the chosen model (NFW or random normal).
-
-        Parameters
-        ----------
-        tracer : str
-            The name of the tracer (e.g., 'LRG') used to determine the velocity model and 
-            other simulation parameters for satellite galaxies.
-        sat_cat : Catalog
-            A catalog of the satellite galaxies, which includes properties such as 
-            position, velocity, concentration, mass, and radius. The function will modify 
-            the positions and velocities of these satellites.
-        fix_seed : int, optional
-            A seed for random number generation, ensuring reproducibility of the mock catalog. 
-            Defaults to None, meaning that a random seed will be generated internally.
-
-        Returns
-        -------
-        Catalog
-            The input satellite catalog (`sat_cat`) is updated with new positions, velocities, 
-            and a `Central` flag (set to 0 for satellites).
-        
-        Notes
-        -----
-        - The position of satellites is computed on a spherical shell using `getPointsOnSphere_jit`.
-        - The velocity of the satellites can be generated in two ways:
-            - 'NFW': Satellites are assigned velocities based on the NFW profile.
-            - 'rd_normal': Satellites are assigned random velocities.
-        - If the `Vrms` column is available in `sat_cat`, it is used to adjust the velocity distribution.
-        - This function directly modifies the `sat_cat` and returns the updated catalog.
-        """
-
-        rng = np.random.RandomState(seed=fix_seed)
-
-        if fix_seed is not None:
-            seed = rng.randint(0, 4294967295, self.args['nthreads'])
-        else:
-            seed = None
-
-        Nb_sat = sat_cat.size
-
-        if fix_seed is not None:
-            seed1 = rng.randint(0, 4294967295, self.args['nthreads'])
-        else:
-            seed1 = None
-        rd_pos = getPointsOnSphere_jit(Nb_sat, np.minimum(Nb_sat, self.args['nthreads']), seed1)
-        if self.args[tracer]['vel_sat'] == 'NFW':
-            seed2 = rng.randint(0, 4294967295, self.args['nthreads'])
-            rd_v = getPointsOnSphere_jit(Nb_sat, np.minimum(Nb_sat, self.args['nthreads']), seed2)
-            ut = np.cross(rd_pos,rd_v, axis=1) 
-            rd_vel = (ut.T / np.linalg.norm(ut, axis=1).flatten()).T
-        elif self.args[tracer]['vel_sat'] == 'rd_normal':
-            rd_vel = np.ones_like(rd_pos)
-        vrms_h = sat_cat['Vrms'] if 'Vrms' in sat_cat.columns() else np.zeros_like(sat_cat['vx'])
-
-        sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'] = compute_fast_NFW(sat_cat['x'], sat_cat['y'], sat_cat['z'],
-                                                                                                                    sat_cat['vx'], sat_cat['vy'], sat_cat['vz'],
-                                                                                                                    sat_cat['c'], sat_cat['Mh'], sat_cat['Rh'], 
-                                                                                                                    rd_pos, rd_vel, exp_frac=0, 
-                                                                                                                    exp_scale=self.args[tracer]['exp_scale'], nfw_rescale=self.args[tracer]['nfw_rescale'],
-                                                                                                                    vrms_h=vrms_h, f_sigv=self.args[tracer]['f_sigv'], v_infall=self.args[tracer]['v_infall'], 
-                                                                                                                    vel_sat=self.args[tracer]['vel_sat'], Nthread=self.args['nthreads'], seed=seed)
-        
-        sat_cat['Central'] = sat_cat.zeros()
-        return sat_cat
     
 
     def get_vsmear(self, tracer, cat_size, verbose=True):
@@ -1176,21 +823,21 @@ class HOD:
         if isinstance(self.args[tracer]['vsmear'], numbers.Number) and (self.args[tracer]['vsmear'] != 0):
             if self.args[tracer]['vsmear'] < 0:
                 raise ValueError('vsmear must be positive')
-            if verbose: 
-                print('Generate gaussian vsmear for {} of {} km/s...'.format(tracer, self.args[tracer]['vsmear']), flush=True)
+            if verbose:
+                self.logger.info(f"Generate gaussian vsmear for {tracer} of {self.args[tracer]['vsmear']} km/s...")
             vsmear = self.rng.normal(0, self.args[tracer]['vsmear'], cat_size)
-            
+
         elif isinstance(self.args[tracer]['vsmear'], list):
             from HODDIES.desi.Y3_redshift_systematics import vsmear as gen_vsmear
-            if verbose: 
-                print('Generate vsmear for {} at z {:.2f}-{:.2f}...'.format(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1]), flush=True)
+            if verbose:
+                self.logger.info(f"Generate vsmear for {tracer} at z {self.args[tracer]['vsmear'][0]:.2f}-{self.args[tracer]['vsmear'][1]:.2f}...")
             vsmear = gen_vsmear(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1], cat_size, dvmode='obs',seed=42,verbose=verbose)
         else:
             vsmear = 0
         return vsmear
     
 
-    def get_2PCF(self, cats, tracers=None, ells=None, R1R2=None, verbose=True):
+    def get_xiells(self, cats, tracers=None, ells=None, R1R2=None, verbose=True):
         """
         Compute the two-point correlation function (2PCF) for a given mock catalog in a cubic box.
 
@@ -1207,7 +854,7 @@ class HOD:
             A list of tracer names (keys in `cats`) for which the 2PCF should be computed. 
             If None, all tracers in `self.args['tracers']` are considered. Defaults to None.
         ells : tuple of int, optional
-            Multipoles to project onto. If None, ells in `self.args['2PCF_settings']['multipole_index']` are considered. Default to None.
+            Multipoles to project onto. If None, ells in `self.args['clustering_settings']['smu']['multipole_index']` are considered. Default to None.
         R1R2 : tuple or None, optional
             A tuple defining a range for R1 and R2 for the 2PCF computation. If None, 
             the default values will be used. Defaults to None.
@@ -1233,46 +880,42 @@ class HOD:
 
         Example
         -------
-        s, xi = get_2PCF(cats, tracers=['LRG', 'ELG'])
+        s, xi = get_xiells(cats, tracers=['LRG', 'ELG'])
         """
 
-        if tracers is None: 
-            tracers = self._tracers()
-            if 'TRACER' in cats.columns():
-                tracers = list(np.unique(cats['TRACER']))
-        else:
-            tracers = tracers if isinstance(tracers, list) else [tracers]
-        for tr in tracers:
-            if tr not in self._tracers():
-                raise ValueError(f'{tr} not in defined tracers {self._tracers()}')
-        
+        tracers = self.check_cat_tracers(cats, tracers)
 
-        if self.args['2PCF_settings']['edges_smu'] is None:
-            if self.args['2PCF_settings']['bin_logscale']:
-                r_bins = np.geomspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
-            else:
-                r_bins = np.linspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
+        self.check_clustering_settings('xi_smu')
+        smu_settings = self.args['clustering_settings'].get('xi_smu')
             
-            self.args['2PCF_settings']['edges_smu'] = (r_bins, np.linspace(-self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['n_mu_bins']))
-        ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
+        if smu_settings['bin_logscale']:
+            r_bins = np.geomspace(smu_settings['smin'], smu_settings['smax'], smu_settings['n_s_bins'])
+        else:
+            r_bins = np.linspace(smu_settings['smin'], smu_settings['smax'], smu_settings['n_s_bins'])
+
+        if smu_settings.get('edges_smu', None) is None:
+            smu_settings['edges_smu'] = (r_bins, np.linspace(-smu_settings['mu_max'], smu_settings['mu_max'], smu_settings['n_mu_bins']))
+        ells = smu_settings['multipole_index'] if ells is None else ells
         s_all, xi_all = [],[]
         for tr in tracers:
             mock_cat = cats[cats['TRACER'] == tr]
             if verbose:
-                print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
+                self.logger.info(f'Compute xi(s,mu) using l={ells} for {tr}...')
                 time1 = time.time() 
 
-            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
                 vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
-                pos = apply_rsd (mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear)
+                pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
             else:
-                if self.args['2PCF_settings']['rsd']:
-                    print('Cosmology not set, does not apply rsd', flush=True)
+                if self.args['clustering_settings']['rsd']:
+                    self.logger.warning('Cosmology not set, does not apply rsd')
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
             
-            s, xi = compute_twopoint(pos, 'smu', self.args['2PCF_settings']['edges_smu'], self.boxsize, self.args['2PCF_settings']['los'], self.args['nthreads'], ells=ells, R1R2=R1R2)
+            result = compute_twopoint(pos, 'smu', smu_settings['edges_smu'], self.boxsize, self.args['clustering_settings']['los'], self.nthreads, R1R2=R1R2)
+            s,xi = result(return_sep=True, ells=ells)
+
             if verbose:
-                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
+                self.logger.info(f'Done in {time.time()-time1:.3f} s')
             if len(tracers) > 1:
                 s_all += [s]
                 xi_all += [xi]
@@ -1280,7 +923,8 @@ class HOD:
                 return s, xi
         return s_all, xi_all
 
-    def get_wp(self, cats, tracers=None, R1R2=None, verbose=True):
+
+    def get_wp(self, cats, tracers=None, pimax=None, R1R2=None, verbose=True):
         """
         Compute the projected two-point correlation function (wp) for a given mock catalog in a cubic box.
 
@@ -1295,6 +939,8 @@ class HOD:
         tracers : list or str, optional
             A list of tracer names (keys in `cats`) for which the wp should be computed. 
             If None, all tracers in `self.args['tracers']` are considered. Defaults to None.
+        pimax : float, optional
+            The maximum projection distance for the wp computation. If None, the default value will be used. Defaults to None.
         R1R2 : tuple or None, optional
             A tuple defining a range for R1 and R2 for the wp computation. If None, 
             the default values will be used. Defaults to None.
@@ -1323,41 +969,38 @@ class HOD:
         rp, wp = get_wp(cats, tracers=['LRG', 'ELG'])
         """
 
-        if tracers is None: 
-            tracers = self._tracers()
-            if 'TRACER' in cats.columns():
-                tracers = list(np.unique(cats['TRACER']))
-        else:
-            tracers = tracers if isinstance(tracers, list) else [tracers]
-        for tr in tracers:
-            if tr not in self._tracers():
-                raise ValueError(f'{tr} not in defined tracers {self._tracers()}')
+        tracers = self.check_cat_tracers(cats, tracers)
 
-        if self.args['2PCF_settings']['edges_rppi'] is None:
-            if self.args['2PCF_settings']['bin_logscale']:
-                r_bins = np.geomspace(self.args['2PCF_settings']['rp_min'], self.args['2PCF_settings']['rp_max'], self.args['2PCF_settings']['n_rp_bins']+1, endpoint=(True))
-            else:
-                r_bins = np.linspace(self.args['2PCF_settings']['rp_min'], self.args['2PCF_settings']['rp_max'], self.args['2PCF_settings']['n_rp_bins']+1)
-            self.args['2PCF_settings']['edges_rppi'] = (r_bins, np.linspace(-self.args['2PCF_settings']['pimax'], self.args['2PCF_settings']['pimax'], 2*self.args['2PCF_settings']['pimax']+1))
+        self.check_clustering_settings('xi_rppi')
+        rppi_settings = self.args['clustering_settings'].get('xi_rppi', None)
+
+        pimax = rppi_settings['pimax'] if pimax is None else pimax
+        if rppi_settings['bin_logscale']:
+            r_bins = np.geomspace(rppi_settings['rp_min'], rppi_settings['rp_max'], rppi_settings['n_rp_bins']+1, endpoint=(True))
+        else:
+            r_bins = np.linspace(rppi_settings['rp_min'], rppi_settings['rp_max'], rppi_settings['n_rp_bins']+1)
+        if rppi_settings['edges_rppi'] is None:
+            rppi_settings['edges_rppi'] = (r_bins, np.linspace(-pimax, pimax, 2*pimax+1))
 
         rp_all, wp_all = [],[]
         for tr in tracers:
             mock_cat = cats[cats['TRACER'] == tr]
             if verbose:
-                print('#Compute wp for {}...'.format(tr), flush=True)
+                self.logger.info(f'Compute wp for {tr}...')
                 time1 = time.time()
             
-            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
                 vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
-                pos = apply_rsd(mock_cat, self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear)
+                pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
             else:
-                if self.args['2PCF_settings']['rsd']:
-                    print('Cosmology not set, does not apply rsd', flush=True)
+                if self.args['clustering_settings']['rsd']:
+                    self.logger.warning('Cosmology not set, does not apply rsd')
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
                 
-            rp, wp = compute_twopoint(pos, 'rppi', self.args['2PCF_settings']['edges_rppi'], self.boxsize, self.args['2PCF_settings']['los'],  self.args['nthreads'], pimax=self.args['2PCF_settings']['pimax'], R1R2=R1R2)
+            result = compute_twopoint(pos, 'rppi', rppi_settings['edges_rppi'], self.boxsize, self.args['clustering_settings']['los'],  self.nthreads, R1R2=R1R2)
+            rp, wp = result(return_sep=True, pimax=pimax)
             if verbose:
-                print('Done in {:.3f} s'.format(time.time()-time1), flush=True)
+                self.logger.info(f'Done in {time.time()-time1:.3f} s')
             if len(tracers) > 1:
                 rp_all += [rp]
                 wp_all += [wp]
@@ -1365,6 +1008,123 @@ class HOD:
                 return rp, wp
         return rp_all, wp_all
 
+
+    def get_PS(self, cat, tracers=None, ells=None, verbose=True):
+        """
+        Compute the power spectrum (PS) for a given mock catalog in a cubic box.
+
+        This function calculates the power spectrum (PS) for specified galaxy tracers 
+        in a mock catalog. It can compute PS for multiple tracers, returning the results for each.
+
+        Parameters
+        ----------
+        cats : dict
+            A dictionary of mock catalogs where the keys are the names of the tracers 
+            and the values are the corresponding catalogs (e.g., 'LRG', 'ELG').
+        tracers : list or str, optional
+            A list of tracer names (keys in `cats`) for which the PS should be computed. 
+            If None, all tracers in `self.args['tracers']` are considered. Defaults to None.
+        ells : tuple of int, optional
+            The multipole indices for which to compute the power spectrum. Defaults to the values in `ps_settings['multipole_index']`.
+        verbose : bool, optional
+            If True, prints progress and computation time for each tracer. Defaults to True.
+
+        Returns
+        -------
+        k_all : list
+            A list of wavenumbers corresponding to the computed PS for each tracer.
+        Pk_all : list
+            A list of the power spectrum (PS) values for each tracer.
+
+        Notes
+        -----
+        - The function uses `apply_rsd` to account for redshift space distortions (RSD) if enabled and Cosmology set.
+        - The wavenumbers `k` and the power spectrum values `Pk` are calculated using the 
+        `compute_power_spectrum` function, and the results are stored for each tracer.
+        - The results are returned as lists (`k_all` and `Pk_all`) when multiple tracers are provided.
+        - The output is either the PS for a single tracer (if only one tracer is given) or for 
+        all tracers provided in the list.
+
+        Example
+        -------
+        k, Pk = get_PS(cats, tracers=['LRG', 'ELG'])
+        """
+
+        tracers = self.check_cat_tracers(cat, tracers)
+
+        self.check_clustering_settings('power_spectrum')
+        ps_settings = self.args['clustering_settings'].get('power_spectrum', None)
+
+        if ps_settings.get('k_edges', None) is None:
+            if ps_settings['bin_logscale']:
+                ps_settings['k_edges'] = np.geomspace(ps_settings['kmin'], ps_settings['kmax'], ps_settings['n_k_bins']+1, endpoint=(True))
+            else:
+                ps_settings['k_edges'] = np.linspace(ps_settings['kmin'], ps_settings['kmax'], ps_settings['n_k_bins']+1)
+
+        k_all, Pk_all = [],[]
+        ells = ps_settings['multipole_index'] if ells is None else ells
+        for tr in tracers:
+            mock_cat = cat[cat['TRACER'] == tr]
+            if verbose:
+                self.logger.info(f'Compute PS for {tr}...')
+                time1 = time.time()
+            
+            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
+                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
+                pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
+            else:
+                if self.args['clustering_settings']['rsd']:
+                    self.logger.warning('Cosmology not set, does not apply rsd')
+                pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
+                
+            k, Pk = compute_power_spectrum(pos1=pos, nmesh=ps_settings['nmesh'], boxsize=self.boxsize, kedges=ps_settings['k_edges'], ells=ells, los=self.args['clustering_settings']['los'], resampler=ps_settings['resampler'], interlacing=ps_settings['interlacing']).poles(ell=ells, return_k=True, complex=False)
+            if verbose:
+                self.logger.info(f'Done in {time.time()-time1:.3f} s')
+            if len(tracers) > 1:
+                k_all += [k]
+                Pk_all += [Pk]
+            else: 
+                return k, Pk
+        return k_all, Pk_all
+
+
+    def get_CIC(self, cat, tracers, verbose=True, return_dic=True):
+        """
+        Compute counts-in-cylinder (CIC) for a given tracer.
+
+        Parameters
+        ----------
+        cat : structured array
+            Catalog containing the tracer.
+        tracers : list or str
+            Name of the tracer(s) for which to compute CIC.
+        verbose : bool, optional
+            If True, prints progress and computation time. Defaults to True.
+
+        Returns
+        -------
+        counts : array
+            Array of counts-in-cylinder for each object in the catalog.
+        """
+
+        tracers = self.check_cat_tracers(cat, tracers)
+
+        self.check_clustering_settings('CIC')
+        cic_settings = self.args['clustering_settings'].get('CIC', None)
+
+        counts = []
+        for tr in tracers:
+            mock_cat = cat[cat['TRACER'] == tr]
+            if self.args['clustering_settings']['rsd']:
+                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
+                pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
+            else:
+                pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
+            counts += [compute_CIC(pos[0], pos[1], pos[2], self.boxsize, cic_settings['R_max'], cic_settings['L_max'])]
+        if return_dic:
+            return {f'{tr}_{tr}': count for tr, count in zip(tracers, counts)}
+        return counts
+    
 
     def get_delta_sigma(self, cats, tracers=None, verbose=True, return_dic=False):
         """
@@ -1389,34 +1149,22 @@ class HOD:
         if self.part_subsamples is None:
             raise ValueError('Particle subsample is required to compute ΔΣ(R).')
         
-        if tracers is None: 
-            tracers = self._tracers()
-            if 'TRACER' in cats.columns():
-                tracers = list(np.unique(cats['TRACER']))
+        tracers = self.check_cat_tracers(cats, tracers)
+
+        self.check_clustering_settings('delta_sigma')
+        ds_settings = self.args['clustering_settings'].get('delta_sigma', None)
+        
+        if ds_settings['bin_logscale']:
+            ds_settings['edges_rp'] = np.geomspace(ds_settings['rp_min'], ds_settings['rp_max'], ds_settings['n_rp_bins']+1, endpoint=(True))
         else:
-            tracers = tracers if isinstance(tracers, list) else [tracers]
-        for tr in tracers:
-            if tr not in self._tracers():
-                raise ValueError(f'{tr} not in defined tracers {self._tracers()}')
-    
-        ds_settings = self.args['Dsigma_settings']
-        rp_min = ds_settings['rp_min']
-        rp_max = ds_settings['rp_max']
-        n_rp_bins = ds_settings['n_rp_bins']
-        pimax = ds_settings['pimax']
-        bin_log = ds_settings.get('bin_logscale', True)
-    
-        if bin_log:
-            rp_bins = np.geomspace(rp_min, rp_max, n_rp_bins + 1)
-        else:
-            rp_bins = np.linspace(rp_min, rp_max, n_rp_bins + 1)
+            ds_settings['edges_rp'] = np.linspace(ds_settings['rp_min'], ds_settings['rp_max'], ds_settings['n_rp_bins']+1)
     
         if return_dic:
             res_dict = {}
         for tr in tracers:
     
             if verbose:
-                print(f"# Compute ΔΣ for {tr}...", flush=True)
+                self.logger.info(f'Compute ΔΣ for {tr}...')
                 t0 = time.time()
     
             # Select tracer catalog
@@ -1432,24 +1180,106 @@ class HOD:
             rp, ds = compute_delta_sigma(
                 pos_lens,
                 self.part_subsamples['pos'][::100].T%self.boxsize,
-                rbins=rp_bins,
+                rbins=ds_settings['edges_rp'],
                 boxsize=self.boxsize,
                 rho_m=self.cosmo.rho_m(0.5) * 1e10,
-                los=ds_settings.get('los', 'z'),
-                pimax=pimax,
-                nthreads=self.args['nthreads'],
+                los=self.args['clustering_settings'].get('los', 'z'),
+                pimax=ds_settings['pimax'],
+                nthreads=self.nthreads,
             )
             if return_dic:
                 res_dict[f'{tr}_{tr}'] = rp, ds
             if verbose:
-                print("Done in {:.3f} s".format(time.time() - t0), flush=True)
+                self.logger.info(f'Done in {time.time() - t0:.3f} s')
 
-        if (len(tracers) > 1) & ~return_dic:
+        if (len(tracers) == 1) & ~return_dic:
             return rp, ds
         return res_dict
     
     
-    def get_crosswp(self, cats, tracers, R1R2=None, verbose=True):
+    # def get_cross_wp(self, cats, tracers, return_rppi=None, R1R2=None, verbose=True):
+    #     """
+    #     Compute the projected correlation and cross-correlation functions (wp) for a given mock catalog in a cubic box.
+
+    #     This function computes the projected two-point correlation and cross-correlation function (wp) for pairs of tracers in the 
+    #     mock catalogs. It calculates wp for all combinations of tracers provided, handling redshift space distortions 
+    #     (RSD) if enabled.
+
+    #     Parameters
+    #     ----------
+    #     cats : dict
+    #         A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
+    #         (e.g., 'LRG', 'ELG').
+    #     tracers : list of str
+    #         A list of tracer names (keys in `cats`) for which the cross wp should be computed. The function 
+    #         computes the wp for all pairs of tracers in the list.
+    #     R1R2 : tuple or None, optional  
+    #         A tuple defining a range for R1 and R2 for the wp computation. If None, the default values will be used.
+    #         Defaults to None.
+    #     verbose : bool, optional
+    #         If True, prints progress and computation time for each pair of tracers. Defaults to True.
+
+    #     Returns
+    #     -------
+    #     res_dict : dict
+    #         A dictionary where the keys are the concatenated names of tracer pairs (e.g., 'LRG_ELG') and the 
+    #         values are the corresponding projected two-point correlation functions (wp) for each pair.
+
+    #     Notes
+    #     -----
+    #     - The function computes the cross-correlation wp for all unique pairs of tracers from the input list.
+    #     - If redshift space distortions (RSD) are enabled, the positions of galaxies in the catalogs are adjusted accordingly.
+    #     - The results are stored in `res_dict` with keys in the format 'tracer1_tracer2', where each value is the wp 
+    #     corresponding to the pair of tracers.
+    #     - The function uses `compute_twopoint` to calculate the wp for each tracer pair.
+
+    #     Example
+    #     -------
+    #     res = get_cross_wp(cats, tracers=['LRG', 'ELG', 'QSO'])
+    #     """
+    #     tracers = self.check_cat_tracers(cats, tracers)
+        
+    #     self.check_clustering_settings('xi_rppi')
+    #     setting_rppi = self.args['clustering_settings'].get('xi_rppi', None)
+
+    #     if setting_rppi.get('edges_rppi', None) is None:
+    #         if setting_rppi['bin_logscale']:
+    #             r_bins = np.geomspace(setting_rppi['rp_min'], setting_rppi['rp_max'], setting_rppi['n_rp_bins']+1, endpoint=(True))
+    #         else:
+    #             r_bins = np.linspace(setting_rppi['rp_min'], setting_rppi['rp_max'], setting_rppi['n_rp_bins']+1)
+    #         setting_rppi['edges_rppi'] = (r_bins, np.linspace(-setting_rppi['pimax'], setting_rppi['pimax'], 2*setting_rppi   ['pimax']+1))
+
+
+    #     res_dict = {}
+    #     com_tr = self.get_comb_tr_list(tracers)
+    #     mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
+        
+    #     for tr in com_tr:
+    #         if verbose:
+    #             self.logger.info(f'Compute wp for {tr}...')
+    #             time1 = time.time()
+
+    #         if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
+    #             vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
+    #             pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_0)
+    #             pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_1)
+    #         else:
+    #             if self.args['clustering_settings']['rsd']:
+    #                 self.logger.warning('Cosmology not set, does not apply rsd')
+    #             pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
+    #             pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
+            
+    #         result = compute_twopoint(pos1, 'rppi', setting_rppi['edges_rppi'], self.boxsize, self.args['clustering_settings']['los'],  self.nthreads, R1R2=R1R2, pos2=pos2)
+    #         if return_rppi:
+    #             res_dict[f'{tr[0]}_{tr[1]}'] = result
+    #         else:
+    #             res_dict[f'{tr[0]}_{tr[1]}'] = result(return_sep=True, pimax=setting_rppi['pimax'])
+    #         if verbose:
+    #             self.logger.info(f'Done in {time.time()-time1:.3f} s')
+
+    #     return res_dict
+
+    def get_cross_wp(self, cats, tracers=None, pimax=None, R1R2=None, verbose=True):
         """
         Compute the projected correlation and cross-correlation functions (wp) for a given mock catalog in a cubic box.
 
@@ -1487,45 +1317,18 @@ class HOD:
 
         Example
         -------
-        res = get_crosswp(cats, tracers=['LRG', 'ELG', 'QSO'])
+        res = get_cross_wp(cats, tracers=['LRG', 'ELG', 'QSO'])
         """
-        if isinstance(tracers, str):
-            tracers = [tracers]
-        if self.args['2PCF_settings']['edges_rppi'] is None:
-            if self.args['2PCF_settings']['bin_logscale']:
-                r_bins = np.geomspace(self.args['2PCF_settings']['rp_min'], self.args['2PCF_settings']['rp_max'], self.args['2PCF_settings']['n_rp_bins']+1, endpoint=(True))
-            else:
-                r_bins = np.linspace(self.args['2PCF_settings']['rp_min'], self.args['2PCF_settings']['rp_max'], self.args['2PCF_settings']['n_rp_bins']+1)
-            self.args['2PCF_settings']['edges_rppi'] = (r_bins, np.linspace(-self.args['2PCF_settings']['pimax'], self.args['2PCF_settings']['pimax'], 2*self.args['2PCF_settings']['pimax']+1))
 
-
-        res_dict = {}
-        com_tr = self.get_comb_tr_list(tracers)
-        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
-        
-        for tr in com_tr:
-            if verbose:
-                print('#Compute wp for {}...'.format(tr), flush=True)
-                time1 = time.time()
-
-            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
-                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
-                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
-                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
-            else:
-                if self.args['2PCF_settings']['rsd']:
-                    print('Cosmology not set, does not apply rsd', flush=True)
-                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
-                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
+        results = self.get_cross_twopoint(cats, 'rppi', tracers, R1R2=R1R2, verbose=verbose, pimax=pimax)
+        pimax = self.args['clustering_settings']['xi_rppi']['pimax'] if pimax is None else pimax
+        for trs, res in (zip(results.keys(), results.values())):
+            results[trs] = res(return_sep=True, pimax=pimax)
             
-            res_dict[f'{tr[0]}_{tr[1]}'] = compute_twopoint(pos1, 'rppi', self.args['2PCF_settings']['edges_rppi'], self.boxsize, self.args['2PCF_settings']['los'],  self.args['nthreads'], pimax=self.args['2PCF_settings']['pimax'], R1R2=R1R2, pos2=pos2)
-            if verbose:
-                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
+        return results        
 
-        return res_dict
-    
 
-    def get_cross2PCF(self, cats, tracers, ells=None, R1R2=None, verbose=True):
+    def get_cross_xiells(self, cats, tracers=None, ells=None, R1R2=None, verbose=True):
         """
         Compute the two-point correlation function (2PCF) multipoles for a given mock catalog in a cubic box.
 
@@ -1541,7 +1344,7 @@ class HOD:
             A list of tracer names (keys in `cats`) for which the cross 2PCF should be computed. The function 
             computes the 2PCF for all pairs of tracers in the list.
         ells : tuple of int, optional
-            Multipoles to project onto. If None, ells in `self.args['2PCF_settings']['multipole_index']` are considered. Default to None.
+            Multipoles to project onto. If None, ells in `self.args['clustering_settings']['smu']['multipole_index']` are considered. Default to None.
         R1R2 : tuple or None, optional
             A tuple defining a range for R1 and R2 for the 2PCF computation. If None, the default values will be used.
             Defaults to None.
@@ -1553,7 +1356,7 @@ class HOD:
         res_dict : dict
             A dictionary where the keys are the concatenated names of tracer pairs (e.g., 'LRG_ELG') and the 
             values are the average separations and the corresponding two-point correlation functions (2PCF) for each pair.
-
+    
         Notes
         -----
         - The function computes the cross-correlation 2PCF for all unique pairs of tracers from the input list.
@@ -1565,45 +1368,18 @@ class HOD:
 
         Example
         -------
-        res = get_cross2PCF(cats, tracers=['LRG', 'ELG', 'QSO'])
+        res = get_cross_xiells(cats, tracers=['LRG', 'ELG', 'QSO'])
         """
         
-        if isinstance(tracers, str):
-            tracers = [tracers]
-        
-        if self.args['2PCF_settings']['edges_smu'] is None:
-            if self.args['2PCF_settings']['bin_logscale']:
-                r_bins = np.geomspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
-            else:
-                r_bins = np.linspace(self.args['2PCF_settings']['rmin'], self.args['2PCF_settings']['rmax'], self.args['2PCF_settings']['n_r_bins'])
+        results = self.get_cross_twopoint(cats, 'smu', tracers, R1R2=R1R2, verbose=verbose, ells=ells)
+        ells = self.args['clustering_settings']['xi_smu']['multipole_index'] if ells is None else ells
+        for trs, res in (zip(results.keys(), results.values())):
+            results[trs] = res(return_sep=True, ells=ells)
             
-            self.args['2PCF_settings']['edges_smu'] = (r_bins, np.linspace(-self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['n_mu_bins']))
-        ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
-        res_dict = {}
-        com_tr = self.get_comb_tr_list(tracers)
-        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
-        for tr in com_tr:
-            if verbose:
-                print('#Compute xi(s,mu) using l={} for {}...'.format(ells, tr), flush=True)
-                time1 = time.time()
-            
-            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
-                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
-                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
-                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
-            else:
-                if self.args['2PCF_settings']['rsd']:
-                    print('Cosmology not set, does not apply rsd', flush=True)
-                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
-                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
-
-            res_dict[f'{tr[0]}_{tr[1]}'] = compute_twopoint(pos1, 'smu', self.args['2PCF_settings']['edges_smu'], self.boxsize, self.args['2PCF_settings']['los'], self.args['nthreads'], ells=ells, pos2=pos2, R1R2=R1R2)
-            if verbose:
-                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
-        return res_dict
+        return results
 
 
-    def get_cross_twopoint(self, cats, mode, tracers, ells=None, pimax=None, R1R2=None, verbose=True):
+    def get_cross_twopoint(self, cats, mode, tracers=None, R1R2=None, verbose=True, return_pycorr_obj=False, **kwargs):
         """
         Compute the two-point correlation function (2PCF) multipoles for a given mock catalog in a cubic box.
 
@@ -1646,52 +1422,203 @@ class HOD:
         res = get_cross_twopoint(cats, mode='smu', tracers=['LRG', 'ELG', 'QSO'])
         """
         
-        if isinstance(tracers, str):
-            tracers = [tracers]
-        if mode == 'wp':
+        tracers = self.check_cat_tracers(cats, tracers)
+        if (mode == 'wp') | ('rppi' in mode):
             mode = 'rppi'
-            pimax = self.args['2PCF_settings']['pimax'] if pimax is None else pimax
-        if mode == 'xi_ells':
-            mode = 'smu'
-            ells = self.args['2PCF_settings']['multipole_index'] if ells is None else ells
-
-        if mode not in ['smu', 'rppi']:
-            raise ValueError('Twopoint mode must be wp, xi_ells, smu or rppi')
-        if self.args['2PCF_settings'][f'edges_{mode}'] is None:
-            sep_min, sep_max, n_sep_bins = 'rmin', 'rmax', 'n_r_bins'
-            if mode == 'rppi':
-                sep_min, sep_max, n_sep_bins = 'rp_min', 'rp_max', 'n_rp_bins'
-            if self.args['2PCF_settings']['bin_logscale']:
-                r_bins = np.geomspace(self.args['2PCF_settings'][sep_min], self.args['2PCF_settings'][sep_max], self.args['2PCF_settings'][n_sep_bins])
+            self.check_clustering_settings('xi_rppi')
+            settings = self.args['clustering_settings'].get('xi_rppi', None)
+            settings['pimax'] = kwargs.get('pimax',  settings['pimax'])
+            if settings['bin_logscale']:
+                r_bins = np.geomspace(settings['rp_min'], settings['rp_max'], settings['n_rp_bins']+1, endpoint=True)
             else:
-                r_bins = np.linspace(self.args['2PCF_settings'][sep_min], self.args['2PCF_settings'][sep_max], self.args['2PCF_settings'][n_sep_bins])
-            if mode == 'rppi':
-                self.args['2PCF_settings'][f'edges_{mode}'] = (r_bins, np.linspace(-self.args['2PCF_settings']['pimax'], self.args['2PCF_settings']['pimax'], 2*self.args['2PCF_settings']['pimax']+1))
-            elif mode == 'smu':
-                self.args['2PCF_settings'][f'edges_{mode}'] = (r_bins, np.linspace(-self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['mu_max'], self.args['2PCF_settings']['n_mu_bins']))
-        
+                r_bins = np.linspace(settings['rp_min'], settings['rp_max'], settings['n_rp_bins']+1, endpoint=True)
+            if settings.get('edges_rppi', None) is None:
+                settings['edges_rppi'] = (r_bins, np.linspace(-settings['pimax'], settings['pimax'], 2*settings['pimax']+1))
+            edges = settings['edges_rppi']
+            
+        elif (mode == 'xi_ells') | ('smu' in mode):
+            mode = 'smu'
+            self.check_clustering_settings('xi_smu')
+            settings = self.args['clustering_settings']['xi_smu']
+            if settings['bin_logscale']:
+                r_bins = np.geomspace(settings['smin'], settings['smax'], settings['n_s_bins']+1, endpoint=True)
+            else:
+                r_bins = np.linspace(settings['smin'], settings['smax'], settings['n_s_bins']+1, endpoint=True)
+            if settings.get('edges_smu', None) is None:
+                settings['edges_smu'] = (r_bins, np.linspace(-settings['mu_max'], settings['mu_max'], settings['n_mu_bins']))
+            edges = settings['edges_smu']
+            ells = settings.get('multipole_index', [0,2])
+
+        else:
+            raise ValueError('Twopoint mode must be wp, xi_ells, xi_smu or xi_rppi')                
+                
         res_dict = {}
         com_tr = self.get_comb_tr_list(tracers)
         mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
         for tr in com_tr:
-            if verbose:
-                print('#Compute xi({}) for {}...'.format(mode, tr), flush=True)
+            if verbose: 
+                self.logger.info(f'Compute xi_{mode} for {tr}...')
                 time1 = time.time()
             
-            if (self.cosmo is not None) & (self.args['2PCF_settings']['rsd']):
+            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
                 vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
-                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_0)
-                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.args['hcat']['z_simu'], self.boxsize, self.cosmo, self.H_0, self.args['2PCF_settings']['los'], vsmear_1)
+                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_0)
+                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_1)
             else:
-                if self.args['2PCF_settings']['rsd']:
-                    print('Cosmology not set, does not apply rsd', flush=True)
+                if self.args['clustering_settings']['rsd']:
+                    self.logger.warning('Cosmology not set, does not apply rsd')
                 pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
                 pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
 
-            res_dict[f'{tr[0]}_{tr[1]}'] = compute_twopoint(pos1, mode, self.args['2PCF_settings'][f'edges_{mode}'], self.boxsize, self.args['2PCF_settings']['los'], self.args['nthreads'], ells=ells, pimax=pimax, pos2=pos2, R1R2=R1R2)
+            res = compute_twopoint(pos1, mode, edges, self.boxsize, self.args['clustering_settings']['los'], self.nthreads, pos2=pos2, R1R2=R1R2)
+            res_dict[f'{tr[0]}_{tr[1]}'] = res if return_pycorr_obj else res_dict[f'{tr[0]}_{tr[1]}'](return_sep=True)
+
+            if mode == 'xi_ells':
+                res_dict[f'{tr[0]}_{tr[1]}'] = res(return_sep=True, ells=ells) 
+            if mode == 'wp':
+                res_dict[f'{tr[0]}_{tr[1]}'] = res(return_sep=True, pimax=settings['pimax'])
             if verbose:
-                print('#Done in {:.3f} s'.format(time.time()-time1), flush=True)
+                self.logger.info(f'Done in {time.time()-time1:.3f} s')
         return res_dict
+
+
+    def get_cross_PS(self, cats, tracers=None, verbose=True):
+        """
+        Compute the two-point correlation function (2PCF) multipoles for a given mock catalog in a cubic box.
+
+        This function computes the two-point correlation function (2PCF) and cross-correlations multipoles for pairs of tracers in the mock catalogs. 
+        It calculates the 2PCF for all combinations of tracers provided, handling redshift space distortions (RSD) if enabled.
+
+        Parameters
+        ----------
+        cats : dict
+            A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
+            (e.g., 'LRG', 'ELG').
+        mode : str
+            The mode of the two-point correlation function to compute (e.g., 'smu', 'rppi').
+        tracers : list of str
+            A list of tracer names (keys in `cats`) for which the cross 2PCF should be computed. The function 
+            computes the 2PCF for all pairs of tracers in the list.
+        R1R2 : tuple or None, optional
+            A tuple defining a range for R1 and R2 for the 2PCF computation. If None, the default values will be used.
+            Defaults to None.
+        verbose : bool, optional
+            If True, prints progress and computation time for each pair of tracers. Defaults to True.
+
+        Returns
+        -------
+        res_dict : dict
+            A dictionary where the keys are the concatenated names of tracer pairs (e.g., 'LRG_ELG') and the 
+            values are the average separations and the corresponding two-point correlation functions (2PCF) for each pair.
+
+        Notes
+        -----
+        - The function computes the cross-correlation 2PCF for all unique pairs of tracers from the input list.
+        - If redshift space distortions (RSD) are enabled, the positions of galaxies in the catalogs are adjusted accordingly.
+        - The results are stored in `res_dict` with keys in the format 'tracer1_tracer2', where each value is the 2PCF 
+        corresponding to the pair of tracers.
+        - The function uses `compute_twopoint` to calculate the 2PCF for each tracer pair.
+    
+
+        Example
+        -------
+        res = get_cross_PS(cats, tracers=['LRG', 'ELG', 'QSO'])
+        """
+        
+        tracers = self.check_cat_tracers(cats, tracers)
+        
+        self.check_clustering_settings('power_spectrum')
+        ps_settings = self.args['clustering_settings'].get('power_spectrum', None)
+
+        if ps_settings.get('k_edges', None) is None:
+            if ps_settings['bin_logscale']:
+                ps_settings['k_edges'] = np.geomspace(ps_settings['kmin'], ps_settings['kmax'], ps_settings['n_k_bins']+1, endpoint=(True))
+            else:
+                ps_settings['k_edges'] = np.linspace(ps_settings['kmin'], ps_settings['kmax'], ps_settings['n_k_bins']+1)
+        ells = ps_settings['multipole_index']
+                
+        res_dict = {}
+        com_tr = self.get_comb_tr_list(tracers)
+        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
+        for tr in com_tr:
+            if verbose: 
+                self.logger.info(f'Compute PS for {tr}...')
+                time1 = time.time()
+            
+            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
+                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
+                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_0)
+                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_1)
+            else:
+                if self.args['clustering_settings']['rsd']:
+                    self.logger.warning('Cosmology not set, does not apply rsd')
+                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
+                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
+
+            k, Pk = compute_power_spectrum(pos1=pos1, pos2=pos2, nmesh=ps_settings['nmesh'], boxsize=self.boxsize, kedges=ps_settings['k_edges'], ells=ells, los=self.args['clustering_settings']['los'], resampler=ps_settings['resampler'], interlacing=ps_settings['interlacing']).poles(ell=ells, return_k=True, complex=False)
+
+            res_dict[f'{tr[0]}_{tr[1]}'] = k, Pk
+
+            if verbose:
+                self.logger.info(f'Done in {time.time()-time1:.3f} s')
+        return res_dict
+    
+
+    # def get_cross_twopoint(self, cats, mode, tracers, ells=None, R1R2=None, verbose=True):
+    #     """
+    #     Compute the two-point correlation function (2PCF) multipoles for a given mock catalog in a cubic box.
+
+    #     This function computes the two-point correlation function (2PCF) and cross-correlations multipoles for pairs of tracers in the mock catalogs. 
+    #     It calculates the 2PCF for all combinations of tracers provided, handling redshift space distortions (RSD) if enabled.
+
+    #     Parameters
+    #     ----------
+    #     cats : dict
+    #         A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
+    #         (e.g., 'LRG', 'ELG').
+    #     mode : str
+    #         The mode of the two-point correlation function to compute (e.g., 'smu', 'rppi').
+    #     tracers : list of str
+    #         A list of tracer names (keys in `cats`) for which the cross 2PCF should be computed. The function 
+    #         computes the 2PCF for all pairs of tracers in the list.
+    #     R1R2 : tuple or None, optional
+    #         A tuple defining a range for R1 and R2 for the 2PCF computation. If None, the default values will be used.
+    #         Defaults to None.
+    #     verbose : bool, optional
+    #         If True, prints progress and computation time for each pair of tracers. Defaults to True.
+
+    #     Returns
+    #     -------
+    #     res_dict : dict
+    #         A dictionary where the keys are the concatenated names of tracer pairs (e.g., 'LRG_ELG') and the 
+    #         values are the average separations and the corresponding two-point correlation functions (2PCF) for each pair.
+
+    #     Notes
+    #     -----
+    #     - The function computes the cross-correlation 2PCF for all unique pairs of tracers from the input list.
+    #     - If redshift space distortions (RSD) are enabled, the positions of galaxies in the catalogs are adjusted accordingly.
+    #     - The results are stored in `res_dict` with keys in the format 'tracer1_tracer2', where each value is the 2PCF 
+    #     corresponding to the pair of tracers.
+    #     - The function uses `compute_twopoint` to calculate the 2PCF for each tracer pair.
+    
+
+    #     Example
+    #     -------
+    #     res = get_cross_twopoint(cats, mode='smu', tracers=['LRG', 'ELG', 'QSO'])
+    #     """
+        
+    #     if (mode == 'wp') | ('rppi' in mode): 
+    #         return_rppi = False if mode == 'wp' else True     
+    #         res_dict = self.get_cross_wp(cats, tracers, R1R2=R1R2, return_rppi=return_rppi, verbose=verbose)
+
+    #     elif (mode == 'xi_ells') | ('smu' in mode):
+    #         mode = 'smu'
+    #         res_dict = self.get_cross2PCF(cats, tracers, ells=ells, R1R2=R1R2, verbose=verbose)
+
+    #     if mode not in ['smu', 'rppi']:
+    #         raise ValueError('Twopoint mode must be wp, xi_ells, smu or rppi')
+        
+    #     return res_dict
 
 
 
@@ -1743,7 +1670,7 @@ class HOD:
         plt.show()
 
 
-    def plot_HMF(self, cats, show_sat=False, range=(10.8, 15), tracer=None, inital_HMF=None):
+    def plot_HMF(self, cats, show_sat=False, range=(10.5, 15.2), tracer=None, inital_HMF=None):
         """
         Plot the Halo Mass Function (HMF) for a given mock catalog.
 
@@ -1817,6 +1744,7 @@ class HOD:
         plt.yscale('log')
         plt.ylabel(r'd$N$/d$M_{h}$ [$h$/Mpc$^3$]')
         plt.xlabel(r'$\log(M_h\ [M_{\odot}])$')
+        plt.xlim(range[0]-0.1, range[1]+0.1)
         plt.legend(handles=handles, loc='upper right')
         plt.tight_layout()
         plt.show()
@@ -1938,7 +1866,7 @@ class HOD:
                     for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
                         self.args[tr]['assembly_bias'][var] = [new_p[f'ab_{var}_cen_{tr}'][0], new_p[f'ab_{var}_sat_{tr}'][0]]
                 if verbose:
-                    print(f"# {tr} {[(var, self.args[tr][var]) for var in self.args['fit_param']['priors'][tr].keys()]}", flush=True)
+                    self.logger.debug(f"{tr} {[(var, self.args[tr][var]) for var in self.args['fit_param']['priors'][tr].keys()]}")
 
 
     def get_param_and_prior(self):
@@ -1947,7 +1875,7 @@ class HOD:
         """
         priors = {}
         priors_array = []
-        for tr in self._tracers():
+        for tr in self._tracer_to_fit:
             priors[tr] = self.args['fit_param']['priors'][tr].copy()
 
             if 'assembly_bias' in priors[tr].keys():
@@ -1957,6 +1885,10 @@ class HOD:
                 priors[tr].pop('assembly_bias')
             priors_array += list(priors[tr].values())
         name_param = [f'{var}_{tr}' for tr in priors.keys() for var in priors[tr].keys()]
+
+        mask = [isinstance(x, list) and len(x) == 2 for x in priors_array]
+        if not np.all(mask):
+            raise ValueError("Priors should be 1D arrays of shape (2,) for lower and upper bounds. Please check the priors for parameter {}.".format(np.array(name_param)[~np.array(mask)]))
         return name_param, priors_array
 
     
@@ -1968,32 +1900,72 @@ class HOD:
         if isinstance(tracers, str):
             tracers = [tracers]
         return np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
+    
 
-
-
-
-    def compute_stat(self, cat, stat, tracers, verbose=False):
-        if stat not in get_list_stat():
-            raise ValueError('Stat {} not implemented. Choose among {}'.format(stat, get_list_stat()))
+    def compute_stats(self, cat, stat=None, tracers=None, verbose=False):
+        """
+        Compute clustering statistics for a given mock catalog.
+        Parameters
+        ----------
+        cat : dict
+            A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
+            (e.g., 'LRG', 'ELG').
+        stat : list of str, optional
+            A list of clustering statistics to compute. If None, all available statistics will be computed.
+            Available statistics include 'rppi', 'wp', 'xi_smu', 'xi_ells', 'delta_sigma', and 'CIC'.
+        tracers : list of str, optional
+            A list of tracer names (keys in `cat`) for which the clustering statistics should be computed. If None, all tracers in `cat` will be used.
+        verbose : bool, optional
+            Whether to print progress messages during execution. Default is False.
         
-        if stat == 'xi_smu':
-            result = self.get_cross_twopoint(cat, 'smu', tracers=tracers, verbose=verbose)
-        if stat == 'xi_rppi':
-            result = self.get_cross_twopoint(cat, 'rppi', tracers=tracers, verbose=verbose)
-        if stat == 'delta_sigma':
-            result = self.get_delta_sigma(cat, tracers=tracers, verbose=verbose, return_dic=True)
-        return result
+        Returns
+        -------
+        result : dict
+            A dictionary containing the computed clustering statistics for the specified tracers. The keys are the names of the statistics, and the values are the corresponding computed results.
+        """
 
-    def __compute_all_stat(self, cat):
+        if stat is None:
+            stat = get_list_stat()
+        elif isinstance(stat, str):
+            stat = [stat]
+        miss_stat = [st for st in stat if st not in get_list_stat()]
+        if miss_stat:
+            raise ValueError('Statistique {} not implemented. Choose among {}'.format(miss_stat, get_list_stat()))
+        
         result = {}
-        for stat in get_list_stat():
-            if stat == 'delta_sigma' and self.part_subsamples is None:
-                continue
-            result[stat]= self.compute_stat(cat, stat, self._tracers(), verbose=False)
+        if ('xi_rppi' in stat) | ('wp' in stat):
+            result['xi_rppi'] = {}
+            res = self.get_cross_twopoint(cat, 'rppi', tracers=tracers, verbose=verbose, return_pycorr_obj=True)
+            for tr in res.keys():
+                result['xi_rppi'][tr] = res[tr](return_sep=True)
+            if 'wp' in stat:
+                result['wp'] = {}
+                for tr in result['xi_rppi'].keys():
+                    result['wp'][tr] = res[tr](return_sep=True, pimax=self.args['clustering_settings']['xi_rppi']['pimax'])
+        
+        if ('xi_smu' in stat ) | ('xi_ells' in stat):
+            result['xi_smu'] = {}
+            res = self.get_cross_twopoint(cat, 'smu', tracers=tracers, verbose=verbose, return_pycorr_obj=True)
+            for tr in res.keys():
+                result['xi_smu'][tr] = res[tr](return_sep=True)
+            if 'xi_ells' in stat:
+                result['xi_ells'] = {}
+                for tr in result['xi_smu'].keys(): 
+                    result['xi_ells'][tr] = res[tr](return_sep=True, ells=self.args['clustering_settings']['xi_smu']['multipole_index'])
+        
+        if 'delta_sigma' in stat:
+            result['delta_sigma'] = self.get_delta_sigma(cat, tracers=tracers, verbose=verbose, return_dic=True)
+        if 'CIC' in stat:
+            result['CIC'] = self.get_CIC(cat, tracers=tracers, verbose=verbose, return_dic=True)
+        if 'power_spectrum' in stat:
+            result['power_spectrum'] = self.get_cross_PS(cat, tracers=tracers, verbose=verbose)
+            
         return result
-        
 
-    def compute_training(self, nreal=20, training_points=None, start_point=0, seed=None, verbose=False):
+
+
+
+    def compute_training_v2(self, training_points=None, path_to_save_point=None, start_point=0, seed=None, verbose=False, overwrite=False, **kwargs):
         
         """
         Generate and save training data for HOD model fitting by sampling parameter sets 
@@ -2005,11 +1977,11 @@ class HOD:
 
         Parameters
         ----------
-        nreal : int, optional
-            Number of mock realizations to generate for each training point. Default is 20.
         training_points : structured array or None, optional
             Array of training points with named fields corresponding to HOD parameters. If None, 
             training points will be generated using `genereate_training_points`.
+        path_to_save_point : str, optional
+            Path to the directory where the training points will be saved. If None, the default path will be used.
         start_point : int, optional
             Starting index for training point numbering (useful when continuing interrupted runs). Default is 0.
         verbose : bool, optional
@@ -2043,766 +2015,792 @@ class HOD:
 
         Example
         -------
-        self.compute_training(nreal=10, verbose=True)
+        self.compute_training(verbose=True)
         
         """
 
-        from .fits_functions import genereate_training_points
-
+        from .fit_functions import genereate_training_points
+        self._initialize_fit_params(**kwargs)
+        emu_settings = self.args['fit_param']['emulator']
+        path_to_save_point = emu_settings['path_to_training_point'] if path_to_save_point is None else path_to_save_point
+        sampling_type = emu_settings['sampling_type']
         if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
             raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
         
-        name_param, priors_array = self.get_param_and_prior()
-
-        if len(name_param) != len(training_points.dtype.names):
-            raise ValueError('The training sample shape ({}) does not correspond to the number of parameters ({})'.format(len(self.args['fit_param']['priors'][tr]), len(training_points.dtype.names)))
-                
+        
         if training_points is None:
-            training_points = genereate_training_points(self.args['fit_param']['N_training_points'], self.args['fit_param']['priors'], sampling_type=self.args['fit_param']['sampling_type'], path_to_save_training_point=self.args['fit_param']['path_to_training_point'], rand_seed=None)
-        tracers = self._tracers()
+            
+            # if test_set:
+            #     self.logger.info(f"Creating {sampling_type} sample for test set...")
+            #     path_to_save_point = path_to_test_set if path_to_test_set is not None else os.path.join(emu_settings['path_to_training_point'], 'test_set')
+            #     sampling_type = emu_settings.get('test_sampling_type', 'lhs')
+            #     training_points = genereate_training_points(emu_settings.get('N_test_points', 10), self.name_params, self.priors, sampling_type=sampling_type, path_to_save_training_point=path_to_save_point, rand_seed=None)
+            # else:
+            self.logger.info(f"Creating {sampling_type} sample for training set...")
+            training_points = genereate_training_points(emu_settings['N_training_points'], self.name_params, self.priors, sampling_type=sampling_type, path_to_save_training_point=path_to_save_point, rand_seed=None)
+        tracers = self._tracer_to_fit
+        
+        if len(self.name_params) != len(training_points.dtype.names):
+            raise ValueError('The training sample shape ({}) does not correspond to the number of parameters ({})'.format(len(self.name_params), len(training_points.dtype.names)))
                 
         if verbose:
-            print(f'Run training sample', flush=True)
+            self.logger.info('Run training sample')
 
         name_param_tr = {}
         for tr in tracers:
-            name_param_tr[tr] = [x.split(f'_{tr}')[0] for x in name_param if tr in x]
+            name_param_tr[tr] = [x.split(f'_{tr}')[0] for x in self.name_params if tr in x]
 
+        # stats = 
         for nb_point, param in enumerate(training_points):
-            if not os.path.exists(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_{}.npy'.format(self.args['fit_param']['sampling_type'], nb_point+start_point))):
+            if (not os.path.exists(os.path.join(path_to_save_point, 'train_hod_{}.npy'.format(nb_point+start_point)))) | overwrite:
                 start = time.time()     
                 result = {}
                 for tr in tracers:
                     # var_name_tr = np.array(training_points.dtype.names)[np.array([tr in var for var in training_points.dtype.names])].tolist()
-                    idx = np.where([tr in vv for vv in name_param])[0].tolist()
-                    tr_par = list(name_param[i] for i in idx)
+                    idx = np.where([tr in vv for vv in self.name_params])[0].tolist()
+                    tr_par = list(self.name_params[i] for i in idx)
                     self.args[tr].update(dict(zip(name_param_tr[tr], param[tr_par])))
                     if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys():
                         for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
                             self.args[tr]['assembly_bias'][var] = [param[f'ab_{var}_cen_{tr}'], param[f'ab_{var}_sat_{tr}']]
 
                     result[tr] = self.args[tr].copy()
-                print('Compute HOD:\n',  '\n'.join(['{}:{}'.format(tt,ttt) for tt, ttt in zip(name_param, param)]), flush=True)
-                cats = [self.make_mock_cat(tracers, fix_seed=seed, verbose=verbose) for i in range(nreal)]
-                
-                if 'wp' in self.args['fit_param']["fit_type"]:
-                    result['wp']= [self.get_crosswp(cats[i], tracers=tracers, verbose=verbose) for i in range(nreal)]
-                    # if result.get('rppi_bins') is None: 
-                    #     result['rppi_bins'] = self.args['2PCF_settings']['edges_rppi']
-                if 'xi' in self.args['fit_param']["fit_type"]:
-                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=tracers, verbose=verbose) for i in range(nreal)]
-                    # if result.get('smu_bins') is None:  
-                    #     result['smu_bins'] = self.args['2PCF_settings']['edges_smu']
-                if 'delta_sigma' in self.args['fit_param']["fit_type"]:
-                    result['delta_sigma'] = [self.get_delta_sigma(cats[i], tracers=tracers, verbose=verbose, return_dic=True) for i in range(nreal)]
-                result['hod_fit_param'] = param
-                result['param_file'] = self.args
-                np.save(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_{}.npy'.format(self.args['fit_param']['sampling_type'], nb_point+start_point)), result)
-                print('Point {} done {:.2f}'.format(nb_point+start_point, time.time()-start), flush=True)        
-
-    def compute_training_v2(self, training_points=None, start_point=0, seed=None, verbose=False):
-        
-        """
-        Generate and save training data for HOD model fitting by sampling parameter sets 
-        (training points), generating mock catalogs, and computing clustering statistics.
-
-        This method automates the process of training data generation for halo occupation distribution (HOD) 
-        modeling. It evaluates HOD parameter samples, generates mock galaxy catalogs, computes desired clustering 
-        statistics (e.g., wp, xi), and stores the results for each training point on disk.
-
-        Parameters
-        ----------
-        nreal : int, optional
-            Number of mock realizations to generate for each training point. Default is 20.
-        training_points : structured array or None, optional
-            Array of training points with named fields corresponding to HOD parameters. If None, 
-            training points will be generated using `genereate_training_points`.
-        start_point : int, optional
-            Starting index for training point numbering (useful when continuing interrupted runs). Default is 0.
-        verbose : bool, optional
-            Whether to print progress messages during execution. Default is False.
-
-        Raises
-        ------
-        ValueError
-            If the defined tracers in `self.args` do not match those defined in the priors, 
-            or if the number of training parameters doesn't match expectations.
-
-        Notes
-        -----
-        - The method checks consistency between tracers and prior parameter definitions.
-        - For each training point, the HOD parameters are injected into the model and multiple 
-        mock realizations are generated.
-        - The 2PCF (xi) and/or wp (projected correlation function) are computed per realization, depending 
-        on `fit_type`.
-        - Each result is saved as a .npy file with a name format based on sampling type and training point index.
-
-        Files Saved
-        -----------
-        - One `.npy` file per training point is saved to `path_to_training_point` with structure:
-            {
-                tracer_1: <updated HOD params dict>,
-                tracer_2: ...,
-                'wp': [...],
-                'xi': [...],
-                'hod_fit_param': <parameter values used>
-            }
-
-        Example
-        -------
-        self.compute_training(nreal=10, verbose=True)
-        
-        """
-
-        from .fits_functions import genereate_training_points
-
-        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
-            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
-        
-        name_param, priors_array = self.get_param_and_prior()
-
-        if len(name_param) != len(training_points.dtype.names):
-            raise ValueError('The training sample shape ({}) does not correspond to the number of parameters ({})'.format(len(self.args['fit_param']['priors'][tr]), len(training_points.dtype.names)))
-                
-        if training_points is None:
-            training_points = genereate_training_points(self.args['fit_param']['N_training_points'], self.args['fit_param']['priors'], sampling_type=self.args['fit_param']['sampling_type'], path_to_save_training_point=self.args['fit_param']['path_to_training_point'], rand_seed=None)
-        tracers = self._tracers()
-                
-        if verbose:
-            print(f'Run training sample', flush=True)
-
-        name_param_tr = {}
-        for tr in tracers:
-            name_param_tr[tr] = [x.split(f'_{tr}')[0] for x in name_param if tr in x]
-
-        for nb_point, param in enumerate(training_points):
-            if not os.path.exists(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_{}.npy'.format(self.args['fit_param']['sampling_type'], nb_point+start_point))):
-                start = time.time()     
-                result = {}
-                for tr in tracers:
-                    # var_name_tr = np.array(training_points.dtype.names)[np.array([tr in var for var in training_points.dtype.names])].tolist()
-                    idx = np.where([tr in vv for vv in name_param])[0].tolist()
-                    tr_par = list(name_param[i] for i in idx)
-                    self.args[tr].update(dict(zip(name_param_tr[tr], param[tr_par])))
-                    if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys():
-                        for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
-                            self.args[tr]['assembly_bias'][var] = [param[f'ab_{var}_cen_{tr}'], param[f'ab_{var}_sat_{tr}']]
-
-                    result[tr] = self.args[tr].copy()
-                print('Compute HOD:\n',  '\n'.join(['{}:{}'.format(tt,ttt) for tt, ttt in zip(name_param, param)]), flush=True)
+                self.logger.info('Compute HOD:' + ', '.join('{}: {:.3f}'.format(tt, ttt) for tt, ttt in zip(self.name_params, param)))
                 cat = self.make_mock_cat(tracers, fix_seed=seed, verbose=verbose)
                 
-                result.update(self.__compute_all_stat(cat))
+                result.update(self.compute_stats(cat, stat=self.args['fit_param']['fit_statistics'], tracers=self._tracers(), verbose=False))
                 result['comb_trs'] = self.get_comb_tr_list(self._tracers())
                 result['hod_fit_param'] = param
                 result['param_file'] = self.args
-                np.save(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_{}.npy'.format(self.args['fit_param']['sampling_type'], nb_point+start_point)), result)
-                print('Point {} done {:.2f}'.format(nb_point+start_point, time.time()-start), flush=True)        
+                np.save(os.path.join(path_to_save_point, 'train_hod_{}.npy'.format(nb_point+start_point)), result)
+                self.logger.info('Point {} done {:.2f}'.format(nb_point+start_point, time.time()-start))        
+ 
 
-
-    def read_training(self, data, inv_cov2):
+    # def read_training(self, data, inv_cov2):
         
-        """
-        Loads and processes HOD training samples, computes chi² statistics for each sample 
-        against a target dataset, and returns a structured array for Gaussian Process training.
+    #     """
+    #     Loads and processes HOD training samples, computes chi² statistics for each sample 
+    #     against a target dataset, and returns a structured array for Gaussian Process training.
 
-        Parameters
-        ----------
-        data : array_like
-            Observed data vector (e.g., wp or xi measurements) to compare against model predictions.
+    #     Parameters
+    #     ----------
+    #     data : array_like
+    #         Observed data vector (e.g., wp or xi measurements) to compare against model predictions.
 
-        inv_cov2 : ndarray
-            Inverse of the covariance matrix used in chi² computation.
+    #     inv_cov2 : ndarray
+    #         Inverse of the covariance matrix used in chi² computation.
 
-        Returns
-        -------
-        training_set : structured ndarray
-            Structured array where each row corresponds to a training point, including:
-            - HOD parameters
-            - Mean chi² value for the realizations
-            - Uncertainty on chi² (standard deviation / sqrt(N_real))
+    #     Returns
+    #     -------
+    #     training_set : structured ndarray
+    #         Structured array where each row corresponds to a training point, including:
+    #         - HOD parameters
+    #         - Mean chi² value for the realizations
+    #         - Uncertainty on chi² (standard deviation / sqrt(N_real))
         
-        Notes
-        -----
-        - Reads all training `.npy` files from `self.args['fit_param']['path_to_training_point']` with the given sampling type.
-        - Applies covariance matrix adjustments if requested.
-        - Supports either 'wp', 'xi', or both statistics depending on `self.args['fit_param']['fit_type']`.
-        - Combines model realizations by flattening tracer combinations and statistics into a single vector.
-        - Computes chi² using the `compute_chi2()` utility, which is assumed to match the data/model shape.
+    #     Notes
+    #     -----
+    #     - Reads all training `.npy` files from `self.args['fit_param']['path_to_training_point']` with the given sampling type.
+    #     - Applies covariance matrix adjustments if requested.
+    #     - Supports either 'wp', 'xi', or both statistics depending on `self.args['fit_param']['fit_type']`.
+    #     - Combines model realizations by flattening tracer combinations and statistics into a single vector.
+    #     - Computes chi² using the `compute_chi2()` utility, which is assumed to match the data/model shape.
 
-        Example
-        -------
-        >>> train_set = model.read_training(observed_data, inv_cov2)
-        """
+    #     Example
+    #     -------
+    #     >>> train_set = model.read_training(observed_data, inv_cov2)
+    #     """
 
-        from fits_functions import compute_chi2
+    #     from HODDIES.fits_functions_old import compute_chi2
 
-        print('Read training sample...', flush=True)
-        files = glob.glob(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_*.npy'.format(self.args['fit_param']['sampling_type'])))
-        files.sort()
-        for ii,file in enumerate(files):
-            res_param =  np.load(file, allow_pickle=True)[()]
-            if ii == 0:
-                name_arr = list(res_param['hod_fit_param'].dtype.names) + ['chi2', 'chi2_err']
-                training_set = np.zeros((len(files),len(name_arr)))
-            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
-            res = {}
-            comb_trs = res_param[stats[0]][0].keys() 
-            nreal = len(res_param[stats[0]])
-            res = [np.hstack([np.hstack([np.hstack(res_param[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nreal)]
+    #     print('Read training sample...', flush=True)
+    #     files = glob.glob(os.path.join(self.args['fit_param']["path_to_training_point"], '{}_*.npy'.format(self.args['fit_param']['sampling_type'])))
+    #     files.sort()
+    #     for ii,file in enumerate(files):
+    #         res_param =  np.load(file, allow_pickle=True)[()]
+    #         if ii == 0:
+    #             name_arr = list(res_param['hod_fit_param'].dtype.names) + ['chi2', 'chi2_err']
+    #             training_set = np.zeros((len(files),len(name_arr)))
+    #         stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+    #         res = {}
+    #         comb_trs = res_param[stats[0]][0].keys() 
+    #         nreal = len(res_param[stats[0]])
+    #         res = [np.hstack([np.hstack([np.hstack(res_param[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nreal)]
 
-            chi2 = np.mean([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])
-            chi2_err = np.std([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])/np.sqrt(nreal)
-            training_set[ii] = np.hstack((res_param['hod_fit_param'].tolist(),chi2,chi2_err))
+    #         chi2 = np.mean([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])
+    #         chi2_err = np.std([compute_chi2(model_arr, data, inv_Cov2=inv_cov2) for model_arr in res])/np.sqrt(nreal)
+    #         training_set[ii] = np.hstack((res_param['hod_fit_param'].tolist(),chi2,chi2_err))
 
-        training_set.dtype=[(name, dt) for name, dt in zip(name_arr, ['float64']*len(name_arr))]
-        return training_set
+    #     training_set.dtype=[(name, dt) for name, dt in zip(name_arr, ['float64']*len(name_arr))]
+    #     return training_set
     
         
-    def run_gp_mcmc(self, training_set, niter, logchi2=True,
-                        nb_points=1, remove_edges=0.9,
-                        random_state=None, verbose=True):
+    # def run_gp_mcmc(self, training_set, niter, logchi2=True,
+    #                     nb_points=1, remove_edges=0.9,
+    #                     random_state=None, verbose=True):
         
-        """
-        Performs Gaussian Process Regression (GPR) on a training set, runs MCMC sampling over 
-        the GPR-predicted posterior, and returns the next suggested parameter point(s) for exploration.
+    #     """
+    #     Performs Gaussian Process Regression (GPR) on a training set, runs MCMC sampling over 
+    #     the GPR-predicted posterior, and returns the next suggested parameter point(s) for exploration.
 
-        This function enables Bayesian optimization for halo model fitting by building a GP emulator
-        on existing training data, sampling from the GP posterior using MCMC, and identifying 
-        the most promising regions in parameter space.
-        Detail of the method in arxiv:2302.07056
+    #     This function enables Bayesian optimization for halo model fitting by building a GP emulator
+    #     on existing training data, sampling from the GP posterior using MCMC, and identifying 
+    #     the most promising regions in parameter space.
+    #     Detail of the method in arxiv:2302.07056
 
-        Parameters
-        ----------
-        training_set : structured array
-            Training data containing parameters and corresponding chi² values (and uncertainties).
+    #     Parameters
+    #     ----------
+    #     training_set : structured array
+    #         Training data containing parameters and corresponding chi² values (and uncertainties).
 
-        niter : int
-            Current iteration index (used for file naming and logging).
+    #     niter : int
+    #         Current iteration index (used for file naming and logging).
 
-        logchi2 : bool, optional
-            If True, the GP models log(chi²). Default is True.
+    #     logchi2 : bool, optional
+    #         If True, the GP models log(chi²). Default is True.
 
-        nb_points : int, optional
-            Number of new points to return from the GP+MCMC sampling. Default is 1.
+    #     nb_points : int, optional
+    #         Number of new points to return from the GP+MCMC sampling. Default is 1.
 
-        remove_edges : float, optional
-            Factor to shrink prior boundaries when enforcing parameter limits. Values egal to 1 
-            keep the prior boundaries. Default is 0.9.
+    #     remove_edges : float, optional
+    #         Factor to shrink prior boundaries when enforcing parameter limits. Values egal to 1 
+    #         keep the prior boundaries. Default is 0.9.
 
-        random_state : int or None, optional
-            Seed for reproducibility. Default is None.
+    #     random_state : int or None, optional
+    #         Seed for reproducibility. Default is None.
 
-        verbose : bool, optional
-            If True, print progress and diagnostics. Default is True.
+    #     verbose : bool, optional
+    #         If True, print progress and diagnostics. Default is True.
 
-        Returns
-        -------
-        new_points : ndarray
-            Array of shape (nb_points, n_parameters) with newly suggested parameter values.
+    #     Returns
+    #     -------
+    #     new_points : ndarray
+    #         Array of shape (nb_points, n_parameters) with newly suggested parameter values.
         
 
-        Notes
-        -----
-        - Trains a GP model using scikit-learn's `GaussianProcessRegressor`.
-        - Runs MCMC sampling using `emcee` or `zeus`. Default sampler is emcee.
-        - Logs GPR and MCMC diagnostics to `output_GP_*.txt`.
-        - Saves the full sampled chain with GP predictions to `chains/chain_*.txt`.
-        - The GP kernel is configured based on `self.args['fit_param']['kernel_gp']`. Default kernel is Matern 5/2.
-        - Trained GP model and MCMC output are saved for post-analysis and reproducibility.
-        - During MCMC, parameter boundaries are enforced via a likelihood mask.
-        - GPR score, prediction at the prior mean, and best predicted chi² are logged.
+    #     Notes
+    #     -----
+    #     - Trains a GP model using scikit-learn's `GaussianProcessRegressor`.
+    #     - Runs MCMC sampling using `emcee` or `zeus`. Default sampler is emcee.
+    #     - Logs GPR and MCMC diagnostics to `output_GP_*.txt`.
+    #     - Saves the full sampled chain with GP predictions to `chains/chain_*.txt`.
+    #     - The GP kernel is configured based on `self.args['fit_param']['kernel_gp']`. Default kernel is Matern 5/2.
+    #     - Trained GP model and MCMC output are saved for post-analysis and reproducibility.
+    #     - During MCMC, parameter boundaries are enforced via a likelihood mask.
+    #     - GPR score, prediction at the prior mean, and best predicted chi² are logged.
 
-        Raises
-        ------
-        ValueError
-            If an unsupported GP kernel or sampler is specified.
+    #     Raises
+    #     ------
+    #     ValueError
+    #         If an unsupported GP kernel or sampler is specified.
 
-        Example
-        -------
-        >>> new_pts = model.run_gp_mcmc(training_data, niter=5, nb_points=3, logchi2=True)
+    #     Example
+    #     -------
+    #     >>> new_pts = model.run_gp_mcmc(training_data, niter=5, nb_points=3, logchi2=True)
 
-        """
+    #     """
 
-        priors = self.args['fit_param']['priors']
-        priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
-        nvar = len(priors_array)
-        name_param = training_set.dtype.names[:-2]
-        ranges = np.hstack((priors_array, np.mean(priors_array, axis=1).reshape(nvar,-1), np.diff(priors_array, axis=1)))
+    #     priors = self.args['fit_param']['priors']
+    #     priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
+    #     nvar = len(priors_array)
+    #     name_param = training_set.dtype.names[:-2]
+    #     ranges = np.hstack((priors_array, np.mean(priors_array, axis=1).reshape(nvar,-1), np.diff(priors_array, axis=1)))
 
-        dir_output_file = self.args['fit_param']['dir_output_fit']
-        fit_name = self.args['fit_param']['fit_name']
+    #     dir_output_file = self.args['fit_param']['dir_output_fit']
+    #     fit_name = self.args['fit_param']['fit_name']
 
-        arr_training = np.concatenate(training_set.tolist(), axis=0).T
+    #     arr_training = np.concatenate(training_set.tolist(), axis=0).T
         
-        os.makedirs(dir_output_file, exist_ok=True)
-        if logchi2:
-            X_train, Y_train, Y_err = arr_training[:nvar].T, np.log(arr_training[-2]), arr_training[-1]/arr_training[-2]  
-        else:
-            X_train, Y_train, Y_err = arr_training[:nvar].T, arr_training[-2], arr_training[-1]
+    #     os.makedirs(dir_output_file, exist_ok=True)
+    #     if logchi2:
+    #         X_train, Y_train, Y_err = arr_training[:nvar].T, np.log(arr_training[-2]), arr_training[-1]/arr_training[-2]  
+    #     else:
+    #         X_train, Y_train, Y_err = arr_training[:nvar].T, arr_training[-2], arr_training[-1]
 
-        length_scale = np.ones(nvar)
-        if self.args['fit_param']['length_scale_bounds'] == "fix":
-            length_scale = length_scale
+    #     length_scale = np.ones(nvar)
+    #     if self.args['fit_param']['length_scale_bounds'] == "fix":
+    #         length_scale = length_scale
 
-        if  self.args['fit_param']['kernel_gp'] == 'RBF':
-            kernel = 1.0 * skg.kernels.RBF(length_scale=length_scale,
-                                            length_scale_bounds=self.args['fit_param']['length_scale_bounds'])
-        elif self.args['fit_param']['kernel_gp'] == 'Matern_52':
-            kernel = 1.0 * skg.kernels.Matern(length_scale=length_scale,
-                                                length_scale_bounds=self.args['fit_param']['length_scale_bounds'], nu=5/2)
+    #     if  self.args['fit_param']['kernel_gp'] == 'RBF':
+    #         kernel = 1.0 * skg.kernels.RBF(length_scale=length_scale,
+    #                                         length_scale_bounds=self.args['fit_param']['length_scale_bounds'])
+    #     elif self.args['fit_param']['kernel_gp'] == 'Matern_52':
+    #         kernel = 1.0 * skg.kernels.Matern(length_scale=length_scale,
+    #                                             length_scale_bounds=self.args['fit_param']['length_scale_bounds'], nu=5/2)
             
-        else:
-            raise ValueError('Only RBF or Matern_52 Kernel are available not {}'.format(self.args['fit_param']['kernel_gp']))
+    #     else:
+    #         raise ValueError('Only RBF or Matern_52 Kernel are available not {}'.format(self.args['fit_param']['kernel_gp']))
             
-        if verbose:
-            print(f"Running GPR iteration {niter}...", flush=True)
-            start = time.time()
+    #     if verbose:
+    #         print(f"Running GPR iteration {niter}...", flush=True)
+    #         start = time.time()
 
-        gp = skg.GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10,
-                                            alpha=Y_err**2, random_state=random_state).fit(X_train, Y_train)
-        if verbose:
-            print(
-                f"GPR computed took {time.strftime('%H:%M:%S',time.gmtime(time.time() - start))}")
-            print('#score=', gp.score(X_train, Y_train), flush=True)
-            print("#", gp.kernel_.get_params(), flush=True)
+    #     gp = skg.GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10,
+    #                                         alpha=Y_err**2, random_state=random_state).fit(X_train, Y_train)
+    #     if verbose:
+    #         print(
+    #             f"GPR computed took {time.strftime('%H:%M:%S',time.gmtime(time.time() - start))}")
+    #         print('#score=', gp.score(X_train, Y_train), flush=True)
+    #         print("#", gp.kernel_.get_params(), flush=True)
 
-        def likelihood(x):
-            if logchi2:
-                L = -np.exp(gp.predict(x.reshape(-1, nvar)))/2  
-            else:
-                L = -gp.predict(x.reshape(-1, nvar))/2
-            # print(L,x)
-            cond = np.abs(x-ranges[:, 2]) < (ranges[:, 3]/2)*remove_edges
-            # print(cond)
-            if cond.all():
-                return L
-            else:
-                return -np.inf
+    #     def likelihood(x):
+    #         if logchi2:
+    #             L = -np.exp(gp.predict(x.reshape(-1, nvar)))/2  
+    #         else:
+    #             L = -gp.predict(x.reshape(-1, nvar))/2
+    #         # print(L,x)
+    #         cond = np.abs(x-ranges[:, 2]) < (ranges[:, 3]/2)*remove_edges
+    #         # print(cond)
+    #         if cond.all():
+    #             return L
+    #         else:
+    #             return -np.inf
 
-        p0 = np.random.uniform(0, 1, (self.args['fit_param']['nwalkers'], nvar))
-        for k in range(nvar):
-            p0[:, k] = (p0[:, k]-0.5)*ranges[k, 3] * 0.8 + ranges[k, 2]  # 0.8 edges
+    #     p0 = np.random.uniform(0, 1, (self.args['fit_param']['nwalkers'], nvar))
+    #     for k in range(nvar):
+    #         p0[:, k] = (p0[:, k]-0.5)*ranges[k, 3] * 0.8 + ranges[k, 2]  # 0.8 edges
         
-        if verbose:
-            print(f"Run MCMC for iteration {niter}...", flush=True)
-            start = time.time()
-        if self.args['fit_param']['sampler'] == "zeus":
-            sampler_mcmc = zeus.EnsembleSampler(
-                self.args['fit_param']['nwalkers'], nvar, likelihood)  # , args=[nvar])
-            sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])  # per walker
-            chain = sampler_mcmc.get_chain(flat=True)
-        elif self.args['fit_param']['sampler'] == "emcee":
-            sampler_mcmc = emcee.EnsembleSampler(
-                self.args['fit_param']['nwalkers'], nvar, likelihood)  # , args=[nvar])
-            sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])  # per walker
-            '''with Pool() as pool:
-                sampler_mcmc = emcee.EnsembleSampler(self.args['fit_param']['nwalkers'], nvar, likelihood, pool=pool)
-                sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])'''
-            chain = sampler_mcmc.flatchain
-        else: 
-            raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
+    #     if verbose:
+    #         print(f"Run MCMC for iteration {niter}...", flush=True)
+    #         start = time.time()
+    #     if self.args['fit_param']['sampler'] == "zeus":
+    #         sampler_mcmc = zeus.EnsembleSampler(
+    #             self.args['fit_param']['nwalkers'], nvar, likelihood)  # , args=[nvar])
+    #         sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])  # per walker
+    #         chain = sampler_mcmc.get_chain(flat=True)
+    #     elif self.args['fit_param']['sampler'] == "emcee":
+    #         sampler_mcmc = emcee.EnsembleSampler(
+    #             self.args['fit_param']['nwalkers'], nvar, likelihood)  # , args=[nvar])
+    #         sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])  # per walker
+    #         '''with Pool() as pool:
+    #             sampler_mcmc = emcee.EnsembleSampler(self.args['fit_param']['nwalkers'], nvar, likelihood, pool=pool)
+    #             sampler_mcmc.run_mcmc(p0, self.args['fit_param']['n_iter'])'''
+    #         chain = sampler_mcmc.flatchain
+    #     else: 
+    #         raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
         
-        trimmed = chain[int(len(chain)/4):]
-        if verbose:
-            print(f'MCMC computed took {time.strftime("%H:%M:%S",time.gmtime(time.time() - start))}', flush=True)
+    #     trimmed = chain[int(len(chain)/4):]
+    #     if verbose:
+    #         print(f'MCMC computed took {time.strftime("%H:%M:%S",time.gmtime(time.time() - start))}', flush=True)
         
-        new_points = trimmed[:, :nvar][np.random.randint(len(trimmed), size=nb_points)]
+    #     new_points = trimmed[:, :nvar][np.random.randint(len(trimmed), size=nb_points)]
 
 
-        Gp_pred = gp.predict(trimmed, return_std=True)
-        ind = np.where(Gp_pred[0] == Gp_pred[0].min())[0][0]
-        pred = gp.predict(ranges[:, 2].reshape(-1, nvar),
-                            return_std=True)  # Best fit pred
-        if verbose:
-            print("#Pred at fix point (mean values of each params):",
-                    ranges[:, 2], pred, flush=True)
-            print("#best GP prediction:",
-                    trimmed[ind], Gp_pred[0][ind], Gp_pred[1][ind], flush=True)
+    #     Gp_pred = gp.predict(trimmed, return_std=True)
+    #     ind = np.where(Gp_pred[0] == Gp_pred[0].min())[0][0]
+    #     pred = gp.predict(ranges[:, 2].reshape(-1, nvar),
+    #                         return_std=True)  # Best fit pred
+    #     if verbose:
+    #         print("#Pred at fix point (mean values of each params):",
+    #                 ranges[:, 2], pred, flush=True)
+    #         print("#best GP prediction:",
+    #                 trimmed[ind], Gp_pred[0][ind], Gp_pred[1][ind], flush=True)
 
-        multi_GR = multivariate_gelman_rubin(sampler_mcmc.get_chain().transpose([1, 0, 2])[:, 2500:, :])
-        if verbose:
-            print("#multivariate_gelman_rubin: ", multi_GR, flush=True)
+    #     multi_GR = multivariate_gelman_rubin(sampler_mcmc.get_chain().transpose([1, 0, 2])[:, 2500:, :])
+    #     if verbose:
+    #         print("#multivariate_gelman_rubin: ", multi_GR, flush=True)
 
-        res = np.hstack((trimmed, np.exp(Gp_pred[0]).reshape(len(Gp_pred[0]),1) if logchi2 else Gp_pred[0].reshape(len(Gp_pred[0]),1), (np.exp(Gp_pred[0])*Gp_pred[1]).reshape(len(Gp_pred[0]),1) if logchi2 else Gp_pred[1].reshape(len(Gp_pred[0]),1)))
+    #     res = np.hstack((trimmed, np.exp(Gp_pred[0]).reshape(len(Gp_pred[0]),1) if logchi2 else Gp_pred[0].reshape(len(Gp_pred[0]),1), (np.exp(Gp_pred[0])*Gp_pred[1]).reshape(len(Gp_pred[0]),1) if logchi2 else Gp_pred[1].reshape(len(Gp_pred[0]),1)))
         
-        os.makedirs(os.path.join(dir_output_file, 'chains'), exist_ok=True)
-        np.savetxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{niter}.txt'), res)
+    #     os.makedirs(os.path.join(dir_output_file, 'chains'), exist_ok=True)
+    #     np.savetxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{niter}.txt'), res)
 
-        if niter == 0:
-            list_lenghtscale = []
-            for i in range(nvar):
-                list_lenghtscale.append("ls%d" % i)
+    #     if niter == 0:
+    #         list_lenghtscale = []
+    #         for i in range(nvar):
+    #             list_lenghtscale.append("ls%d" % i)
             
-            f = open(os.path.join(dir_output_file,
-                                    f'output_GP_{nvar}p_{fit_name}.txt'), "w")
+    #         f = open(os.path.join(dir_output_file,
+    #                                 f'output_GP_{nvar}p_{fit_name}.txt'), "w")
             
-            f.write("N_iter GPscore GP_predfix Er_predfix BestPred Er_BestPred multivariate_gelman_rubin "
-                    + ' '.join(map(str, name_param))+" "
-                    + ' '.join(map(str, list_lenghtscale))+"\n")
-            f.write(str(niter)+" "+str(gp.score(X_train, Y_train))+" "
-                    + str(pred[0][0])+" "+str(pred[1][0])+" "
-                    + str(Gp_pred[0][ind])+" "
-                    + str(Gp_pred[1][ind])+" " + str(multi_GR)+" "
-                    + ' '.join(map(str, trimmed[ind]))+" "
-                    + ' '.join(map(str, gp.kernel_.get_params(False)["k2"].length_scale))+"\n")
-            f.close()
-        else:
-            f = open(os.path.join(dir_output_file,
-                                    f'output_GP_{nvar}p_{fit_name}.txt'), "a")
+    #         f.write("N_iter GPscore GP_predfix Er_predfix BestPred Er_BestPred multivariate_gelman_rubin "
+    #                 + ' '.join(map(str, name_param))+" "
+    #                 + ' '.join(map(str, list_lenghtscale))+"\n")
+    #         f.write(str(niter)+" "+str(gp.score(X_train, Y_train))+" "
+    #                 + str(pred[0][0])+" "+str(pred[1][0])+" "
+    #                 + str(Gp_pred[0][ind])+" "
+    #                 + str(Gp_pred[1][ind])+" " + str(multi_GR)+" "
+    #                 + ' '.join(map(str, trimmed[ind]))+" "
+    #                 + ' '.join(map(str, gp.kernel_.get_params(False)["k2"].length_scale))+"\n")
+    #         f.close()
+    #     else:
+    #         f = open(os.path.join(dir_output_file,
+    #                                 f'output_GP_{nvar}p_{fit_name}.txt'), "a")
             
-            f.write(str(niter)+" "+str(gp.score(X_train, Y_train))+" "
-                    + str(pred[0][0])+" "+str(pred[1][0])+" "
-                    + str(Gp_pred[0][ind])+" "
-                    + str(Gp_pred[1][ind])+" " + str(multi_GR)+" "
-                    + ' '.join(map(str, trimmed[ind]))+" "
-                    + ' '.join(map(str, gp.kernel_.get_params(False)["k2"].length_scale))+"\n")
-            f.close()
+    #         f.write(str(niter)+" "+str(gp.score(X_train, Y_train))+" "
+    #                 + str(pred[0][0])+" "+str(pred[1][0])+" "
+    #                 + str(Gp_pred[0][ind])+" "
+    #                 + str(Gp_pred[1][ind])+" " + str(multi_GR)+" "
+    #                 + ' '.join(map(str, trimmed[ind]))+" "
+    #                 + ' '.join(map(str, gp.kernel_.get_params(False)["k2"].length_scale))+"\n")
+    #         f.close()
 
-        return new_points
+    #     return new_points
     
 
-    def run_fit(self, data_arr, inv_Cov2, training_point,
-                resume_fit=False, verbose=True):
+    # def run_fit(self, data_arr, inv_Cov2, training_point,
+    #             resume_fit=False, verbose=True):
         
+    #     """
+    #     Execute the Gaussian Process MCMC fitting routine for HOD parameter inference.
+
+    #     This method performs iterative Gaussian Process-driven MCMC sampling to explore the
+    #     Halo Occupation Distribution (HOD) parameter space, fitting mock catalog outputs to observed
+    #     clustering statistics such as the 2-point correlation function.
+
+    #     For methodological details, see: https://arxiv.org/abs/2302.07056
+
+    #     Parameters
+    #     ----------
+    #     data_arr : array_like
+    #         Observed data vector used in chi-squared comparisons (e.g., wp, xi).
+
+    #     inv_Cov2 : ndarray
+    #         Inverse of the covariance matrix used in the chi-squared computation.
+    #         Must match the dimensionality of `data_arr`.
+
+    #     training_point : structured ndarray
+    #         Existing training sample including HOD parameters and chi-squared values,
+    #         used to condition the GP model.
+
+    #     resume_fit : bool, optional
+    #         If True, resumes from a previously saved fit by loading logs and chains.
+    #         Default is False.
+
+    #     verbose : bool, optional
+    #         If True, displays detailed iteration-level logs. Default is True.
+
+    #     Returns
+    #     -------
+    #     None
+    #         All fitting results are saved to disk. No return value.
+
+    #     Notes
+    #     -----
+    #     - Creates and updates files under `dir_output_fit`, including:
+    #         - `*.txt` logs of sampled parameter values and chi² results
+    #         - Chains of samples in `chains/` directory
+    #         - Diagnostic metrics such as KL divergence
+    #     - Calls the following key internal methods:
+    #         - `make_mock_cat()`: to generate mock catalogs
+    #         - `get_cross_wp()`, `get_cross2PCF()`: for 2PCF computation
+    #         - `compute_chi2()`: to evaluate model-data fit
+    #         - `run_gp_mcmc()`: for parameter sampling via GP-MCMC
+    #     - Convergence is optionally monitored via KL divergence, but the stopping criterion is commented out.
+    #     - Handles both projected (wp) and full-space (xi) correlation functions depending on `fit_type`.
+    #     - Assumes the availability of `emcee` or `zeus` samplers for MCMC.
+    #     - Results are appended to an evolving training set across iterations.
+
+    #     Example
+    #     -------
+    #     >>> model.run_fit(data_arr, inv_cov2, training_set, resume_fit=True)
+    #     """
+    #     import pandas as pd
+    #     from .fits_functions_old import compute_chi2
+    #     if self.args['fit_param']['sampler'] == "zeus":
+    #         import zeus
+    #     elif self.args['fit_param']['sampler'] == "emcee":
+    #         import emcee 
+    #     else: 
+    #         raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
+        
+    #     import sklearn.gaussian_process as skg
+
+    #     nmock = self.args['fit_param']['nb_real']
+    #     dir_output_file= self.args['fit_param']['dir_output_fit']
+    #     fit_name = self.args['fit_param']['fit_name']
+    #     priors = self.args['fit_param']['priors']
+    #     priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
+    #     nvar = len(priors_array)  
+    #     arr_dtype = training_point.dtype
+
+    #     iter = 0
+    #     if resume_fit & os.path.exists(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt")):
+    #         output_point = pd.read_csv(os.path.join(
+    #             dir_output_file, f"{nvar}p_{fit_name}.txt"), sep=" ", comment="#")
+            
+    #         training_point = np.concatenate((np.array(training_point.tolist()).reshape(len(training_point), -1), output_point[list(training_point.dtype.names)].values))
+    #         training_point.dtype = arr_dtype
+
+    #         iter = output_point["N_iter"].loc[len(output_point)-1]+1
+    #         p = np.loadtxt(os.path.join(dir_output_file, 'chains',
+    #                                     f'chain_{nvar}p_{fit_name}_{iter-1}.txt'))[:, :nvar]
+    #         D_kl = 10
+    #         if verbose:
+    #             print("#resume fit at iteration ", iter, "len param point ", len(training_point), flush=True)
+                
+    #     print("Run gpmcmc...", flush=True)
+    #     for j in range(iter, self.args['fit_param']['n_calls']):
+    #         if verbose:
+    #             print(f'Iteration {j}...', flush=True)
+    #             time_compute_mcmc = time.time()
+
+    #         new_params = self.run_gp_mcmc(training_point, j, logchi2=self.args['fit_param']['logchi2'],
+    #                     nb_points=1, remove_edges=0.9,
+    #                     random_state=None, verbose=True)
+
+
+    #         if verbose:
+    #             print("#time_compute_gpmcmc =", time.time() - time_compute_mcmc, flush=True)
+
+    #         ### Test de Kullback Leibler
+    #         D_kl1 = 10
+    #         if j > 0:
+    #             if j == 1:
+    #                 q = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{0}.txt'))[:, :nvar]
+    #                 p = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{1}.txt'))[:, :nvar]
+    #                 D_kl = np.array([])
+    #             else:
+    #                 q = p
+    #                 p = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{j}.txt'))[:, :nvar]
+    #             n_dim = nvar
+    #             cov_q = np.cov(q.T)
+    #             cov_p = np.cov(p.T)
+    #             inv_cov_q = np.linalg.inv(cov_q)
+    #             mean_q = np.mean(q, axis=0)
+    #             mean_p = np.mean(p, axis=0)
+    #             D_kl1 = 0.5 * (np.log10(np.linalg.det(cov_q) / np.linalg.det(cov_p)) - n_dim + np.trace(np.matmul(
+    #                 inv_cov_q, cov_p)) + np.matmul((mean_q - mean_p).T, np.matmul(inv_cov_q, (mean_q - mean_p))))
+    #             D_kl = np.append(D_kl1, D_kl)
+    #             # print (j, D_kl)
+    #             # if len(D_kl) > 5:
+    #             #     if (D_kl[-5:] < 0.1).all():
+    #             #         sys.exit("Procedure converged at iteration %d!" % j)
+
+    #         #Compute chi2
+    #         new_train_point = np.zeros((len(new_params), nvar+2))
+
+    #         new_params.dtype = [(name, dt) for name, dt in zip(training_point.dtype.names, ['float64']*nvar)]
+
+    #         if verbose:
+    #             print("#run old parralel chi2 points", new_params, len(new_params))
+
+    #         if j == 0:
+    #             f = open(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt"), "w")
+    #             f.write("N_iter "+' '.join(map(str, training_point.dtype.names)) + " D_kl1\n")
+    #             f.close()
+
+    #         for i, new_p in enumerate(new_params):
+    #             for tr in self._tracers():
+    #                 for var in self.args['fit_param']['priors'][tr].keys():
+    #                     self.args[tr][var] = new_p['{}_{}'.format(var, tr)][0]
+    #                 if verbose:
+    #                     self.logger.debug(f"{tr} {[(var, self.args[tr][var]) for var in self.args['fit_param']['priors'][tr].keys()]}")
+                
+    #             time_function_compute_parralel_chi2 = time.time()
+    #             print(f'Run {nmock} galaxy catalog for iteration {j}', flush=True)
+    #             cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmock)]
+
+    #             print(f'Time to compute {nmock} cats : {time.strftime("%H:%M:%S",time.gmtime(time.time() - time_function_compute_parralel_chi2))}', flush=True)
+
+
+    #             time_function_compute_parralel_chi2 = time.time()
+    #             print('Run 2PCF...', flush=True)
+    #             result = {}
+    #             if 'wp' in self.args['fit_param']["fit_type"]:
+    #                 result['wp']= [self.get_cross_wp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
+    #             if 'xi' in self.args['fit_param']["fit_type"]:
+    #                 result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
+    #             if verbose:
+    #                 print("#Time to compute 2PCFs =", time.strftime("%H:%M:%S", time.gmtime(time.time()-time_function_compute_parralel_chi2)), flush=True)
+                    
+
+    #             stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+    #             res = {}
+    #             comb_trs = result[stats[0]][0].keys() 
+    #             res = [np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmock)]
+    #             #res_std = np.std(res, axis=0)            
+    #             #iCov2 = inv_Cov2*res_std*res_std[:, None]
+                
+
+    #             chi2 = np.mean([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])
+    #             chi2_err = np.std([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])/np.sqrt(nmock)
+
+    #             new_train_point[i] = np.hstack((new_params[i].tolist()[0], chi2, chi2_err))
+    #             if verbose:
+    #                 print('#### NEW ADDED POINT:', ' '.join(map(str, new_params[i].tolist()[0])), chi2, chi2_err, D_kl1, flush=True)
+
+    #             f = open(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt"), "a")
+    #             f.write(str(str(j)+" "+' '.join(map(str, new_params[i].tolist()[0])))+" "+str(chi2)+" "+str(chi2_err)+" "+str(D_kl1)+"\n")
+    #             f.close()
+
+    #         new_train_point.dtype = arr_dtype
+    #         training_point = np.vstack((training_point, new_train_point))
+    #         if verbose:
+    #             print(f'Iteration {j} done, took {time.strftime("%H:%M:%S",time.gmtime(time.time()-time_compute_mcmc))}', flush=True)
+
+    
+    # def initialize_fit(self, data_vec=None, inv_cov2=None, diag_err=None, add_poisson_noise=True, nmocks_std=20, **kwargs):
+
+    #     from HODDIES.fits_functions_old import load_desi_data, get_corr_small_boxes
+    #     from pycorr import utils
+
+    #     if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
+    #         raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
+
+    #     # self.args['fit_param']['pimax'] = self.args['2PCF_settings']['pimax']
+    #     # self.args['fit_param']['multipole_index'] = self.args['2PCF_settings']['multipole_index']
+    #     # self.args['fit_param']['z_simu'] = self.z_simu
+    #     # self.args['fit_param'].update(kwargs)
+        
+    #     if self.args['fit_param']['use_desi_data']:
+    #         data_dic = load_desi_data(self.args['fit_param'], self._tracers(), load_cov_jk=self.args['fit_param']['load_cov_jk'])
+
+    #         mm = [list(data_dic.keys())[i].endswith(tuple(self._tracers())) for i in range(len(data_dic.keys()))]
+    #         comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
+    #         data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+    #         diag_err = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
+
+    #         if 'wp' in  data_dic['edges'].keys():
+    #             self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
+    #         if 'xi' in  data_dic['edges'].keys():
+    #             self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
+    #         if self.args['fit_param']['use_vsmear']:
+    #             for tr in self._tracers():
+    #                 print('Apply vsmear for {} at z{}-{}'.format(tr, self.args['fit_param']['zmin'], self.args['fit_param']['zmax']), flush=True)
+    #                 self.args[tr]['vsmear'] = [self.args['fit_param']['zmin'], self.args['fit_param']['zmax']]
+
+    #         if add_poisson_noise:
+    #             print('Compute poisson noise...', flush=True)
+
+    #             cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
+
+    #             result = {}
+    #             if 'wp' in self.args['fit_param']["fit_type"]:
+    #                 result['wp']= [self.get_cross_wp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+    #             if 'xi' in self.args['fit_param']["fit_type"]:
+    #                 result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+
+    #             stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+
+    #             comb_trs = result[stats[0]][0].keys() 
+    #             std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
+    #             print('Done', flush=True)
+    #         else: 
+    #             std_poisson = np.zeros_like(diag_err)
+
+    #         if self.args['fit_param']['load_cov_jk']:
+    #             std_2 = np.sqrt(np.diag(data_dic['cov_jk']) + std_poisson**2)
+    #             corr_jk = utils.cov_to_corrcoef(data_dic['cov_jk'])
+    #             inv_cov2 = np.linalg.inv(corr_jk*std_2*std_2[:,None])
+    #         else:
+    #             corr = get_corr_small_boxes(self.args['fit_param'], self._tracers())
+    #             sig_all = np.sqrt(diag_err**2 + std_poisson**2)
+    #             cov = corr*sig_all*sig_all[:,None]
+    #             hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
+    #             inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+
+    #             if np.isnan(diag_err).any():
+    #                 mask = np.isnan(cov)
+    #                 cov = np.nan_to_num(cov, nan=1)
+    #                 inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+    #                 for i, mm in enumerate(mask):
+    #                     inv_cov2[i, mm] = 0
+    #                 data_vec = np.nan_to_num(data_vec, nan=0)
+    #                 diag_err = np.nan_to_num(diag_err, nan=0)
+    #         self.data = data_vec
+    #         self.inv_cov2 = inv_cov2
+    #         self.sig = diag_err
+    #         self.sig_model = std_poisson
+    #         self.name_params, self.priors = self.get_param_and_prior()
+    #         return 0
+
+    #     elif add_poisson_noise:
+    #         print('Compute poisson noise...', flush=True)
+
+    #         cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
+
+    #         result = {}
+    #         if 'wp' in self.args['fit_param']["fit_type"]:
+    #             result['wp']= [self.get_cross_wp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+    #         if 'xi' in self.args['fit_param']["fit_type"]:
+    #             result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
+
+    #         stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
+
+    #         comb_trs = result[stats[0]][0].keys() 
+    #         std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
+            
+    #         print('Done', flush=True)
+            
+    #     else:
+    #         std_poisson = 0
+
+    #     if inv_cov2 is not None:
+    #         mask = inv_cov2.diagonal() == 0
+    #         if mask.sum() != 0:
+    #             idx = mask.sum()
+    #             cov_re = np.linalg.inv(inv_cov2[idx:,idx:])
+    #             sig2 = np.zeros_like(inv_cov2.diagonal())
+    #             sig2[idx:] = cov_re.diagonal()
+    #             diag_err = np.sqrt(sig2)
+    #             sig_all = np.sqrt(diag_err**2 + std_poisson**2)
+    #             # Manque add poisson noise to cov +hartlap
+    #         else:
+    #             sig_all = np.sqrt((np.linalg.inv(inv_cov2).diagonal()))
+
+    #         if data_vec.size != inv_cov2.diagonal().size:
+    #             raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
+        
+    #     else:
+    #         sig_all = np.sqrt(diag_err**2 + std_poisson**2)
+    #         if data_vec.size != sig_all.size:
+    #             raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, sig_all.size))
+
+    #     self.data = data_vec
+    #     self.inv_cov2 = inv_cov2
+    #     self.sig = sig_all
+    #     self.sig_model = std_poisson
+    #     self.name_params, self.priors = self.get_param_and_prior()
+
+    def _get_fit_model_name(self):
+        fit_model_name = []
+
+        for tr in self._tracer_to_fit:
+            ext = '+conf' if self.args[tr]['conformity_bias'] else ''
+            ext += '+exp' if ('exp_frac' in self.args['fit_param']['priors'][tr].keys()) else ''
+            ext += '+' + '+'.join([f'ab_{var}' for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys()]) if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys() else ''
+            ext += '+nu' if ('nu' in self.args['fit_param']['priors'][tr].keys()) else ''
+            ext += '+vsmear' if ('vsmear' in self.args['fit_param']['priors'][tr].keys()) else ''
+            ext += '_with_zerr' if  (self.args[tr]['vsmear'] != 0)  else ''
+            fit_model_name += ['{}_{}_{}p'.format(tr, self.args[tr]['HOD_model'] + ext, len(self.name_params))]
+        return '_'.join(fit_model_name)
+
+    def _initialize_fit_params(self, **kwargs):
         """
-        Execute the Gaussian Process MCMC fitting routine for HOD parameter inference.
-
-        This method performs iterative Gaussian Process-driven MCMC sampling to explore the
-        Halo Occupation Distribution (HOD) parameter space, fitting mock catalog outputs to observed
-        clustering statistics such as the 2-point correlation function.
-
-        For methodological details, see: https://arxiv.org/abs/2302.07056
+        Initialize the fitting parameters.
 
         Parameters
         ----------
-        data_arr : array_like
-            Observed data vector used in chi-squared comparisons (e.g., wp, xi).
-
-        inv_Cov2 : ndarray
-            Inverse of the covariance matrix used in the chi-squared computation.
-            Must match the dimensionality of `data_arr`.
-
-        training_point : structured ndarray
-            Existing training sample including HOD parameters and chi-squared values,
-            used to condition the GP model.
-
-        resume_fit : bool, optional
-            If True, resumes from a previously saved fit by loading logs and chains.
-            Default is False.
-
-        verbose : bool, optional
-            If True, displays detailed iteration-level logs. Default is True.
+        **kwargs
+            Additional keyword arguments of the fitting parameters to update the default settings.
 
         Returns
         -------
         None
-            All fitting results are saved to disk. No return value.
-
-        Notes
-        -----
-        - Creates and updates files under `dir_output_fit`, including:
-            - `*.txt` logs of sampled parameter values and chi² results
-            - Chains of samples in `chains/` directory
-            - Diagnostic metrics such as KL divergence
-        - Calls the following key internal methods:
-            - `make_mock_cat()`: to generate mock catalogs
-            - `get_crosswp()`, `get_cross2PCF()`: for 2PCF computation
-            - `compute_chi2()`: to evaluate model-data fit
-            - `run_gp_mcmc()`: for parameter sampling via GP-MCMC
-        - Convergence is optionally monitored via KL divergence, but the stopping criterion is commented out.
-        - Handles both projected (wp) and full-space (xi) correlation functions depending on `fit_type`.
-        - Assumes the availability of `emcee` or `zeus` samplers for MCMC.
-        - Results are appended to an evolving training set across iterations.
-
-        Example
-        -------
-        >>> model.run_fit(data_arr, inv_cov2, training_set, resume_fit=True)
         """
-        import pandas as pd
-        from .fits_functions import compute_chi2
-        if self.args['fit_param']['sampler'] == "zeus":
-            import zeus
-        elif self.args['fit_param']['sampler'] == "emcee":
-            import emcee 
-        else: 
-            raise ValueError('Only emcee or zeus sampler are available not {}'.format(self.args['fit_param']['sampler']))
-        
-        import sklearn.gaussian_process as skg
-
-        nmock = self.args['fit_param']['nb_real']
-        dir_output_file= self.args['fit_param']['dir_output_fit']
-        fit_name = self.args['fit_param']['fit_name']
-        priors = self.args['fit_param']['priors']
-        priors_array = np.vstack([list(priors[tr].values()) for tr in self._tracers()])
-        nvar = len(priors_array)  
-        arr_dtype = training_point.dtype
-
-        iter = 0
-        if resume_fit & os.path.exists(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt")):
-            output_point = pd.read_csv(os.path.join(
-                dir_output_file, f"{nvar}p_{fit_name}.txt"), sep=" ", comment="#")
-            
-            training_point = np.concatenate((np.array(training_point.tolist()).reshape(len(training_point), -1), output_point[list(training_point.dtype.names)].values))
-            training_point.dtype = arr_dtype
-
-            iter = output_point["N_iter"].loc[len(output_point)-1]+1
-            p = np.loadtxt(os.path.join(dir_output_file, 'chains',
-                                        f'chain_{nvar}p_{fit_name}_{iter-1}.txt'))[:, :nvar]
-            D_kl = 10
-            if verbose:
-                print("#resume fit at iteration ", iter, "len param point ", len(training_point), flush=True)
-                
-        print("Run gpmcmc...", flush=True)
-        for j in range(iter, self.args['fit_param']['n_calls']):
-            if verbose:
-                print(f'Iteration {j}...', flush=True)
-                time_compute_mcmc = time.time()
-
-            new_params = self.run_gp_mcmc(training_point, j, logchi2=self.args['fit_param']['logchi2'],
-                        nb_points=1, remove_edges=0.9,
-                        random_state=None, verbose=True)
-
-
-            if verbose:
-                print("#time_compute_gpmcmc =", time.time() - time_compute_mcmc, flush=True)
-
-            ### Test de Kullback Leibler
-            D_kl1 = 10
-            if j > 0:
-                if j == 1:
-                    q = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{0}.txt'))[:, :nvar]
-                    p = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{1}.txt'))[:, :nvar]
-                    D_kl = np.array([])
-                else:
-                    q = p
-                    p = np.loadtxt(os.path.join(dir_output_file, 'chains', f'chain_{nvar}p_{fit_name}_{j}.txt'))[:, :nvar]
-                n_dim = nvar
-                cov_q = np.cov(q.T)
-                cov_p = np.cov(p.T)
-                inv_cov_q = np.linalg.inv(cov_q)
-                mean_q = np.mean(q, axis=0)
-                mean_p = np.mean(p, axis=0)
-                D_kl1 = 0.5 * (np.log10(np.linalg.det(cov_q) / np.linalg.det(cov_p)) - n_dim + np.trace(np.matmul(
-                    inv_cov_q, cov_p)) + np.matmul((mean_q - mean_p).T, np.matmul(inv_cov_q, (mean_q - mean_p))))
-                D_kl = np.append(D_kl1, D_kl)
-                # print (j, D_kl)
-                # if len(D_kl) > 5:
-                #     if (D_kl[-5:] < 0.1).all():
-                #         sys.exit("Procedure converged at iteration %d!" % j)
-
-            #Compute chi2
-            new_train_point = np.zeros((len(new_params), nvar+2))
-
-            new_params.dtype = [(name, dt) for name, dt in zip(training_point.dtype.names, ['float64']*nvar)]
-
-            if verbose:
-                print("#run old parralel chi2 points", new_params, len(new_params))
-
-            if j == 0:
-                f = open(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt"), "w")
-                f.write("N_iter "+' '.join(map(str, training_point.dtype.names)) + " D_kl1\n")
-                f.close()
-
-            for i, new_p in enumerate(new_params):
-                for tr in self._tracers():
-                    for var in self.args['fit_param']['priors'][tr].keys():
-                        self.args[tr][var] = new_p['{}_{}'.format(var, tr)][0]
-                    if verbose:
-                        print(f"# {tr} {[(var, self.args[tr][var]) for var in self.args['fit_param']['priors'][tr].keys()]}", flush=True)
-                
-                time_function_compute_parralel_chi2 = time.time()
-                print(f'Run {nmock} galaxy catalog for iteration {j}', flush=True)
-                cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmock)]
-
-                print(f'Time to compute {nmock} cats : {time.strftime("%H:%M:%S",time.gmtime(time.time() - time_function_compute_parralel_chi2))}', flush=True)
-
-
-                time_function_compute_parralel_chi2 = time.time()
-                print('Run 2PCF...', flush=True)
-                result = {}
-                if 'wp' in self.args['fit_param']["fit_type"]:
-                    result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
-                if 'xi' in self.args['fit_param']["fit_type"]:
-                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmock)]
-                if verbose:
-                    print("#Time to compute 2PCFs =", time.strftime("%H:%M:%S", time.gmtime(time.time()-time_function_compute_parralel_chi2)), flush=True)
-                    
-
-                stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
-                res = {}
-                comb_trs = result[stats[0]][0].keys() 
-                res = [np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmock)]
-                #res_std = np.std(res, axis=0)            
-                #iCov2 = inv_Cov2*res_std*res_std[:, None]
-                
-
-                chi2 = np.mean([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])
-                chi2_err = np.std([compute_chi2(model_arr, data_arr, inv_Cov2=inv_Cov2) for model_arr in res])/np.sqrt(nmock)
-
-                new_train_point[i] = np.hstack((new_params[i].tolist()[0], chi2, chi2_err))
-                if verbose:
-                    print('#### NEW ADDED POINT:', ' '.join(map(str, new_params[i].tolist()[0])), chi2, chi2_err, D_kl1, flush=True)
-
-                f = open(os.path.join(dir_output_file, f"{nvar}p_{fit_name}.txt"), "a")
-                f.write(str(str(j)+" "+' '.join(map(str, new_params[i].tolist()[0])))+" "+str(chi2)+" "+str(chi2_err)+" "+str(D_kl1)+"\n")
-                f.close()
-
-            new_train_point.dtype = arr_dtype
-            training_point = np.vstack((training_point, new_train_point))
-            if verbose:
-                print(f'Iteration {j} done, took {time.strftime("%H:%M:%S",time.gmtime(time.time()-time_compute_mcmc))}', flush=True)
-
-    
-    def initialize_fit(self, data_vec=None, inv_cov2=None, diag_err=None, add_poisson_noise=True, nmocks_std=20, hartlap_fac=0, **kwargs):
-
-        from .fits_functions import load_desi_data, get_corr_small_boxes
-        from pycorr import utils
-
-        if not set(self._tracers()) == set(self.args['fit_param']['priors'].keys()):
-            raise ValueError('The defined tracers ({}) does not correspond to tracers defined in the priors({})'.format(self._tracers(), self.args['fit_param']['priors'].keys()))
-
-        self.args['fit_param']['pimax'] = self.args['2PCF_settings']['pimax']
-        self.args['fit_param']['multipole_index'] = self.args['2PCF_settings']['multipole_index']
-        self.args['fit_param']['z_simu'] = self.args['hcat']['z_simu']
-        self.args['fit_param'].update(kwargs)
-        
-        if self.args['fit_param']['use_desi_data']:
-            data_dic = load_desi_data(self.args['fit_param'], self._tracers(), load_cov_jk=self.args['fit_param']['load_cov_jk'])
-
-            mm = [list(data_dic.keys())[i].endswith(tuple(self._tracers())) for i in range(len(data_dic.keys()))]
-            comb_trs = [list(data_dic.keys())[i] for i in np.arange(len(data_dic.keys()))[mm].tolist()]
-            data_vec = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][1]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
-            diag_err = np.hstack([np.hstack([np.hstack(data_dic[comb_tr][stat][2]) for stat in data_dic.get(comb_tr).keys()]) for comb_tr in comb_trs])
-
-            if 'wp' in  data_dic['edges'].keys():
-                self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp']
-            if 'xi' in  data_dic['edges'].keys():
-                self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi']
-            if self.args['fit_param']['use_vsmear']:
-                for tr in self._tracers():
-                    print('Apply vsmear for {} at z{}-{}'.format(tr, self.args['fit_param']['zmin'], self.args['fit_param']['zmax']), flush=True)
-                    self.args[tr]['vsmear'] = [self.args['fit_param']['zmin'], self.args['fit_param']['zmax']]
-
-            if add_poisson_noise:
-                print('Compute poisson noise...', flush=True)
-
-                cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
-
-                result = {}
-                if 'wp' in self.args['fit_param']["fit_type"]:
-                    result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
-                if 'xi' in self.args['fit_param']["fit_type"]:
-                    result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
-
-                stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
-
-                comb_trs = result[stats[0]][0].keys() 
-                std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
-                print('Done', flush=True)
-            else: 
-                std_poisson = np.zeros_like(diag_err)
-
-            if self.args['fit_param']['load_cov_jk']:
-                std_2 = np.sqrt(np.diag(data_dic['cov_jk']) + std_poisson**2)
-                corr_jk = utils.cov_to_corrcoef(data_dic['cov_jk'])
-                inv_cov2 = np.linalg.inv(corr_jk*std_2*std_2[:,None])
-            else:
-                corr = get_corr_small_boxes(self.args['fit_param'], self._tracers())
-                sig_all = np.sqrt(diag_err**2 + std_poisson**2)
-                cov = corr*sig_all*sig_all[:,None]
-                hartlap_fac = (len(cov)+1)/(self.args['fit_param']['nb_mocks']-1)
-                inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
-
-                if np.isnan(diag_err).any():
-                    mask = np.isnan(cov)
-                    cov = np.nan_to_num(cov, nan=1)
-                    inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
-                    for i, mm in enumerate(mask):
-                        inv_cov2[i, mm] = 0
-                    data_vec = np.nan_to_num(data_vec, nan=0)
-                    diag_err = np.nan_to_num(diag_err, nan=0)
-            self.data = data_vec
-            self.inv_cov2 = inv_cov2
-            self.sig = diag_err
-            self.sig_model = std_poisson
-            self.name_params, self.priors = self.get_param_and_prior()
-            return 0
-
-        elif add_poisson_noise:
-            print('Compute poisson noise...', flush=True)
-
-            cats = [self.make_mock_cat(self._tracers(), verbose=False) for jj in range(nmocks_std)]
-
-            result = {}
-            if 'wp' in self.args['fit_param']["fit_type"]:
-                result['wp']= [self.get_crosswp(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
-            if 'xi' in self.args['fit_param']["fit_type"]:
-                result['xi'] = [self.get_cross2PCF(cats[i], tracers=self._tracers(), verbose=False) for i in range(nmocks_std)]
-
-            stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
-
-            comb_trs = result[stats[0]][0].keys() 
-            std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[stat][i][comb_tr][1])for stat in stats]) for comb_tr in comb_trs]) for i in range(nmocks_std)], axis=0)
-            print('Done', flush=True)
-            
-        else:
-            std_poisson = 0
-
-        if inv_cov2 is not None:
-            mask = inv_cov2.diagonal() == 0
-            if mask.sum() != 0:
-                idx = mask.sum()
-                cov_re = np.linalg.inv(inv_cov2[idx:,idx:])
-                sig2 = np.zeros_like(inv_cov2.diagonal())
-                sig2[idx:] = cov_re.diagonal()
-                diag_err = np.sqrt(sig2)
-                sig_all = np.sqrt(diag_err**2 + std_poisson**2)
-                # Manque add poisson noise to cov +hartlap
-            else:
-                sig_all = np.sqrt((np.linalg.inv(inv_cov2).diagonal()))
-
-            if data_vec.size != inv_cov2.diagonal().size:
-                raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, inv_cov2.shape))
-        
-        else:
-            sig_all = np.sqrt(diag_err**2 + std_poisson**2)
-            if data_vec.size != sig_all.size:
-                raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, sig_all.size))
-
-        self.data = data_vec
-        self.inv_cov2 = inv_cov2
-        self.sig = sig_all
-        self.sig_model = std_poisson
+        self.init_logger('Fit HOD')        
+        update_dic(self.args['fit_param'], kwargs)
+        self._tracer_to_fit = list(self.args['fit_param']['priors'].keys())
         self.name_params, self.priors = self.get_param_and_prior()
+        self._stats_to_fit = self.args['fit_param']["fit_statistics"] if isinstance(self.args['fit_param']["fit_statistics"], list) else [self.args['fit_param']["fit_statistics"]]
+        self._comb_tr_list = ['_'.join(comb_tr) for comb_tr in self.get_comb_tr_list(self._tracer_to_fit)]
+        self.fit_model_name = self._get_fit_model_name()
+
+    def initialize_fit(self, data_vec, err, **kwargs):
+        """
+        Initialize the fitting process by setting up the data vector, error vector or covariance matrix, and preparing the fitting parameters.
+        Parameters
+        ----------
+        data_vec : array_like
+            The data vector.
+        err : array_like
+            The error vector or covariance matrix.
+        **kwargs
+            Additional keyword arguments.
+
+        Returns
+        -------
+        None
+        """
+
+        fit_params = self.args['fit_param']
+        update_dic(fit_params, kwargs)
+        self._initialize_fit_params(**fit_params)
         
-    
-    def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, minimizer_options={}, **kwargs):
-        from stochopy.optimize import minimize
-        from .fits_functions import func_stochopy
-        
-        if hasattr(self, 'data') & hasattr(self, 'inv_cov2'):
+        hartlap_fac = fit_params.get('hartlap_factor', 0)
+        self.data = np.asarray(data_vec)
+        cov = np.asarray(err)
+        if cov.ndim == 1:
+            # error vector, shape (N,)
+            cov = np.diag(cov**2)          # convert to covariance matrix
+        elif cov.ndim == 2:
+            # covariance matrix, shape (N, N)
             pass
         else:
-            self.initialize_fit(**kwargs)
+            raise ValueError('The error provided must be either a 1D error vector or a 2D covariance matrix.')
         
-        name_param, priors_array = self.get_param_and_prior()
-        print('Priors:', *zip(name_param, priors_array))
-        if init_params is None:
-            init_params = []
-            for tr in self._tracers():
-                priors_tmp = self.args['fit_param']['priors'][tr].copy()
-                param_ab = []
-                if 'assembly_bias' in priors_tmp.keys():
-                    ab_list = priors_tmp['assembly_bias'].keys()
-                    param_ab = [self.args[tr]['assembly_bias'][vv] for vv in ab_list][0]
-                    priors_tmp.pop('assembly_bias')
-                init_params += [self.args[tr][vv] for vv in priors_tmp.keys()]
-                init_params += param_ab
-        print('First point:', *zip(name_param, init_params))
-        options = {"maxiter":10, "popsize": 10, 'xtol':1e-6}
-        options.update(minimizer_options)  
+        if cov.shape[0] != data_vec.size:
+            raise ValueError('The lenght of the data vector ({}) does not correspond to the shape of the covariance matrix ({})'.format(data_vec.size, cov.shape))
 
+        if fit_params['add_poisson_noise']:
+            nmocks_std = fit_params.get('neval_poisson_noise', 50)
+            self.logger.info(f'Compute poisson noise using {nmocks_std} mocks.')            
+            # Generate mock catalogs
+            cats = [self.make_mock_cat(self._tracer_to_fit, verbose=False) for jj in range(nmocks_std)]
+            result = [self.compute_stats(cats[i], stat=self._stats_to_fit, tracers=self._tracer_to_fit, verbose=False) for i in range(nmocks_std)]
+            std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[i][stat][comb_tr][-1])for stat in self._stats_to_fit]) for comb_tr in self._comb_tr_list]) for i in range(nmocks_std)], axis=0)    
+            # Can also try with cov_poisson = np.cov([np.hstack([np.hstack([np.hstack(result[i][stat][comb_tr][1])for stat in self._stats_to_fit]) for comb_tr in self._comb_tr_list]) for i in range(nmocks_std)], rowvar=False)        
+            cov_poisson = np.diag(std_poisson**2)
+        else:
+            cov_poisson = 0
+
+        cov = cov + cov_poisson
+        self.inv_cov2 = np.linalg.inv(cov/(1-hartlap_fac))
+        if np.isnan(self.inv_cov2).any():
+            raise ValueError('The covariance matrix contains NaN values, please check the input covariance matrix.')
+
+        
+    def get_init_params(self, seed=None):
+        """
+        Get initial parameter values for the minimization.
+
+        Parameters
+        ----------
+        seed : int, optional
+            Random seed for reproducibility. Default is None.
+
+        Returns
+        -------
+        init_values : array_like
+            Initial parameter values.
+        """
+
+        if seed is not None:
+            np.random.seed(seed)
+        low, high = np.vstack(self.priors).T
+        u = np.random.beta(2, 2, size=(len(low)))
+        init_values = low + u * (high - low)
+        return init_values
+    
+    
+    def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, **kwargs):
+        """
+        Run the minimization procedure to find the best-fit parameters.
+
+        Parameters
+        ----------
+        init_params : array_like, optional
+            Initial parameter values for the minimization. If None, random values within the prior bounds are generated. Default is None.
+        seed : int, optional
+            Random seed for reproducibility when generating initial parameters. Default is 10.
+        mpi_comm : MPI communicator, optional
+            MPI communicator for parallel execution. If None, runs in serial. Default is None.
+        kwargs : dict
+            Additional keyword arguments to update the minimizer settings.
+        """
+
+        from stochopy.optimize import minimize
+        from .fit_functions import func_stochopy
+                
+        self.args['fit_param']['minimizer'].update(kwargs)
+        self.logger.info('Priors: '+(', ').join([f'{nn}: {val}' for nn, val in zip(self.name_params, self.priors)]))
+        #Create directory to store the results
+        if self.args['fit_param']['minimizer']['save_fn']:
+            filename = self.args['fit_param']['minimizer']['save_fn']
+        else:
+            filename = 'best_fit_result_{}.npy'.format(self.fit_model_name)
+            
+        os.makedirs(self.args['fit_param']['dir_output_fit'], exist_ok=True)
+        path_to_save_result = os.path.join(self.args['fit_param']['dir_output_fit'], filename)
+
+        if init_params is None:
+            init_params = self.get_init_params()
+        self.logger.info('First point: '+(', ').join([f'{nn}: {val}' for nn, val in zip(self.name_params, init_params)]))
+
+        options = {}
+        for key in ['maxiter', 'popsize', 'xtol']:
+            options[key] = self.args['fit_param']['minimizer'][key]
         if mpi_comm is None:
             mpi_rank = 0
         else:
@@ -2810,22 +2808,24 @@ class HOD:
             options['workers'] = mpi_comm.Get_size()
             options['backend']= 'mpi'
 
-        res = minimize(func_stochopy, args=(self, name_param, self.data, self.inv_cov2, self.sig, seed),
-                    bounds=priors_array, x0=init_params,
-                    method='cmaes', options=options)
+        
+        res = minimize(func_stochopy, args=(self, seed),
+                    bounds=self.priors, x0=init_params,
+                    method=self.args['fit_param']['minimizer']['method'], options=options)
         
         self.result_fit = res
         res['param_fit'] = self.args.copy()
-        if isinstance(self.args['fit_param']['save_fn'], str) & (mpi_rank==0):
-            print('Save fit result to:', self.args['fit_param']['save_fn'], flush=True)
-            np.save(self.args['fit_param']['save_fn'], res)
+        
+        if isinstance(self.args['fit_param']['minimizer'].get('save_fn', None), str) & (mpi_rank==0):
+            self.logger.info('Save fit result to: {}'.format(path_to_save_result))
+            np.save(path_to_save_result, res)
         return res
 
     
 
     def compute_bf_corr(self, bf_file=None, verbose=False, fix_seed=None, save_bf_cat=None, **kwargs):
 
-        from HODDIES.fits_functions import compute_chi2
+        from HODDIES.fits_functions_old import compute_chi2
         name_param, priors_array = self.get_param_and_prior()
         if hasattr(self, 'result_fit'):
             self.result_fit = self.result_fit if bf_file is None else np.load(bf_file, allow_pickle=True).item()
@@ -2842,7 +2842,7 @@ class HOD:
         cat = self.make_mock_cat(fix_seed=fix_seed)
         result = {}
         if 'wp' in self.args['fit_param']["fit_type"]:
-            result['wp'] = self.get_crosswp(cat, tracers=self._tracers(), verbose=verbose)
+            result['wp'] = self.get_cross_wp(cat, tracers=self._tracers(), verbose=verbose)
         if 'xi' in self.args['fit_param']["fit_type"]:
             result['xi'] = self.get_cross2PCF(cat, tracers=self._tracers(), verbose=verbose)
 
@@ -2868,14 +2868,14 @@ class HOD:
 
     def plot_bf_data(self, figsize=None, pow_sep=1, suptitle=None, suptitle_fontsize=12, fontsize=8, save=None, fig=None, show=False, shift=0, max_sig = 5, fix_seed=None, add_no_vsmear=False, save_bf_cat=None, **kwargs):
 
-        from HODDIES.fits_functions import load_desi_data
+        from HODDIES.fits_functions_old import load_desi_data
         from matplotlib.gridspec import GridSpec
         import matplotlib.pyplot as plt
         
         
-        data_dic = load_desi_data(self.args['fit_param'], self._tracers(), multipole_index=self.args['2PCF_settings']['multipole_index'], pimax=self.args['2PCF_settings']['pimax'],**kwargs)
-        self.args['2PCF_settings']['edges_rppi'] = data_dic['edges']['wp'] if 'wp' in self.args['fit_param']["fit_type"] else None
-        self.args['2PCF_settings']['edges_smu'] = data_dic['edges']['xi'] if 'xi' in self.args['fit_param']["fit_type"] else None
+        data_dic = load_desi_data(self.args['fit_param'], self._tracers(), multipole_index=self.args['clustering_settings']['xi_smu']['multipole_index'], pimax=self.args['clustering_settings']['xi_smu']['pimax'],**kwargs)
+        self.args['clustering_settings']['xi_smu']['edges_rppi'] = data_dic['edges']['wp'] if 'wp' in self.args['fit_param']["fit_type"] else None
+        self.args['clustering_settings']['xi_smu']['edges_smu'] = data_dic['edges']['xi'] if 'xi' in self.args['fit_param']["fit_type"] else None
         result_bf = self.compute_bf_corr(fix_seed=fix_seed, save_bf_cat=save_bf_cat, **kwargs)
         stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
         comb_trs = list(result_bf[stats[0]].keys())
@@ -2895,7 +2895,7 @@ class HOD:
 
         if 'xi' in data_dic[comb_trs[0]].keys():
             ncols += 1
-            ells = self.args['2PCF_settings']['multipole_index']
+            ells = self.args['clustering_settings']['xi_smu']['multipole_index']
         else:
             ells = None
 
@@ -3017,20 +3017,20 @@ class HOD:
         pk = fo.pk_interpolator()
         xi_lin = pk.to_xi()
     
-        rsd_tmp = self.args['2PCF_settings']['rsd']
-        edges_smu_tmp = self.args['2PCF_settings']['edges_smu']
-        self.args['2PCF_settings']['edges_smu'] = (np.linspace(40,80,41), np.linspace(-1,1,201))
+        rsd_tmp = self.args['clustering_settings']['rsd']
+        edges_smu_tmp = self.args['clustering_settings']['xi_smu']['edges_smu']
+        self.args['clustering_settings']['xi_smu']['edges_smu'] = (np.linspace(40,80,41), np.linspace(-1,1,201))
         cat_bf = self.make_mock_cat()
-        s, xi = self.get_2PCF(cat_bf, ells=0)
-        zsim = self.args['hcat']['z_simu']    
+        s, xi = self.get_xiells(cat_bf, ells=0)
+        zsim = self.z_simu    
         import scipy
         def func(s, b):
             return b**2*xi_lin(s,z=zsim)
         bias, b_err = scipy.optimize.curve_fit(func, s, xi, p0=[2])
     
     
-        self.args['2PCF_settings']['rsd'] = rsd_tmp
-        self.args['2PCF_settings']['edges_smu'] = edges_smu_tmp
+        self.args['clustering_settings']['rsd'] = rsd_tmp
+        self.args['clustering_settings']['xi_smu']['edges_smu'] = edges_smu_tmp
         return bias
 
     def plot_wp_xi(self, cat, tracers=None, fig=None, show=True, figsize=(12, 3), fontsize=11, **kwargs):
@@ -3042,7 +3042,7 @@ class HOD:
             tracers = np.unique(cat['TRACER'])
         
         if fig is None:
-            fig,ax = plt.subplots(1,1+len(self.args['2PCF_settings']['multipole_index']), figsize=figsize)
+            fig,ax = plt.subplots(1,1+len(self.args['clustering_settings']['xi_smu']['multipole_index']), figsize=figsize)
         else:
             ax = fig.axes
         for tr in tracers:
@@ -3056,7 +3056,7 @@ class HOD:
                 label = tr
 
             rp, wp = self.get_wp(cat, tracers=tr)
-            s, xi = self.get_2PCF(cat, tracers=tr)
+            s, xi = self.get_xiells(cat, tracers=tr)
             
 
             ax[0].semilogx(rp,rp*wp, **kwargs)
@@ -3073,3 +3073,426 @@ class HOD:
         if show: 
             fig.show()
         return fig
+
+    
+    def plot_stats(self, cat, stats=('wp', 'xi_ells'), tracers=None,
+                    data=None, residuals=True, fig=None, show=True,
+                    figsize=None, fontsize=11, colors=None, by_tracer='rows',
+                    residual_band=2.0, height_ratios=(3, 1), cmap='gist_heat_r',
+                    norm2d=None, block_hspace=0.55, wspace=0.32,
+                    data_color=None, cross=True, max_cols=4, **kwargs):
+        """ 
+        Plot one statistic per panel, with optional data and residuals.
+        Generated by AI Claude Opus 5 model.
+
+        Parameters
+        ----------
+        cat : catalogue
+            Passed straight through to the getters.
+        stats : sequence of str
+            Statistics to plot, one panel each. Either keys of :data:`STATS`
+            (see :func:`register_stat` to add your own) or group names from
+            :data:`STAT_GROUPS` that expand into several panels --
+            ``'xi_ells'`` expands to one panel per configured multipole,
+            read from
+            ``self.args['clustering_settings']['xi_smu']['multipole_index']``.
+        tracers : str, sequence of str, or None
+            Tracers to overplot. ``None`` uses ``np.unique(cat['TRACER'])``.
+        data : dict or None
+            Measured data to compare against, keyed by statistic name, and
+            optionally nested by tracer::
+
+                data = {'wp': {'x': rp, 'y': wp, 'err': sigma_wp}}
+                data = {'ELG': {'wp': (rp, wp, err), 'xi0': (s, xi0, cov)}}
+
+            ``err`` may be a 1D vector or a full covariance matrix.
+            A residual sub-panel is added for every statistic that has data.
+        residuals : bool
+            Draw residual sub-panels where data are available.
+        cross : bool
+            When several tracers are given, also show the cross-correlation
+            of every pair, labelled ``'LRG_QSO'`` and obtained by calling the
+            getters with ``tracers=['LRG', 'QSO']``. Set ``False`` for autos
+            only.
+        by_tracer : {'overlay', 'rows', 'figures'}
+            How to lay out several tracers.
+
+            ``'overlay'``  all tracers drawn on the same panels;
+            ``'rows'``     one row of panels per tracer in a single figure,
+                        each row titled with the tracer name (default);
+            ``'figures'``  one separate figure per tracer -- a list of
+                        figures is returned instead of a single figure.
+        residual_band : float
+            Half-width of the shaded band in the residual panels, in sigma.
+        max_cols : int
+            Maximum number of panel columns; statistics beyond this wrap onto
+            further rows within each tracer block. Default 4.
+
+        Returns
+        -------
+        fig : matplotlib Figure
+        """
+        from .plot_utils import _expand_stats, _unpack_data, get_STATS, _fetch, _mirror_quadrants
+        import matplotlib.pyplot as plt
+        from matplotlib.gridspec import GridSpec
+        from matplotlib.colors import LogNorm
+        import warnings
+        
+        default_colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red',
+                        'BGS': 'goldenrod'}
+        colors = {**default_colors, **(colors or {})}
+        STATS = get_STATS()
+        stats = [stats] if isinstance(stats, str) else list(stats)
+        stats = _expand_stats(self, stats)          # 'xi_ells' -> xi0, xi2, ...
+        unknown = [s for s in stats if s not in STATS]
+        if unknown:
+            raise ValueError(f'unknown statistic(s) {unknown}; available: '
+                            f'{sorted(STATS)}')
+        
+
+        tracers = self.check_cat_tracers(cat, tracers)
+
+
+        # --- build the list of (label, tracer_arg, data_keys, stat_keys) ---
+        # autos are single tracers; crosses are pairs. Two sets of candidate
+        # keys are kept, because `compute_stats` and the user-supplied `data`
+        # dict may name blocks differently: compute_stats typically uses the
+        # doubled form 'LRG_LRG' for autos, while data are often keyed 'LRG'.
+        # Either ordering of a cross pair is accepted. Keys are built from the
+        # tracer names, never by splitting the label, since tracer names may
+        # themselves contain '_' (e.g. 'ELG_LOPnotqso').
+        from itertools import combinations
+        blocks = [(t, t, [t, f'{t}_{t}'], [f'{t}_{t}', t]) for t in tracers]
+        if cross and len(tracers) > 1:
+            blocks += [(f'{a}_{b}', [a, b],
+                        [f'{a}_{b}', f'{b}_{a}'],
+                        [f'{a}_{b}', f'{b}_{a}'])
+                    for a, b in combinations(tracers, 2)]
+        labels = [lbl for lbl, _, _, _ in blocks]
+        all_keys = [k for _, _, ks, _ in blocks for k in ks]
+
+        # --- normalise the data dict to data[tracer][stat] ---------------
+        data = data or {}
+        if data and not any(k in data for k in all_keys):
+            data = {labels[0]: data}           # single-block shorthand
+
+        # When overplotting onto an existing figure, fall back to the data
+        # that were supplied when that figure was built, so residuals can be
+        # computed for the new catalogue without repeating the data.
+        if fig is not None:
+            cached = getattr(fig, '_plot_stats_data', None)
+            if cached:
+                merged = {t: dict(v) for t, v in cached.items()}
+                for t, v in data.items():
+                    merged.setdefault(t, {}).update(v)
+                data = merged
+
+        def _data_for(keys, stat):
+            """First matching key wins; `keys` may be a single key or a list."""
+            if isinstance(keys, str):
+                keys = [keys]
+            for k in keys:
+                entry = data.get(k, {}).get(stat)
+                if entry is not None:
+                    return _unpack_data(entry)
+            return None
+
+        # a residual row is needed if any tracer has data with errors for that stat
+        def _needs_resid(stat):
+            spec = STATS[stat]
+            for _, _, ks, _ in blocks:
+                d = _data_for(ks, stat)
+                if d is None:
+                    continue
+                # ratio residuals only need the data values, not their errors
+                if spec.residual == 'ratio' or d[2] is not None:
+                    return True
+            return False
+
+        has_resid = {s: residuals and STATS[s].ndim == 1 and _needs_resid(s)
+                    for s in stats}
+        any_resid = any(has_resid.values())
+
+        # --- figure / axes ------------------------------------------------
+        # `by_tracer` controls how tracers are laid out:
+        #   'overlay' : all tracers on the same panels
+        #   'rows'    : one row of panels per tracer (default)
+        #   'figures' : one separate figure per tracer
+        if by_tracer not in ('overlay', 'rows', 'figures'):
+            raise ValueError("by_tracer must be 'overlay', 'rows' or 'figures'")
+
+        # 'figures' == recurse once per tracer, returning a list of figures
+        if by_tracer == 'figures' and len(blocks) > 1:
+            figs = []
+            for lbl, tr, ks, sks in blocks:
+                sub = {}
+                for k in ks:
+                    if k in data:
+                        sub[lbl] = data[k]
+                        break
+                figs.append(self.plot_stats(
+                    self, cat, stats=stats,
+                    tracers=tr if isinstance(tr, list) else [tr],
+                    data=sub or None,
+                    cross=False,
+                    residuals=residuals, fig=None, show=show, figsize=figsize,
+                    fontsize=fontsize, colors=colors, by_tracer='overlay',
+                    residual_band=residual_band, height_ratios=height_ratios,
+                    cmap=cmap, norm2d=norm2d, block_hspace=block_hspace,
+                    wspace=wspace, data_color=data_color, max_cols=max_cols,
+                    **kwargs))
+            return figs
+
+        # number of tracer-blocks stacked vertically, and the panel grid
+        # inside each block (wrapped at `max_cols` columns)
+        nblock = len(blocks) if by_tracer == 'rows' else 1
+        ncol = max(1, min(max_cols, len(stats)))
+        nsub = int(np.ceil(len(stats) / ncol))      # panel rows per block
+
+        if figsize is None:
+            panel_h = 4.4 if any_resid else 3.4
+            rows_total = nsub * nblock
+            figsize = (4 * ncol,
+                    panel_h * rows_total
+                    + (0.9 * (rows_total - 1) if rows_total > 1 else 0))
+
+        if fig is None:
+            fig = plt.figure(figsize=figsize)
+            # outer grid: one cell per panel, wrapped at `ncol` columns and
+            # repeated for each tracer block. `block_hspace` separates the
+            # rows; within a cell the main and residual axes are glued
+            # together with hspace=0.
+            outer = GridSpec(nsub * nblock, ncol, figure=fig,
+                            hspace=block_hspace, wspace=wspace,
+                            left=0.09, right=0.98, top=0.94, bottom=0.12)
+            axes_grid = []
+            for b in range(nblock):
+                main_ax, res_ax = [], []
+                for i, s in enumerate(stats):
+                    r = b * nsub + i // ncol
+                    c = i % ncol
+                    if any_resid and has_resid[s]:
+                        inner = outer[r, c].subgridspec(
+                            2, 1, height_ratios=height_ratios, hspace=0.0)
+                        a = fig.add_subplot(inner[0])
+                        rr = fig.add_subplot(inner[1], sharex=a)
+                        a.tick_params(labelbottom=False)
+                    else:
+                        a = fig.add_subplot(outer[r, c])
+                        rr = None
+                    main_ax.append(a)
+                    res_ax.append(rr)
+                axes_grid.append((main_ax, res_ax))
+            # remember the layout so the figure can be safely reused
+            fig._plot_stats_axes = axes_grid
+            fig._plot_stats_stats = list(stats)
+            fig._plot_stats_data = {t: dict(v) for t, v in data.items()}
+            fig._plot_stats_drawn = set()
+        else:                                   # reuse an existing figure
+            axes_grid = getattr(fig, '_plot_stats_axes', None)
+            if axes_grid is None:
+                # figure not built by plot_stats: fall back to positional
+                # mapping, assuming main axes come first
+                axes = fig.axes
+                n = len(stats)
+                if len(axes) < n:
+                    raise ValueError(
+                        f'the supplied figure has {len(axes)} axes but '
+                        f'{n} statistic(s) were requested')
+                axes_grid = [(list(axes[:n]),
+                            (list(axes[n:]) + [None] * n)[:n])]
+            else:
+                prev = getattr(fig, '_plot_stats_stats', None)
+                if prev is not None and prev != list(stats):
+                    raise ValueError(
+                        f'figure was built for stats {prev}, cannot overplot '
+                        f'{list(stats)}; pass the same stats or fig=None')
+            nblock = len(axes_grid)
+
+        # --- draw ---------------------------------------------------------
+        # compute_stats results are cached per source for this call
+        _cache = {}
+        for it, (blabel, tr, bkeys, skeys) in enumerate(blocks):
+            # pick the axes block for this tracer / tracer pair
+            blk = it if by_tracer == 'rows' else 0
+            if blk >= len(axes_grid):
+                raise ValueError(
+                    f'no axes block for {blabel!r}: the figure has '
+                    f'{len(axes_grid)} block(s) but {len(blocks)} were '
+                    f"requested with by_tracer='{by_tracer}'. Pass fig=None to "
+                    'build a new figure.')
+            main_ax, res_ax = axes_grid[blk]
+            if by_tracer == 'rows':
+                main_ax[0].set_title(blabel, fontsize=fontsize + 1, loc='left')
+            kw = dict(kwargs)
+            # cross blocks fall back to the first tracer's colour unless the
+            # combined label has its own entry in `colors`
+            kw.setdefault('color', colors.get(
+                blabel, colors.get(tr[0] if isinstance(tr, list) else tr)))
+            label = kw.pop('label', blabel)
+
+            for i, name in enumerate(stats):
+                spec = STATS[name]
+                ax, rax = main_ax[i], res_ax[i]
+
+                # ---- 2D statistics: map, no residual panel ---------------
+                if spec.ndim == 2:
+                    got = _fetch(self, spec, cat, skeys, _cache, tracers)
+                    if got is None:      # statistic undefined for this block
+                        ax.set_visible(False)
+                        if rax is not None:
+                            rax.set_visible(False)
+                        continue
+                    x, y, z = got
+
+                    if spec.mirror:
+                        xp, yp, zp = _mirror_quadrants(x, y, z)
+                    else:
+                        xp, yp, zp = x, y, z.T
+
+                    # NaNs / infs are common in 2D estimators (empty bins,
+                    # zero pair counts). The coordinate arrays must be fully
+                    # finite for pcolormesh, so drop any bad bins together
+                    # with the matching rows/columns of the map; remaining
+                    # bad values in the map itself are masked so they render
+                    # as blank cells rather than poisoning the colour scale.
+                    xp, yp = np.asarray(xp, float), np.asarray(yp, float)
+                    zp = np.asarray(zp, float)
+                    gx, gy = np.isfinite(xp), np.isfinite(yp)
+                    if not (gx.all() and gy.all()):
+                        # zp is laid out (len(yp), len(xp))
+                        zp = zp[np.ix_(gy, gx)]
+                        xp, yp = xp[gx], yp[gy]
+
+                    finite = np.isfinite(zp)
+                    if not finite.all():
+                        zp = np.ma.masked_invalid(zp)
+
+                    if xp.size < 2 or yp.size < 2 or not finite.any():
+                        ax.text(0.5, 0.5, 'no finite data', ha='center',
+                                va='center', transform=ax.transAxes,
+                                fontsize=fontsize, color='0.5')
+                        ax.set_xlabel(spec.xlabel, fontsize=fontsize)
+                        ax.set_ylabel(spec.ylabel, fontsize=fontsize)
+                        continue
+
+                    # colour scale from the finite, positive values only
+                    nrm = kwargs.get('norm', norm2d)
+                    if nrm is None:
+                        with np.errstate(invalid='ignore'):
+                            pos = np.asarray(zp)[finite & (np.asarray(zp) > 0)]
+                        nrm = (LogNorm(vmin=pos.min(), vmax=pos.max())
+                            if pos.size else None)
+
+                    with np.errstate(invalid='ignore', divide='ignore'):
+                        mesh = ax.pcolormesh(xp, yp, zp, cmap=cmap, norm=nrm,
+                                            shading=spec.shading)
+                    fig.colorbar(mesh, ax=ax)
+
+                    # contours need plain floats; skip silently if the map is
+                    # entirely masked or has no finite spread
+                    if spec.levels is not None and finite.any():
+                        zc = np.where(finite, np.asarray(zp), np.nan)
+                        with warnings.catch_warnings():
+                            warnings.simplefilter('ignore')
+                            with np.errstate(invalid='ignore', divide='ignore'):
+                                try:
+                                    ax.contour(xp, yp, zc,
+                                            levels=list(spec.levels),
+                                            colors='k', linewidths=0.8,
+                                            alpha=0.8)
+                                except (ValueError, TypeError):
+                                    pass    # degenerate map: no contours
+
+                    if spec.linthresh is not None:
+                        ax.set_xscale('symlog', linthresh=spec.linthresh)
+                    ax.set_xlabel(spec.xlabel, fontsize=fontsize)
+                    ax.set_ylabel(spec.ylabel, fontsize=fontsize)
+                    if by_tracer == 'overlay' and len(blocks) > 1:
+                        ax.set_title(blabel, fontsize=fontsize)
+                    continue
+
+                # ---- model ------------------------------------------------
+                got = _fetch(self, spec, cat, skeys, _cache, tracers)
+                if got is None:          # statistic undefined for this block
+                    ax.set_visible(False)
+                    if rax is not None:
+                        rax.set_visible(False)
+                    continue
+                x, y = got
+                y_plot = spec.scale(x, y) if spec.scale else y
+                # label once per block: on the last panel (overlay) or on
+                # every block's last panel (rows)
+                ax.plot(x, y_plot,
+                        label=label if i == len(stats) - 1 else None, **kw)
+
+                # ---- data -------------------------------------------------
+                d = _data_for(bkeys, name)
+                if d is not None:
+                    dx, dy, dsig = d
+                    drawn = getattr(fig, '_plot_stats_drawn', None)
+                    if drawn is None:
+                        drawn = fig._plot_stats_drawn = set()
+
+                    # points are drawn once per (tracer, statistic); a second
+                    # catalogue overplotted on the same figure reuses them
+                    if (blabel, name) not in drawn:
+                        dy_plot = spec.scale(dx, dy) if spec.scale else dy
+                        dsig_plot = None
+                        if dsig is not None:
+                            dsig_plot = (spec.scale(dx, dsig) if spec.scale
+                                        else dsig)
+                        ax.errorbar(dx, dy_plot, yerr=dsig_plot, fmt='o', ms=4,
+                                    mfc='none', capsize=0, lw=1.2, zorder=5,
+                                    color=data_color or kw.get('color'),
+                                    label=f'{label} data')
+                        drawn.add((blabel, name))
+
+                    # ---- residuals: always for the current model ---------
+                    if rax is not None and (dsig is not None
+                                            or spec.residual == 'ratio'):
+                        ymod = np.interp(dx, x, y)      # model at the data x
+                        if spec.residual == 'ratio':
+                            with np.errstate(divide='ignore', invalid='ignore'):
+                                res = np.where(dy != 0, ymod / dy - 1.0, np.nan)
+                        else:
+                            res = (ymod - dy) / dsig
+                        rax.plot(dx, res, lw=1.4, color=kw.get('color'))
+
+                ax.set_xscale(spec.xscale)
+                ax.set_yscale(spec.yscale)
+                ax.set_ylabel(spec.ylabel, fontsize=fontsize)
+                ax.grid(alpha=0.25)
+
+                if rax is None:
+                    ax.set_xlabel(spec.xlabel, fontsize=fontsize)
+                else:
+                    rax.set_xlabel(spec.xlabel, fontsize=fontsize)
+                    if spec.residual == 'ratio':
+                        rax.set_ylabel(r'model$/$data$-1$', fontsize=fontsize)
+                    else:
+                        rax.set_ylabel(r'$\Delta/\sigma$', fontsize=fontsize)
+                        rax.axhspan(-residual_band, residual_band,
+                                    color='grey', alpha=0.25)
+                    rax.axhline(0, ls='--', color='k', lw=1)
+                    if spec.residual_ylim is not None:
+                        rax.set_ylim(*spec.residual_ylim)
+                    rax.set_xscale(spec.xscale)
+                    rax.grid(alpha=0.25)
+
+        # legend on the last 1D panel of each tracer block
+        for blk_main, _ in axes_grid:
+            for i in range(len(stats) - 1, -1, -1):
+                if STATS[stats[i]].ndim != 1 or not blk_main[i].get_visible():
+                    continue
+                h, l = blk_main[i].get_legend_handles_labels()
+                if h:
+                    blk_main[i].legend(fontsize=fontsize)
+                break
+
+        if not hasattr(fig, '_plot_stats_axes'):
+            fig.tight_layout()
+        if show:
+            fig.show()
+        return fig
+
