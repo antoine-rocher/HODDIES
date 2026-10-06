@@ -56,3 +56,5 @@ setup_test.py
 # *test*.py
 HODDIES_paper/
 checks_pipeline/
+/HODDIES/test_hcat.hdf5
+/HODDIES/test_particles_cat.hdf5
