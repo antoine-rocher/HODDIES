@@ -68,6 +68,7 @@ class HOD(BaseLogger):
         self.boxsize = self.base_catalog.boxsize
         self.hcat = self.base_catalog.hcat
         self.part_subsamples = self.base_catalog.part_subsamples
+        self.field_particles = self.base_catalog.field_particles
 
         
         self.logger.info(f'Set number of threads to {self.nthreads}')
@@ -132,7 +133,7 @@ class HOD(BaseLogger):
             'LRG': {
                 'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 12.75, 'sigma_M': 0.5, 'gamma': 1, 'pmax': 1, 'Q': 100,
                 'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 13, 'M_1': 13.5, 'alpha': 1,
-                'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
+                'f_sigv': 1, 'f_vcen': 0.0, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
                 'assembly_bias':{'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
                 'density': 0.0007, 'vsmear': 0
@@ -140,7 +141,7 @@ class HOD(BaseLogger):
             'ELG': {
                 'HOD_model': 'mHMQ', 'Ac': 0.05, 'log_Mcent': 11.63, 'sigma_M': 0.12, 'gamma':2, 'pmax': 1, 'Q': 100,
                 'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 0.11, 'M_0': 11.63, 'M_1': 11.7, 'alpha': 0.6,
-                'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
+                'f_sigv': 1, 'f_vcen': 0.0, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
                 'assembly_bias': {'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
                 'density': 0.001, 'vsmear': 0
@@ -148,7 +149,7 @@ class HOD(BaseLogger):
             'QSO': {
                 'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 13.25, 'sigma_M': 0.6, 'gamma': 1, 'pmax': 1, 'Q': 100,
                 'satellites': True, 'sat_HOD_model': 'Nsat_pow_law', 'As': 1, 'M_0': 13.25, 'M_1': 14.25, 'alpha': 1.3,
-                'f_sigv': 1, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
+                'f_sigv': 1, 'f_vcen': 0.0, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
                 'assembly_bias': {'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
                 'density': 0.0001, 'vsmear': 100
@@ -568,8 +569,8 @@ class HOD(BaseLogger):
             if self.args[tr].get('assembly_bias'):
                 ab_proxy += [list(self.args[tr]['assembly_bias'].keys())]
         ab_proxy = list(set().union(*ab_proxy))
-        
-        abproxy_to_remove = self.base_catalog.set_assembly_bias_values(ab_proxy, self.args)
+        print('Assembly bias columns to remove:', ab_proxy)
+        abproxy_to_remove = self.base_catalog.set_assembly_bias_values(ab_proxy, **self.args)
         self._remove_env_bias(abproxy_to_remove)
 
 
@@ -624,6 +625,9 @@ class HOD(BaseLogger):
         Notes
         -----
         - The method relies on HOD models defined for each tracer in `self.args[tracer]['HOD_model']` and `self.args[tracer]['sat_HOD_model']`.
+        - The tracer parameter `f_vcen` adds `f_vcen * Vrms` to each Cartesian
+        central velocity component: `v_c = v_h + f_vcen * Vrms`. It defaults
+        to zero and applies a deterministic offset without additional random draws.
         - If `self.args['assembly_bias']` is enabled, assembly bias columns will be computed and included in the mock catalog.
         - The `fix_seed` parameter ensures that the mock catalogs are generated in a reproducible manner, but it requires consistent 
         thread configurations (`self.nthreads`).
@@ -676,7 +680,8 @@ class HOD(BaseLogger):
                 self._warn_once(f'Ac={hod_list_param_cen[0]*ds} is > 1, the density is not fixed to {self.args[tracer]["density"]}')
             else : 
                 hod_list_param_cen[0] *= ds
-                hod_list_param_sat[0] *= 1 if self.args[tracer]['link_sat_to_central'] else ds
+                if hod_list_param_sat is not None:
+                    hod_list_param_sat[0] *= 1 if self.args[tracer]['link_sat_to_central'] else ds
 
             if fix_seed is not None:
                 seed = rng.randint(0, 4294967295, self.nthreads)
@@ -713,6 +718,16 @@ class HOD(BaseLogger):
             
             cent_cat = self.hcat[cond_cent]
             cent_cat['Central'] = np.ones(cent_cat['x'].size,dtype='int')
+            f_vcen = self.args[tracer].get('f_vcen', 0.0)
+            if f_vcen != 0.0:
+                if 'Vrms' not in cent_cat.columns():
+                    self._warn_once(
+                        f"Vrms is unavailable for tracer '{tracer}'; skipping "
+                        "central velocity bias and keeping halo velocities.")
+                else:
+                    velocity_offset = f_vcen * cent_cat['Vrms']
+                    for velocity in ('vx', 'vy', 'vz'):
+                        cent_cat[velocity] = cent_cat[velocity] + velocity_offset
 
             if verbose:
                 self.logger.debug(f'Central catalog in {time.time()-st:.2f} sec')
@@ -741,7 +756,8 @@ class HOD(BaseLogger):
                     else:
                         seed = None
 
-                    sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'], mask_nfw = self.base_catalog.assign_sat_to_part(mask_sat, list_nsat, seed=seed)
+                    sat_cat['x'], sat_cat['y'], sat_cat['z'], sat_cat['vx'], sat_cat['vy'], sat_cat['vz'], mask_nfw = self.base_catalog.assign_sat_to_part(
+                        mask_sat, list_nsat, seed=seed, f_sigv=self.args[tracer]['f_sigv'])
                     if verbose:
                         self.logger.debug(f'Sample satellites from particles done in {time.time() - start_part:.2f} sec')
                         self.logger.debug(f'{mask_nfw.sum()} satellites will be positioned using NFW')
@@ -1183,7 +1199,7 @@ class HOD(BaseLogger):
             ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2]  for each tracer.
         """
 
-        if self.part_subsamples is None:
+        if self.field_particles is None:
             raise ValueError('Particle subsample is required to compute ΔΣ(R).')
         
         tracers = self.check_cat_tracers(cats, tracers)
@@ -1216,7 +1232,7 @@ class HOD(BaseLogger):
     
             rp, ds = compute_delta_sigma(
                 pos_lens,
-                self.part_subsamples['pos'][::100]%self.boxsize,
+                self.field_particles['pos'][::100]%self.boxsize,
                 rbins=ds_settings['edges_rp'],
                 boxsize=self.boxsize,
                 rho_m=self.cosmo.rho_m(0.5) * 1e10,
@@ -3136,6 +3152,11 @@ class HOD(BaseLogger):
             ``'xi_ells'`` expands to one panel per configured multipole,
             read from
             ``self.args['clustering_settings']['xi_smu']['multipole_index']``.
+            ``'power_spectrum'`` similarly expands using
+            ``clustering_settings['power_spectrum']['multipole_index']``;
+            names such as ``'xi4'``, ``'xi6'``, ``'pk4'`` and ``'pk6'``
+            select individual configured orders, with no fixed upper limit.
+            ``'ALL'`` includes the configured orders of both families.
         tracers : str, sequence of str, or None
             Tracers to overplot. ``None`` uses ``np.unique(cat['TRACER'])``.
         data : dict or None
@@ -3189,6 +3210,19 @@ class HOD(BaseLogger):
                         'BGS': 'goldenrod'}
         colors = {**default_colors, **(colors or {})}
         stats = [stats] if isinstance(stats, str) else list(stats)
+        if stats[0].upper() == 'ALL':
+            # Resolve both multipole families from this object's configuration,
+            # excluding stale orders registered while plotting another object.
+            prefixes = {'xi_ells': 'xi', 'power_spectrum': 'pk'}
+            all_stats = []
+            for name, spec in get_STATS().items():
+                prefix = prefixes.get(spec.source)
+                if (prefix is not None and name.lower().startswith(prefix)
+                        and name[len(prefix):].isdigit()):
+                    name = spec.source
+                if name not in all_stats:
+                    all_stats.append(name)
+            stats = all_stats
         stats = _expand_stats(self, stats)          # 'xi_ells' -> xi0, xi2, ...
         STATS = get_STATS()                         # after expansion
         unknown = [s for s in stats if s not in STATS]
@@ -3229,7 +3263,8 @@ class HOD(BaseLogger):
         data = {s: (v if not _is_leaf(v) else {labels[0]: v})
                 for s, v in (data or {}).items()}
 
-        stray = [s for s in data if s not in STATS]
+        stray = [s for s in data if s not in STATS
+                 and _resolve_name(s, STAT_GROUPS) is None]
         if stray:
             warnings.warn(
                 f'data keys {stray} are not known statistics and will be '
@@ -3585,4 +3620,3 @@ class HOD(BaseLogger):
         if save_fn:
             fig.savefig(save_fn, facecolor='w',  bbox_inches='tight', pad_inches=0.1)
         return fig
-

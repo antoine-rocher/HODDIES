@@ -1,5 +1,5 @@
 import os
-from read_particles import read_gadget2_multi
+from HODDIES.sim_loader.Uchuu.read_particles import read_gadget2_multi
 from HODDIES.environment_func import compute_env_shear_from_particles
 import argparse
 import glob

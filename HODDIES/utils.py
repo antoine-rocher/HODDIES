@@ -258,6 +258,9 @@ def cmp_lambda_from_mean(mu, nu):
 @njit(fastmath=True, cache=True)
 def cmp_lambda_from_mu_allscale(mu, nu, sig=0.1):
     """Use small-lambda approximation for small mu, otherwise use large-lambda."""
+    # The Poisson limit is exact, including below the blending threshold.
+    if nu == 1.0:
+        return mu
     # Threshold for switching between approximations
     threshold = 0.9  # Adjust this value as needed
 
@@ -271,6 +274,9 @@ def cmp_lambda_from_mu_allscale(mu, nu, sig=0.1):
 
 @njit(fastmath=True)
 def cmp_sample(N_sat, nu): 
+    """Draw by inverse CDF; even at nu=1 this uses a different RNG stream
+    from np.random.poisson, so equal seeds do not imply equal catalogues.
+    """
     lam_cmp = cmp_lambda_from_mu_allscale(N_sat, nu)
     max_x = get_max_x(N_sat)
     x = np.arange(max_x + 1) 
@@ -280,19 +286,6 @@ def cmp_sample(N_sat, nu):
     cdf /= cdf[-1] 
     u = np.random.rand() 
     return (cdf < u).sum()
-
-
-# @njit(fastmath=True)
-# def cmp_lambda_from_mu_allscale(mu, nu):
-#     """Use small-lambda approximation for small mu, otherwise use large-lambda."""
-#     # Threshold for switching between approximations
-#     threshold = 0.8  # Adjust this value as needed
-
-#     # If mu is small, use the small-mu approximation
-#     if mu < threshold:
-#         return cmp_lambda_small_mu(mu, nu)
-#     else:
-#         return cmp_lambda_from_mean(mu, nu)
 
 
 @njit(parallel=True, fastmath=True)
@@ -792,7 +785,8 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
 @njit(fastmath=True, parallel=True)
 def sample_satellites_from_particles(xp, yp, zp, vxp, vyp, vzp,
                                      flat, offsets,
-                                     nb_sat, Nthread, seed=None):
+                                     nb_sat, seed=None, vx_h=None, vy_h=None,
+                                     vz_h=None, f_sigv=1.0):
     """
     Randomly sample satellite positions and velocities from particle data
     using precomputed CSR-style halo-to-particle mapping.
@@ -809,11 +803,16 @@ def sample_satellites_from_particles(xp, yp, zp, vxp, vyp, vzp,
     nb_sat : ndarray[int64]
         Number of satellites to draw per halo.
     seed : ndarray[int64], optional
-        Global random seed for reproducibility.
+        One random seed per host halo for reproducibility.
+    vx_h, vy_h, vz_h : ndarray, optional
+        Host halo velocities in CSR halo order; required for f_sigv other than one.
+    f_sigv : float, optional
+        Apply v_sat = v_halo + f_sigv * (v_part - v_halo) in each component.
+        One preserves the particle velocities.
 
     Returns
     -------
-    x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat : ndarray[float64]
+    x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat : ndarray[float32]
         Positions and velocities of all selected satellites (flattened).
         Length = sum(nb_sat)
     mask_missing : ndarray[bool]
@@ -831,6 +830,8 @@ def sample_satellites_from_particles(xp, yp, zp, vxp, vyp, vzp,
     # numba.set_num_threads(Nthread)
     Nh = len(nb_sat)
     Nsat_total = np.sum(nb_sat)
+    if f_sigv != 1.0 and (vx_h is None or vy_h is None or vz_h is None):
+        raise ValueError('Host halo velocities are required for particle velocity bias.')
 
     mask_nfw = np.zeros(Nsat_total, dtype=np.bool_)
     x_sat = np.empty(Nsat_total, dtype=np.float32)
@@ -871,14 +872,23 @@ def sample_satellites_from_particles(xp, yp, zp, vxp, vyp, vzp,
 
         # Fill in selected satellites
         n_fill = min(n_p, n_s)
-        x_sat[out_start:out_start + n_fill] = xp[indices[:n_fill]]
-        y_sat[out_start:out_start + n_fill] = yp[indices[:n_fill]]
-        z_sat[out_start:out_start + n_fill] = zp[indices[:n_fill]]
-        vx_sat[out_start:out_start + n_fill] = vxp[indices[:n_fill]]
-        vy_sat[out_start:out_start + n_fill] = vyp[indices[:n_fill]]
-        vz_sat[out_start:out_start + n_fill] = vzp[indices[:n_fill]]
+        for j in range(n_fill):
+            particle_index = indices[j]
+            satellite_index = out_start + j
+            x_sat[satellite_index] = xp[particle_index]
+            y_sat[satellite_index] = yp[particle_index]
+            z_sat[satellite_index] = zp[particle_index]
+            if vx_h is not None and vy_h is not None and vz_h is not None:
+                vx_sat[satellite_index] = vx_h[i] + f_sigv * (vxp[particle_index] - vx_h[i])
+                vy_sat[satellite_index] = vy_h[i] + f_sigv * (vyp[particle_index] - vy_h[i])
+                vz_sat[satellite_index] = vz_h[i] + f_sigv * (vzp[particle_index] - vz_h[i])
+            else:
+                vx_sat[satellite_index] = vxp[particle_index]
+                vy_sat[satellite_index] = vyp[particle_index]
+                vz_sat[satellite_index] = vzp[particle_index]
 
     return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw
+
 
 
 def update_dic(d, u):

@@ -23,6 +23,8 @@ class AbacusSummitSim(Base_catalogue):
             raise ValueError('Redshift is not provided, please provide z_simu.')
         self.init_abacus_args(**kwargs)
         self.read_Abacus_hcat()
+        if kwargs.get('load_field_particles', False):
+            self.field_particles = self.load_particle_field()
 
 
     def init_abacus_args(self, **kwargs):
@@ -38,6 +40,7 @@ class AbacusSummitSim(Base_catalogue):
         if self.sim_name is None:
             raise ValueError('Simulation name not provided, please provide sim_name.')
         self._is_sim_abacus=True
+        
         
     def cosmo(self, **cosmo_args):
         """
@@ -155,13 +158,12 @@ class AbacusSummitSim(Base_catalogue):
         self.logger.info(f"Done took {time.strftime('%H:%M:%S', time.gmtime(time.time() - start))}")
         return hcat
 
-    def load_particle_subsample(
+    def load_particle_field(
         self,
         subsample="A",
         fraction=1 / 10,
         seed=42,
         load=("pos",),
-        populations=("halo", "field"),
         verbose=True,
     ):
         """
@@ -220,17 +222,9 @@ class AbacusSummitSim(Base_catalogue):
         if not load or len(set(load)) != len(load) or not set(load) <= {"pos", "vel"}:
             raise ValueError("load must contain 'pos', 'vel', or both, without duplicates.")
 
-        populations = (
-            (populations,) if isinstance(populations, str) else tuple(populations)
-        )
-        if (
-            not populations
-            or len(set(populations)) != len(populations)
-            or not set(populations) <= {"halo", "field"}
-        ):
-            raise ValueError("populations must contain 'halo', 'field', or both.")
+        populations=("halo", "field")
 
-        self.logger.info(f"Load {fraction:.3%} Abacus particles using {populations} for subsample {subsample}...")
+        self.logger.info(f"Load Abacus particles using {fraction:.3%} of the subsample {subsample}...")
         # Validate all requested directories before starting expensive reads.
         files = []
         n_all = 0 
@@ -435,27 +429,25 @@ class AbacusSummitSim(Base_catalogue):
         from abacusnbody.data.read_abacus import read_asdf
         import hdf5plugin
         import h5py    
-        from .. import calc_env, calc_shear_from_dsmo
+        from HODDIES.environment_func import calc_env, calc_shear_from_dsmo
 
         cell_size = kwargs.get('cell_size', 5)
         R = kwargs.get('R', 1.5)
         dir_to_save_env_mesh = kwargs.get('dir_to_save_env_mesh', '/tmp')
-        
+        path_to_save = os.path.join(
+            dir_to_save_env_mesh,
+            f'env_shear_map_{self.sim_name}_z{self.z_simu:.3f}.h5'
+        )
 
         if dir_to_save_env_mesh and os.path.isdir(dir_to_save_env_mesh):
-            path_to_save_env_mesh = os.path.join(
-                dir_to_save_env_mesh,
-                f'env_shear_map_{self.sim_name}_z{self.z_simu:.3f}.h5'
-            )
-            if os.path.exists(path_to_save_env_mesh):
-                self.logger.info(f'Load precomputed density and shear mesh for {self.sim_name} at {path_to_save_env_mesh}...')
-                env_prop = Catalog.read(path_to_save_env_mesh)
+            if os.path.exists(path_to_save):
+                self.logger.info(f'Load precomputed density and shear mesh for {self.sim_name} at {path_to_save}...')
+                env_prop = Catalog.read(path_to_save)
                 self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
                 return
         else:
             self.logger.info(f'Precomputed density and shear mesh not found. Create directory {os.path.join(dir_to_save_env_mesh)} to save density and shear mesh')
             os.makedirs(dir_to_save_env_mesh, exist_ok=True)
-            path_to_save = os.path.join(dir_to_save_env_mesh, f'env_shear_map_{self.sim_name}_z{self.z_simu:.3f}.h5')
         
         if self.z_simu not in self.__particles_snap_available:
             import warnings
@@ -477,11 +469,10 @@ class AbacusSummitSim(Base_catalogue):
             return
         if getattr(self, "field_particles", None) is None:
             self.logger.info('Particles are not loaded. Load Abacus particles to compute density and shear mesh')
-            self.field_particles = self.load_particle_subsample(subsample="A", fraction=1/10, seed=42, load=("pos",), populations=("halo", "field"))
+            self.field_particles = self.load_particle_field(subsample="A", fraction=1/10, seed=42, load=("pos",))
 
         dsmo = calc_env(self.field_particles['pos'], self.boxsize, cell_size=cell_size, R=R) 
         shear = calc_shear_from_dsmo(dsmo, self.boxsize, cell_size=cell_size, R=R, workers=-1) 
-        
         
         # self.logger.info(f'Save to {path_to_save}')
         with h5py.File(path_to_save, "w") as f:
@@ -499,7 +490,7 @@ class AbacusSummitSim(Base_catalogue):
 
 
     
-    def assign_sat_to_part(self, mask_sat, list_nsat, seed=None):
+    def assign_sat_to_part(self, mask_sat, list_nsat, seed=None, f_sigv=1.0):
         """
         Assign satellite galaxies to particles in the Abacus simulation.
 
@@ -511,6 +502,9 @@ class AbacusSummitSim(Base_catalogue):
             Boolean mask indicating which halo include satellites to assign.
         seed : int, optional
             Random seed for reproducibility.
+        f_sigv : float, optional
+            Apply v_sat = v_halo + f_sigv * (v_part - v_halo) inside the
+            Numba loop. One preserves the particle velocities.
 
         Returns
         -------
@@ -533,7 +527,8 @@ class AbacusSummitSim(Base_catalogue):
 
         x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw = _compute_sat_from_abacus_part(self.part_subsamples['pos'].T[0], self.part_subsamples['pos'].T[1], self.part_subsamples['pos'].T[2],
                                                   self.part_subsamples['vel'].T[0], self.part_subsamples['vel'].T[1], self.part_subsamples['vel'].T[2],
-                                                  self.hcat['npoutA'][mask_sat], self.hcat['npstartA'][mask_sat], list_nsat,  np.insert(np.cumsum(list_nsat), 0, 0), self.nthreads, seed=seed)
+                                                  self.hcat['npoutA'][mask_sat], self.hcat['npstartA'][mask_sat], list_nsat,  np.insert(np.cumsum(list_nsat), 0, 0), self.nthreads, seed=seed,
+                                                  vx_h=self.hcat['vx'][mask_sat], vy_h=self.hcat['vy'][mask_sat], vz_h=self.hcat['vz'][mask_sat], f_sigv=f_sigv)
         return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw
 
 
@@ -541,7 +536,8 @@ class AbacusSummitSim(Base_catalogue):
 
 @njit(parallel=True, fastmath=True, cache=True)
 def _compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, npout, npstart, nb_sat, 
-                                cum_sum_sat, Nthread, seed=None):
+                                cum_sum_sat, Nthread, seed=None, vx_h=None,
+                                vy_h=None, vz_h=None, f_sigv=1.0):
 
     """
     Sample satellite galaxy positions and velocities from Abacus particle subsamples.
@@ -564,6 +560,12 @@ def _compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, npout, npstart, nb_
         Number of threads to use in parallel loop.
     seed : array, optional
         Array of seeds for reproducible random sampling across threads.
+    vx_h, vy_h, vz_h : arrays, optional
+        Host halo velocities in the same order as npout and nb_sat.
+        Required for f_sigv other than one.
+    f_sigv : float, optional
+        Apply v_sat = v_halo + f_sigv * (v_part - v_halo) in each component.
+        One preserves the particle velocities.
 
     Returns
     -------
@@ -574,6 +576,9 @@ def _compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, npout, npstart, nb_
     mask_nfw : array
         Boolean mask identifying entries with no enough particles (to be filled using NFW).
     """
+
+    if f_sigv != 1.0 and (vx_h is None or vy_h is None or vz_h is None):
+        raise ValueError('Host halo velocities are required for particle velocity bias.')
 
     mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
     x_sat = np.zeros(nb_sat.sum(), dtype='float32')
@@ -590,22 +595,21 @@ def _compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, npout, npstart, nb_
         for i in range(int(hstart[tid]), int(hstart[tid + 1])):
             if nb_sat[i] < npout[i]:
                 tt = np.random.choice(npout[i], nb_sat[i], replace=False) + npstart[i]
-                x_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = xp[tt]
-                y_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = yp[tt]
-                z_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = zp[tt]
-                vx_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vxp[tt]
-                vy_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vyp[tt]
-                vz_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vzp[tt]
-                #id_parts[cum_sum_sat[i]: cum_sum_sat[i+1]] = tt + npstart[i]            
             else:
-                if npout[i] > 0:
-                    tt = np.arange(npout[i]) + npstart[i]
-                    x_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = xp[tt]
-                    y_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = yp[tt]
-                    z_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = zp[tt]
-                    vx_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vxp[tt]
-                    vy_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vyp[tt]
-                    vz_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vzp[tt]
-                
+                tt = np.arange(npout[i]) + npstart[i]
                 mask_nfw[cum_sum_sat[i]+npout[i]: cum_sum_sat[i+1]] = True
+            for j in range(tt.size):
+                particle_index = tt[j]
+                satellite_index = cum_sum_sat[i] + j
+                x_sat[satellite_index] = xp[particle_index]
+                y_sat[satellite_index] = yp[particle_index]
+                z_sat[satellite_index] = zp[particle_index]
+                if vx_h is not None and vy_h is not None and vz_h is not None:
+                    vx_sat[satellite_index] = vx_h[i] + f_sigv * (vxp[particle_index] - vx_h[i])
+                    vy_sat[satellite_index] = vy_h[i] + f_sigv * (vyp[particle_index] - vy_h[i])
+                    vz_sat[satellite_index] = vz_h[i] + f_sigv * (vzp[particle_index] - vz_h[i])
+                else:
+                    vx_sat[satellite_index] = vxp[particle_index]
+                    vy_sat[satellite_index] = vyp[particle_index]
+                    vz_sat[satellite_index] = vzp[particle_index]
     return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw

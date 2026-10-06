@@ -15,6 +15,7 @@ LRG: # Name of tracer 1
   gamma: 1  # Shape parameter controlling the asymetry of the central distribution.
   pmax: 1 # Max probability for central occupation (only used for HMQ model)  
   Q: 100  # Quenching parameter (only used for HMQ model)
+  f_vcen: 0.0  # Central velocity offset in each component: v_c = v_h + f_vcen * Vrms
 
   # Parameters for the satellite HOD model
   satellites: true  # Whether satellites are included
@@ -65,6 +66,7 @@ ELG: # Name of tracer 2
     - 0
   conformity_bias: false
   density: 0.001
+  f_vcen: 0.0
   f_sigv: 1
   gamma: 1
   log_Mcent: 11.63

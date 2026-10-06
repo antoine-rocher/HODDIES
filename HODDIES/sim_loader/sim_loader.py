@@ -230,8 +230,10 @@ class Base_catalogue(BaseLogger):
         self._init_halo_cols=['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'c', 'Vrms', 'halo_id']
         self._init_part_cols = ['x', 'y', 'z', 'vx', 'vy', 'vz', 'halo_id']
         self.z_simu = kwargs.get('z_simu', None)
-        
+        self.field_particles = getattr(self, 'part_subsamples', None)
+        # self.field_particles = self.load_particle_field() # if self.part_subsamples is not similar to the particle field (ie only particles in halos)
 
+        
     
     def init_cat(self, halo_data, particle_data=None, mapping_halo_cols : dict = None, mapping_part_cols : dict = None):
         """
@@ -450,24 +452,31 @@ class Base_catalogue(BaseLogger):
                 continue
 
             self.logger.info(f'Set value for assembly bias according to {col}...')
+            print(self.hcat['log10_Mh'], self.hcat[col])
             self.hcat[f'ab_{col}'] = initialize_assembly_bias_value(self.hcat['log10_Mh'], self.hcat[col], bins=bins)
             self.logger.info(f'Done !')
         return col_to_remove
 
 
-    def assign_sat_to_part(self, mask_sat, list_nsat, seed=None):
+    def assign_sat_to_part(self, mask_sat, list_nsat, seed=None, f_sigv=1.0):
         """
         Default method to assign satellites to particles.
-        This method assigns satellite galaxies to particles based on the provided satellite catalog (`sat_cat`) and the number of satellites per halo (`list_nsat`). It uses the `halo_to_particle_indices` and `sample_satellites_from_particles` functions to perform the assignment. The method returns a mask indicating which satellites will be positioned using the NFW profile.
+        Assign particles to the selected host halos using the requested number
+        of satellites per halo. Return positions, biased velocities, and a mask
+        identifying satellites that require analytic placement.
 
         Parameters
         ----------
-        sat_cat : array-like
-            The satellite catalog containing the properties of satellite galaxies, including their positions and velocities.
+        mask_sat : array-like
+            Boolean mask selecting host halos, in halo-catalogue order.
         list_nsat : array-like
             The number of satellites per halo, used to determine how many satellites to assign to each halo.
-        seed : list[int], optional
-            A list of random seeds for reproducibility. If provided, it should have the same length as `sat_cat`. If not provided, a default seed is used.
+        seed : int or array-like, optional
+            A random seed or one seed per host halo. Other seed-array lengths
+            are used to initialise a reproducible stream of per-halo seeds.
+        f_sigv : float, optional
+            Particle velocity bias: v_sat = v_halo + f_sigv * (v_part - v_halo).
+            One preserves the particle velocities.
         
         Returns
         -------
@@ -476,28 +485,101 @@ class Base_catalogue(BaseLogger):
         vx_sat, vy_sat, vz_sat : array-like
             The assigned velocities of the satellite galaxies in the vx, vy, and vz components.
         mask_nfw : array-like
-            A boolean mask indicating which satellites will be positioned using the NFW profile. True values correspond to satellites that will be assigned to particles, while False values correspond to satellites that will not be assigned to particles.
+            True for satellites requiring analytic placement because their host
+            has too few particles.
         Notes
         -----
-        - Satellite catalog (`sat_cat`) is modified in place to assign positions and velocities from particles.
-        - The method assumes that the satellite catalog (`sat_cat`) contains a column named `'halo_id'` that identifies the host halo for each satellite.
-        - The method also assumes that the particle catalog (`self.part_subsamples`) contains a column named `'halo_id'` that identifies the host halo for each particle.
-        - The method uses the `halo_to_particle_indices` function to map halo IDs to particle indices, and the `sample_satellites_from_particles` function to sample satellites from the particles based on their positions and velocities.
-        - The method sorts the satellite catalog by halo ID before performing the assignment to ensure that satellites are assigned to the correct host halos.
-        - The method uses the `self.nthreads` attribute to determine the number of threads to use for parallel processing when sampling satellites from particles.
-        - The method returns a boolean mask (`mask_nfw`) indicating which satellites will be positioned using the NFW profile, allowing for further analysis or processing of the assigned satellites.
+        Particle indices are grouped by host ID, preserving the order of the
+        selected halos. Each halo's output block has exactly list_nsat[i] rows.
+        The velocity bias is applied inside the Numba sampling loop.
 
         """
 
         from HODDIES.utils import halo_to_particle_indices, sample_satellites_from_particles        
     
         uniq_sat_id = self.hcat['halo_id'][mask_sat]
-        sort_index = np.argsort(uniq_sat_id)
-        unsort_index = np.argsort(sort_index)
         if not hasattr(self, '_order_part_index'):
             self._order_part_index = np.argsort(self.part_subsamples['halo_id'])
         flat, offsets = halo_to_particle_indices(self.part_subsamples['halo_id'][self._order_part_index], self._order_part_index, uniq_sat_id, self.nthreads)
-        # Sample satellites from particles, outputs are sorted according to the halo_id
+        if seed is not None:
+            seed_array = np.asarray(seed, dtype=np.uint32)
+            if seed_array.ndim == 0 or seed_array.size != len(list_nsat):
+                seed_input = int(seed_array) if seed_array.ndim == 0 else seed_array
+                seed = np.random.RandomState(seed_input).randint(
+                    0, 4294967295, size=len(list_nsat), dtype=np.uint32)
+            else:
+                seed = seed_array
+        # The CSR mapping and outputs preserve selected halo order.
         x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw = sample_satellites_from_particles(self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
-                                            self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'], flat, offsets, list_nsat, self.nthreads, seed=seed)             
-        return x_sat[unsort_index], y_sat[unsort_index], z_sat[unsort_index], vx_sat[unsort_index], vy_sat[unsort_index], vz_sat[unsort_index], mask_nfw[unsort_index]
+                                            self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'], flat, offsets, list_nsat, seed=seed,
+                                            vx_h=self.hcat['vx'][mask_sat], vy_h=self.hcat['vy'][mask_sat], vz_h=self.hcat['vz'][mask_sat], f_sigv=f_sigv)
+        return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw
+
+
+    def plot_HMF(self, save_fn=None, show=False):
+        """
+        Plot the inital Halo Mass Function (HMF) from the halo catalog.
+
+        This function generates a plot of the Halo Mass Function (HMF) using the halo mass values (`log10_Mh`) 
+        from the provided catalog(s). The plot can optionally include histograms for central and satellite galaxies,
+        and can display an initial HMF for comparison.
+
+        Parameters
+        ----------        
+        range : tuple, optional
+            The range for the satellite galaxy histogram. Default is (10.8, 15).
+        
+        Returns
+        -------
+        None
+            The function generates and displays the plot but does not return any value.
+        
+        Notes
+        -----
+        - The function uses different colors for each tracer: 'ELG' (deepskyblue), 'QSO' (seagreen), and 'LRG' (red).
+        - For satellite galaxies, the histograms are plotted with different line styles (`--` for centrals, `:` for satellites).
+        - The initial HMF (if provided) is plotted using a gray color.
+        - The y-axis is displayed on a logarithmic scale, and the x-axis represents the logarithm of the halo mass in solar masses.
+
+        Example
+        -------
+        plot_HMF()  # Plot HMF for the 'ELG' tracer with satellite galaxies.
+        """
+        import matplotlib.lines as mlines
+        import matplotlib.pyplot as plt
+
+        handles=[]
+        
+        plt.hist(self.hcat['log10_Mh'], histtype='step', bins=100, color='gray')
+        handles +=[mlines.Line2D([], [], color='gray', label='inital HMF', ls='-')]
+
+        plt.yscale('log')
+        plt.ylabel('$N_{h}$')
+        plt.xlabel(r'$\log(M_h\ [M_{\odot}])$')
+        plt.legend(handles=handles, loc='upper right')
+        plt.tight_layout()
+        if save_fn is not None: 
+            plt.savefig(save_fn)
+        if show: 
+            plt.show()
+
+    def load_particle_field(self):
+        """
+        Load a subsample of particles from the simulation to compute density and shear meshes.
+        This method is intended to be implemented in subclasses for specific simulations (e.g., Abacus, Uchuu).
+        It should load a representative subsample of particles from the simulation data, which can then be used
+        to compute the density and shear fields for environment-based properties.
+
+        Returns
+        -------
+        field_particles : array-like
+            A subsample of particles from the simulation, which can be used to compute density and shear meshes.
+        
+        Notes
+        -----
+        The implementation of this method should ensure that the loaded particle subsample is representative
+        of the overall particle distribution in the simulation. The subsample can be used to compute density
+        and shear fields for environment-based properties in the halo catalog.
+        """
+
+        self.field_particles = None

@@ -9,6 +9,10 @@ plotting code itself.
 If measured data (+ errors) are supplied for a statistic, the data are shown
 as points with error bars and a residual sub-panel (model - data)/sigma is
 added underneath that panel.
+
+Use ``stats=['xi_ells', 'power_spectrum']`` to plot the configured
+multipoles, or select individual orders with names such as ``'xi4'``,
+``'xi6'``, ``'pk4'`` and ``'pk6'``. Any configured even order is supported.
 """
 
 import warnings
@@ -122,10 +126,8 @@ STATS = {
         ylabel=r'$r_p \cdot w_p(r_p)$ ' + r'[$(\mathrm{Mpc}/h)^2$]',
         scale=lambda x, y: x * y),
 
-    # Multipoles. These defaults assume get_xiells returns the orders in
-    # the order [0, 2, 4]; requesting the group 'xi_ells' instead re-reads
-    # the configured multipole list and overrides these with the correct
-    # component indices.
+    # Common multipoles. Individual and group requests resolve component
+    # indices from the configured order; higher orders are registered on demand.
     'xi0': StatSpec(
         source='xi_ells', component=0,
         xlabel=r'$s$ ' + _MPC,
@@ -138,10 +140,16 @@ STATS = {
         ylabel=r'$s \cdot \xi_2(s)$ ' + _MPC,
         scale=lambda x, y: x * y),
 
-    'xi4': StatSpec(
-        source='xi_ells', component=2,
-        xlabel=r'$s$ ' + _MPC,
-        ylabel=r'$s \cdot \xi_4(s)$ ' + _MPC,
+    'pk0': StatSpec(
+        source='power_spectrum', component=0,
+        xlabel=r'$k$ [$h/\mathrm{Mpc}$]',
+        ylabel=r'$k \cdot P_0(k)$ ' + r'[$(\mathrm{Mpc}/h)^2$]',
+        scale=lambda x, y: x * y),
+
+    'pk2': StatSpec(
+        source='power_spectrum', component=1,
+        xlabel=r'$k$ [$h/\mathrm{Mpc}$]',
+        ylabel=r'$k \cdot P_2(k)$ ' + r'[$(\mathrm{Mpc}/h)^2$]',
         scale=lambda x, y: x * y),
 
     'CIC': StatSpec(
@@ -223,21 +231,18 @@ def _xi_ells_group(obj):
 def _pk_ells_group(obj):
     """Expand ``'power_spectrum'`` into one panel per multipole.
 
-    Uses the same configured multipole list as ``'xi_ells'``. If your
-    ``compute_stats`` returns a single P(k) rather than a stack of
-    multipoles, register a plain statistic instead::
-
-        register_stat('power_spectrum', source='power_spectrum',
-                      xlabel=r'$k$ [$h$/Mpc]', ylabel=r'$k P(k)$',
-                      scale=lambda x, y: x * y)
+    Read ``clustering_settings['power_spectrum']['multipole_index']``.
+    Each panel uses the position of its order in that list, independently
+    of the correlation-function multipoles. Additional orders such as
+    ``pk4`` are registered when present in the configuration.
     """
     ells = None
     try:
-        ells = obj.args['clustering_settings']['xi_smu']['multipole_index']
+        ells = obj.args['clustering_settings']['power_spectrum']['multipole_index']
     except (AttributeError, KeyError, TypeError):
         pass
     if ells is None:
-        ells = [0, 2, 4]
+        ells = [0, 2]
     names = []
     for i, ell in enumerate(ells):
         ell = int(ell)
@@ -287,6 +292,23 @@ def _expand_stats(obj, stats):
             out.extend(STAT_GROUPS[grp](obj))
             continue
         key = _resolve_name(s, STATS)
+        # Resolve both families on demand, including names not yet registered.
+        # A previous object's group may have used a different component order.
+        multipole_name = s.lower()
+        for prefix, group, setting, label in (
+                ('xi', 'xi_ells', 'xi_smu', 'correlation-function'),
+                ('pk', 'power_spectrum', 'power_spectrum', 'power-spectrum')):
+            if (multipole_name.startswith(prefix)
+                    and multipole_name[len(prefix):].isdigit()):
+                names = STAT_GROUPS[group](obj)
+                if multipole_name not in names:
+                    raise ValueError(
+                        f"{label} multipole '{s}' is not configured; "
+                        f'available: {names}. Update '
+                        f"clustering_settings['{setting}']['multipole_index'] "
+                        'to compute it.')
+                key = multipole_name
+                break
         out.append(key if key is not None else s)
     return out
 
