@@ -1,0 +1,5 @@
+# Keep the saved diagnostic log despite the repository's general *.log rule.
+!results/cmp_poisson_updated.log
+!results/delta_sigma/*.log
+!results/assembly_bias/*.log
+!results/assembly_bias_convergence/*.log

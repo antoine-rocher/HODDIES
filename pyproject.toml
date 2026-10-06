@@ -39,11 +39,18 @@ colossus = ['colossus']
 abacusutils = ['abacusutils[all]']
 
 
-[tool.setuptools]
-packages = ["HODDIES"]
+[tool.setuptools.packages.find]
+include = ["HODDIES", "HODDIES.*"]
+namespaces = false
 
 [tool.setuptools.package-data]
-HODDIES = ["default_HOD_parameters.yaml"]
+HODDIES = [
+    "default_HOD_parameters.yaml",
+    "estimators/*.yaml",
+    "fit_functions/*.yaml",
+    "sim_loader/*.yaml",
+    "sim_loader/Uchuu/*.yaml",
+]
 
 
 [tool.setuptools.dynamic]
@@ -52,4 +59,3 @@ version = {attr = "HODDIES.__version__"}
 [tool.ruff.format]
 quote-style = "single"
 docstring-code-format = true
-
