@@ -274,7 +274,7 @@ class AbacusSummitSim(Base_catalogue):
 
 
     @staticmethod
-    @njit(parallel=True, fastmath=True, cache=True)
+    @njit(parallel=True, fastmath=True)
     def compute_col_from_Abacus(N, pos, vel, ParticleMassHMsun, 
                                 x, y, z, vx, vy, vz, 
                                 Mvir, log10_Mh, Rs, Rvir, c,
@@ -534,7 +534,7 @@ class AbacusSummitSim(Base_catalogue):
 
 
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def _compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, npout, npstart, nb_sat, 
                                 cum_sum_sat, Nthread, seed=None, vx_h=None,
                                 vy_h=None, vz_h=None, f_sigv=1.0):
