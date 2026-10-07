@@ -3,3 +3,4 @@
 !results/delta_sigma/*.log
 !results/assembly_bias/*.log
 !results/assembly_bias_convergence/*.log
+!results/delta_sigma_convergence/*.log
