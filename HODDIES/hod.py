@@ -569,7 +569,6 @@ class HOD(BaseLogger):
             if self.args[tr].get('assembly_bias'):
                 ab_proxy += [list(self.args[tr]['assembly_bias'].keys())]
         ab_proxy = list(set().union(*ab_proxy))
-        print('Assembly bias columns to remove:', ab_proxy)
         abproxy_to_remove = self.base_catalog.set_assembly_bias_values(ab_proxy, **self.args)
         self._remove_env_bias(abproxy_to_remove)
 
@@ -1198,6 +1197,7 @@ class HOD(BaseLogger):
         ds_all : list or array
             ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2]  for each tracer.
         """
+
 
         if self.field_particles is None:
             raise ValueError('Particle subsample is required to compute ΔΣ(R).')
@@ -2009,9 +2009,14 @@ class HOD(BaseLogger):
                     result['xi_ells'][tr] = res[tr](return_sep=True, ells=self.args['clustering_settings']['xi_smu']['multipole_index'])
         
         if 'delta_sigma' in stat:
-            result['delta_sigma'] = self.get_delta_sigma(cat, tracers=tracers, verbose=verbose, return_dic=True)
+            if self.field_particles is None:
+                self.logger.info('Field particles not set, cannot compute ΔΣ(R)')
+            else:
+                result['delta_sigma'] = self.get_delta_sigma(cat, tracers=tracers, verbose=verbose, return_dic=True)
+
         if 'CIC' in stat:
             result['CIC'] = self.get_CIC(cat, tracers=tracers, verbose=verbose, return_dic=True)
+            
         if 'power_spectrum' in stat:
             result['power_spectrum'] = self.get_cross_PS(cat, tracers=tracers, verbose=verbose)
             
