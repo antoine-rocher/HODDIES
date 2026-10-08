@@ -1965,9 +1965,14 @@ class HOD(BaseLogger):
         cat : dict
             A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
             (e.g., 'LRG', 'ELG').
-        stat : list of str, optional
+        stat : str or list of str, optional
             A list of clustering statistics to compute. If None, all available statistics will be computed.
-            Available statistics include 'rppi', 'wp', 'xi_smu', 'xi_ells', 'delta_sigma', and 'CIC'.
+            Available statistics include 'xi_rppi', 'wp', 'xi_smu', 'xi_ells',
+            'delta_sigma', 'CIC', and 'power_spectrum'. Individual correlation
+            multipoles can be selected with names such as 'xi0', 'xi2', or
+            'xi4', as in plot_stats. The order must be configured in
+            clustering_settings['xi_smu']['multipole_index']. Names are
+            case-insensitive.
         tracers : list of str, optional
             A list of tracer names (keys in `cat`) for which the clustering statistics should be computed. If None, all tracers in `cat` will be used.
         verbose : bool, optional
@@ -1977,15 +1982,31 @@ class HOD(BaseLogger):
         -------
         result : dict
             A dictionary containing the computed clustering statistics for the specified tracers. The keys are the names of the statistics, and the values are the corresponding computed results.
+            Individual multipoles have entries such as
+            result['xi0']['LRG_LRG'] = (s, xi0), with one-dimensional values.
         """
+
+        from .plot_utils import _expand_stats, _resolve_name
 
         if stat is None:
             stat = get_list_stat()
         elif isinstance(stat, str):
             stat = [stat]
-        miss_stat = [st for st in stat if st not in get_list_stat()]
+        available = get_list_stat()
+        resolved, xi_stats, miss_stat = [], [], []
+        for name in stat:
+            key = _resolve_name(name, available)
+            if key is None and name.lower().startswith('xi') and name[2:].isdigit():
+                key = _expand_stats(self, [name])[0]
+                xi_stats.append(key)
+            if key is None:
+                miss_stat.append(name)
+            else:
+                resolved.append(key)
         if miss_stat:
-            raise ValueError('Statistique {} not implemented. Choose among {}'.format(miss_stat, get_list_stat()))
+            raise ValueError(f'Statistics {miss_stat} not implemented. Choose among {available} '
+                             'or configured xi multipoles such as xi0 and xi2.')
+        stat = resolved
         
         result = {}
         if ('xi_rppi' in stat) | ('wp' in stat):
@@ -1998,15 +2019,19 @@ class HOD(BaseLogger):
                 for tr in result['xi_rppi'].keys():
                     result['wp'][tr] = res[tr](return_sep=True, pimax=self.args['clustering_settings']['xi_rppi']['pimax'])
         
-        if ('xi_smu' in stat ) | ('xi_ells' in stat):
-            result['xi_smu'] = {}
+        if 'xi_smu' in stat or 'xi_ells' in stat or xi_stats:
             res = self.get_cross_twopoint(cat, 'smu', tracers=tracers, verbose=verbose, return_pycorr_obj=True)
-            for tr in res.keys():
-                result['xi_smu'][tr] = res[tr](return_sep=True)
+            if 'xi_smu' in stat or 'xi_ells' in stat:
+                result['xi_smu'] = {}
+                for tr in res.keys():
+                    result['xi_smu'][tr] = res[tr](return_sep=True)
             if 'xi_ells' in stat:
                 result['xi_ells'] = {}
-                for tr in result['xi_smu'].keys(): 
+                for tr in res.keys():
                     result['xi_ells'][tr] = res[tr](return_sep=True, ells=self.args['clustering_settings']['xi_smu']['multipole_index'])
+            for name in dict.fromkeys(xi_stats):
+                result[name] = {tr: estimator(return_sep=True, ells=int(name[2:]))
+                                for tr, estimator in res.items()}
         
         if 'delta_sigma' in stat:
             if self.field_particles is None:
@@ -3065,32 +3090,66 @@ class HOD(BaseLogger):
         return fig
 
         
-    def get_lin_bias(self):
+    def get_lin_bias(self, tracers=None, verbose=False):
         """
-            Compute the expected linear bias for a given HOD parameters set betwwen s [40-80] Mpc/h using scipy curve_fit method
+        Fit the linear bias of each requested tracer over 40--80 Mpc/h.
+
+        A single mock catalogue is generated, and each tracer's real-space
+        monopole is fitted to ``b**2 * xi_linear(s, z=self.z_simu)`` using
+        scipy's ``curve_fit``. The original RSD and separation-bin settings
+        are restored after the calculation, including when a fit fails.
+
+        Parameters
+        ----------
+        tracers : str or list of str, optional
+            Tracers to fit. By default, all configured tracers are used.
+
+        Returns
+        -------
+        dict
+            Tracer names mapped to their fitted, nonnegative bias as floats.
+            A single-tracer model also returns a dictionary.
         """
-        
-        import scipy
-        from cosmoprimo import Fourier        
-        fo = Fourier(self.cosmo, engine='class')
-        pk = fo.pk_interpolator()
-        xi_lin = pk.to_xi()
-    
-        rsd_tmp = self.args['clustering_settings']['rsd']
-        edges_smu_tmp = self.args['clustering_settings']['xi_smu']['edges_smu']
-        self.args['clustering_settings']['xi_smu']['edges_smu'] = (np.linspace(40,80,41), np.linspace(-1,1,201))
-        cat_bf = self.make_mock_cat()
-        s, xi = self.get_xiells(cat_bf, ells=0)
-        zsim = self.z_simu    
-        import scipy
+
+        from scipy.optimize import curve_fit
+        from cosmoprimo import Fourier
+
+        if self.cosmo is None:
+            raise ValueError('A cosmology is required to compute the linear bias.')
+        if tracers is None:
+            tracers = self._tracers()
+        if isinstance(tracers, str):
+            tracers = [tracers]
+        xi_lin = Fourier(self.cosmo, engine='class').pk_interpolator().to_xi()
+
+        settings = self.args['clustering_settings']
+        smu_settings = settings['xi_smu']
+        rsd_tmp = settings['rsd']
+        had_edges = 'edges_smu' in smu_settings
+        edges_smu_tmp = smu_settings.get('edges_smu')
+
         def func(s, b):
-            return b**2*xi_lin(s,z=zsim)
-        bias, b_err = scipy.optimize.curve_fit(func, s, xi, p0=[2])
-    
-    
-        self.args['clustering_settings']['rsd'] = rsd_tmp
-        self.args['clustering_settings']['xi_smu']['edges_smu'] = edges_smu_tmp
-        return bias
+            return b**2 * xi_lin(s, z=self.z_simu)
+
+        biases = {}
+        try:
+            settings['rsd'] = False
+            smu_settings['edges_smu'] = (np.linspace(40, 80, 41), np.linspace(-1, 1, 201))
+            cat = self.make_mock_cat(tracers=tracers, verbose=verbose)
+            for tracer in tracers:
+                s, xi = self.get_xiells(cat, tracers=tracer, ells=0)
+                valid = np.isfinite(s) & np.isfinite(xi)
+                if np.count_nonzero(valid) < 2:
+                    raise ValueError(f'Not enough finite correlation bins to fit the linear bias of {tracer}.')
+                bias, _ = curve_fit(func, s[valid], xi[valid], p0=[2.], bounds=(0., np.inf))
+                biases[tracer] = float(bias[0])
+        finally:
+            settings['rsd'] = rsd_tmp
+            if had_edges:
+                smu_settings['edges_smu'] = edges_smu_tmp
+            else:
+                smu_settings.pop('edges_smu', None)
+        return biases
 
     def plot_wp_xi(self, cat, tracers=None, fig=None, show=True, figsize=(12, 3), fontsize=11, **kwargs):
         import matplotlib.pyplot as plt
@@ -3212,7 +3271,8 @@ class HOD(BaseLogger):
         from collections.abc import Mapping
         
         default_colors = {'ELG': 'deepskyblue', 'QSO': 'seagreen', 'LRG': 'red',
-                        'BGS': 'goldenrod'}
+                        'BGS': 'goldenrod', 'LRG_ELG': 'firebrick', 'ELG_LRG': 'firebrick',
+                        'QSO_ELG': 'skyblue', 'ELG_QSO': 'skyblue', 'LRG_QSO': 'peru', 'QSO_LRG': 'peru'}
         colors = {**default_colors, **(colors or {})}
         stats = [stats] if isinstance(stats, str) else list(stats)
         if stats[0].upper() == 'ALL':
