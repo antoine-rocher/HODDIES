@@ -154,7 +154,7 @@ for tr in tracers:
     # var_name_tr = np.array(training_points.dtype.names)[np.array([tr in var for var in training_points.dtype.names])].tolist()
     idx = np.where([tr in vv for vv in HOD_obj.name_params])[0].tolist()
     tr_par = list(HOD_obj.name_params[i] for i in idx)
-    HOD_obj.args[tr].update(dict(zip(name_param_tr[tr], param[tr_par])))
+    HOD_obj._update_tracer_params(tr, dict(zip(name_param_tr[tr], param[tr_par])))
     if 'assembly_bias' in HOD_obj.args['fit_param']['priors'][tr].keys():
         for var in HOD_obj.args['fit_param']['priors'][tr]['assembly_bias'].keys():
             HOD_obj.args[tr]['assembly_bias'][var] = [param[f'ab_{var}_cen_{tr}'], param[f'ab_{var}_sat_{tr}']]
