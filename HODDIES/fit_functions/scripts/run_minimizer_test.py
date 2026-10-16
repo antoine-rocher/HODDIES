@@ -1,5 +1,6 @@
 from HODDIES import HOD
 from HODDIES.sim_loader import AbacusSummitSim
+from HODDIES.fit_functions import flatten_stats
 import numpy as np
 import os 
 from mpi4py import MPI
@@ -28,7 +29,7 @@ HOD_obj = HOD(base_catalog=sim_abacus, **data_file['param'])
 stats_to_fit = data_file['param']['fit_param']['fit_statistics']
 comb_tr_list = HOD_obj.get_comb_tr_list(['LRG', 'ELG'])
 
-data_vec = np.hstack([np.hstack([np.hstack(data_file['data'][corr][tr][-1]) for tr in data_file['data'][corr].keys()]) for corr in ['wp', 'xi_ells', 'delta_sigma']])
+data_vec = flatten_stats(data_file['data'], stats=['wp', 'xi_ells', 'delta_sigma'])
 mcov= np.loadtxt('/global/cfs/cdirs/desi/users/arocher/HODDIES_results/Abcaus_small_boxes_corr/z0.500/Mcov_small_box_z0.5_wp+xi+delta_sigma_ELG_LRG.txt')
 num_sim = 1786 # number of Abacus small boxes used to compute the covariance matrix
 
