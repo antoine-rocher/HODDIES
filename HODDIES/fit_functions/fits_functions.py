@@ -58,6 +58,63 @@ def genereate_training_points(nPoints, name_param, priors_lists, sampling_type='
     return sample_points
                 
 
+def flatten_stats(result, stats=None, comb_trs=None):
+    """Build a one-dimensional fitting vector from ``compute_stats`` results.
+
+    Parameters
+    ----------
+    result : dict
+        ``result[stat][pair]`` is a coordinate/value sequence whose last
+        element contains the statistic values, or a bare NumPy value array.
+        Coordinates are excluded from the vector.
+    stats : str or sequence of str, optional
+        Statistics in the desired order. By default, use all keys in
+        ``result`` in dictionary insertion order, including any additional
+        statistics returned by compute_stats. Missing statistics raise KeyError.
+    comb_trs : str or sequence, optional
+        Pair keys (e.g. ``'LRG_ELG'``), or two-element sequences of tracer
+        names, in the desired order. By default, collect all pair keys from
+        the selected statistics in first-seen order. Missing pair entries
+        are skipped, so auto-only statistics such as delta_sigma contribute
+        no cross bins.
+
+    Returns
+    -------
+    numpy.ndarray
+        Values ordered by pair, then statistic, then the stored component
+        and bin order (NumPy C order). Scalars, any number of multipoles,
+        multidimensional arrays and ragged component lists are supported.
+        No sorting or multipole reordering is performed. Data and covariance
+        matrices used with this vector must follow the same ordering.
+    """
+    if stats is None:
+        stats = list(result)
+    stats = [stats] if isinstance(stats, str) else list(stats)
+    blocks = [result[stat] for stat in stats]
+    if comb_trs is None:
+        comb_trs = list(dict.fromkeys(pair for block in blocks for pair in block))
+    comb_trs = [comb_trs] if isinstance(comb_trs, str) else comb_trs
+
+    def flatten_values(values):
+        if isinstance(values, (list, tuple)) or (
+                isinstance(values, np.ndarray)
+                and values.dtype == object and values.ndim > 0):
+            parts = [flatten_values(value) for value in values]
+            return np.concatenate(parts) if parts else np.empty(0)
+        return np.asarray(values).ravel(order='C')
+
+    parts = []
+    for pair in comb_trs:
+        key = pair if isinstance(pair, str) else '_'.join(pair)
+        for block in blocks:
+            if key not in block:
+                continue
+            entry = block[key]
+            values = entry[-1] if isinstance(entry, (tuple, list)) else entry
+            parts.append(flatten_values(values))
+    return np.concatenate(parts) if parts else np.empty(0)
+
+
 def compute_chi2(model, data, inv_Cov2=None, sig=None):
     """
     Compute the chi-squared (χ²) statistic between a model and observed data.
@@ -184,7 +241,8 @@ def values_in_boundaries(values, boundaries):
     return  ((values >= lows) & (values <= highs)).all()
 
 
-def func_stochopy(new_params, HOD_obj, fix_seed=10, verbose=False): 
+
+def func_stochopy(new_params, HOD_obj, fix_seed=10, return_log10chi2=False, verbose=False): 
     """
     Compute the chi-squared (χ²) statistic for a given set of parameters.
 
@@ -198,9 +256,11 @@ def func_stochopy(new_params, HOD_obj, fix_seed=10, verbose=False):
         Random seed for reproducibility. Default is 10.
     verbose : bool, optional
         If True, print additional information during computation. Default is False.
+    return_log10chi2 : bool, optional
+        If True, return the base-10 logarithm of the chi-squared value. Default is False.
     """
     
-    HOD_obj.logger.info('New param: '+(', ').join([f'{nn}: {val}' for nn, val in zip(HOD_obj.name_params, new_params)]))
+    # HOD_obj.logger.info('New param: '+(', ').join([f'{nn}: {val}' for nn, val in zip(HOD_obj.name_params, new_params)]))
     new_params= np.array([new_params])
     if not values_in_boundaries(new_params, HOD_obj.priors):
         HOD_obj.logger.error('param outside priors {}'.format(new_params))
@@ -209,10 +269,12 @@ def func_stochopy(new_params, HOD_obj, fix_seed=10, verbose=False):
     HOD_obj.update_new_param(new_params, HOD_obj.name_params)
     cats = HOD_obj.make_mock_cat(fix_seed=fix_seed, verbose=verbose) 
     result = HOD_obj.compute_stats(cats, stat=HOD_obj._stats_to_fit, tracers=HOD_obj._tracer_to_fit, verbose=verbose)
-    res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][-1])for stat in HOD_obj._stats_to_fit]) for comb_tr in HOD_obj._comb_tr_list])
+    res = flatten_stats(result, HOD_obj._stats_to_fit, HOD_obj._comb_tr_list)
     
     chi2 = compute_chi2(res, HOD_obj.data, HOD_obj.inv_cov2)
     HOD_obj.logger.info(f'chi2={chi2}')
+    if return_log10chi2:
+        return np.log10(chi2)
     return chi2
 
 

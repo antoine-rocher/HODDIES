@@ -44,7 +44,7 @@ import numba
 from schwimmbad import MPIPool
 import pocomc as pc
 from scipy.stats import uniform
-from HODDIES.fit_functions import values_in_boundaries, compute_chi2
+from HODDIES.fit_functions import values_in_boundaries, compute_chi2, flatten_stats
 
 
 numba.set_num_threads(N_THREADS)
@@ -77,7 +77,7 @@ class HODLikelihood():
         self.hod.update_new_param(new_params, self.hod.name_params)
         cats = self.hod.make_mock_cat(fix_seed=self.base_seed, verbose=False) 
         result = self.hod.compute_stats(cats, stat=self.hod._stats_to_fit, tracers=self.hod._tracer_to_fit, verbose=False)
-        res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][-1])for stat in self.hod._stats_to_fit]) for comb_tr in self.hod._comb_tr_list])
+        res = flatten_stats(result, self.hod._stats_to_fit, self.hod._comb_tr_list)
         
         chi2 = compute_chi2(res, self.hod.data, self.hod.inv_cov2)
         
@@ -117,7 +117,7 @@ def HOD_LH(new_params, HOD_obj, fix_seed=10, verbose=False):
     HOD_obj.update_new_param(new_params, HOD_obj.name_params)
     cats = HOD_obj.make_mock_cat(fix_seed=fix_seed, verbose=verbose) 
     result = HOD_obj.compute_stats(cats, stat=HOD_obj._stats_to_fit, tracers=HOD_obj._tracer_to_fit, verbose=verbose)
-    res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][-1])for stat in HOD_obj._stats_to_fit]) for comb_tr in HOD_obj._comb_tr_list])
+    res = flatten_stats(result, HOD_obj._stats_to_fit, HOD_obj._comb_tr_list)
     
     chi2 = compute_chi2(res, HOD_obj.data, HOD_obj.inv_cov2)
     return -0.5*chi2
