@@ -38,6 +38,7 @@ def make_hod(monkeypatch, orders=(4, 0, 2), tracers=('LRG', 'ELG')):
     })
 
     def compute_twopoint(pos1, mode, edges, boxsize, los, nthreads, *, pos2, **kwargs):
+        pos2 = pos1 if pos2 is None else pos2
         pair = (int(pos1[0][0]), int(pos2[0][0]))
         calls.append((mode, pair))
 
