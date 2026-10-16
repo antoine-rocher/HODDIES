@@ -3,13 +3,25 @@
 import numba
 import time 
 import os
+<<<<<<< HEAD
 from HODDIES.utils import *
 from HODDIES.estimators.clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat, compute_CIC, compute_power_spectrum
 from HODDIES import HOD_models
+=======
+from .utils import *
+from .estimators.clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat, compute_CIC, compute_power_spectrum
+from . import HOD_models, vsmear_func
+>>>>>>> c9224bb (modify vsmear implementation)
 import yaml 
 from mpytools import Catalog
 import collections.abc
+<<<<<<< HEAD
 from .fit_functions.fits_functions import compute_chi2, flatten_stats
+=======
+import hashlib
+import pickle
+from .fit_functions.fits_functions import compute_chi2
+>>>>>>> c9224bb (modify vsmear implementation)
 import numbers
 import numpy as np
 from HODDIES.sim_loader import BaseLogger
@@ -134,7 +146,7 @@ class HOD(BaseLogger):
                 'f_sigv': 1, 'f_vcen': 0.0, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
                 'assembly_bias':{'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
-                'density': 0.0007, 'vsmear': 0
+                'density': 0.0007, 'vsmear': None
             },
             'ELG': {
                 'HOD_model': 'mHMQ', 'Ac': 0.05, 'log_Mcent': 11.63, 'sigma_M': 0.12, 'gamma':2, 'pmax': 1, 'Q': 100,
@@ -142,7 +154,7 @@ class HOD(BaseLogger):
                 'f_sigv': 1, 'f_vcen': 0.0, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
                 'assembly_bias': {'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
-                'density': 0.001, 'vsmear': 0
+                'density': 0.001, 'vsmear': None
             },
             'QSO': {
                 'HOD_model': 'SHOD', 'Ac': 1, 'log_Mcent': 13.25, 'sigma_M': 0.6, 'gamma': 1, 'pmax': 1, 'Q': 100,
@@ -150,7 +162,7 @@ class HOD(BaseLogger):
                 'f_sigv': 1, 'f_vcen': 0.0, 'vel_sat': 'rd_normal', 'v_infall': 0, 'link_sat_to_central':False,
                 'assembly_bias': {'c': [0, 0], 'env': [0, 0], 'shear': [0, 0]}, 'nu': 1,
                 'conformity_bias': False, 'exp_frac': 0, 'exp_scale': 1, 'nfw_rescale': 1,
-                'density': 0.0001, 'vsmear': 100
+                'density': 0.0001, 'vsmear': None
             }
         }
         
@@ -809,6 +821,9 @@ class HOD(BaseLogger):
 
 
         final_cat = Catalog.concatenate(list(final_cat.values()))
+        self.assign_vsmear(final_cat,
+                           rng=rng if fix_seed is not None else self.rng,
+                           force=True, verbose=verbose)
 
         if verbose:
             self.logger.info(f'Total time to create the mock catalog: {time.time() - start_all:.2f} seconds')
@@ -827,27 +842,116 @@ class HOD(BaseLogger):
 
     
 
-    def get_vsmear(self, tracer, cat_size, verbose=True):
-
+    def get_vsmear(self, tracer, cat_size, verbose=True, *, rng=None):
         """
-        Generate a random velocity smear for the specified tracer
+        Draw velocity errors in km/s for the specified tracer.
+
+        ``vsmear`` accepts ``{'model': 'gaussian', 'dv': 40., 'params': {}}``.
+        The model names a function in :mod:`HODDIES.vsmear_func`; ``dv`` is its
+        velocity scale (Gaussian sigma or Lorentzian HWHM). ``params`` is
+        optional and supplies additional sampler keyword arguments. A zero
+        scale disables smearing without consuming random numbers.
+        Models with ``requires_dv = False`` (such as DESI CDF sampling) may
+        omit ``dv`` or set it to ``None`` to use their calibrated scale.
+
+        Legacy numeric Gaussian widths and ``None`` are also supported.
+        Draws use the HOD-level RNG unless ``rng`` is supplied. This method
+        draws fresh errors; :meth:`assign_vsmear` stores a catalogue realization.
         """
+        spec = self.args.get(tracer, {}).get('vsmear')
+        if spec is None:
+            return 0
+        if isinstance(spec, numbers.Number):
+            spec = {'model': 'gaussian', 'dv': spec}
+        if not isinstance(spec, collections.abc.Mapping):
+            raise ValueError('vsmear must be a dictionary, a number (dv), or None')
+        unknown = set(spec) - {'model', 'dv', 'params'}
+        if unknown:
+            raise ValueError(f'Unknown vsmear settings: {sorted(unknown)}')
+        dv = spec.get('dv')
+        model = spec.get('model', 'gaussian')
+        sampler = (getattr(vsmear_func, model, None)
+                   if isinstance(model, str) and not model.startswith('_') else None)
+        if not callable(sampler):
+            raise ValueError(f'Unknown vsmear model {model!r}; define it in HODDIES/vsmear_func.py')
+        if dv is None and getattr(sampler, 'requires_dv', True):
+            raise ValueError('vsmear dv must be a finite, nonnegative number in km/s')
+        if dv is not None and (not isinstance(dv, numbers.Real) or not np.isfinite(dv) or dv < 0):
+            raise ValueError('vsmear dv must be a finite, nonnegative number in km/s')
+        params = spec.get('params', {})
+        if not isinstance(params, collections.abc.Mapping):
+            raise ValueError('vsmear params must be a dictionary')
+        if {'size', 'dv', 'rng'}.intersection(params):
+            raise ValueError('vsmear params cannot override size, dv, or rng')
+        if dv == 0:
+            return 0
+        if verbose:
+            scale = f' with dv={dv} km/s' if dv is not None else ''
+            self.logger.info(f'Generate {model} vsmear for {tracer}{scale}...')
+        offsets = sampler(size=cat_size, dv=dv, rng=self.rng if rng is None else rng, **params)
+        if np.iscomplexobj(offsets):
+            raise ValueError(f'vsmear model {model!r} must return real velocity errors')
+        offsets = np.asarray(offsets, dtype=np.float64)
+        if offsets.shape != (cat_size,) or not np.all(np.isfinite(offsets)):
+            raise ValueError(f'vsmear model {model!r} must return {cat_size} finite velocity errors')
+        return offsets
 
-        if isinstance(self.args[tracer]['vsmear'], numbers.Number) and (self.args[tracer]['vsmear'] != 0):
-            if self.args[tracer]['vsmear'] < 0:
-                raise ValueError('vsmear must be positive')
-            if verbose:
-                self.logger.info(f"Generate gaussian vsmear for {tracer} of {self.args[tracer]['vsmear']} km/s...")
-            vsmear = self.rng.normal(0, self.args[tracer]['vsmear'], cat_size)
+    def assign_vsmear(self, cat, tracers=None, *, rng=None, force=False, verbose=False):
+        """Store one velocity-error realization per galaxy in ``cat['vsmear']``.
 
-        elif isinstance(self.args[tracer]['vsmear'], list):
-            from HODDIES.desi.Y3_redshift_systematics import vsmear as gen_vsmear
-            if verbose:
-                self.logger.info(f"Generate vsmear for {tracer} at z {self.args[tracer]['vsmear'][0]:.2f}-{self.args[tracer]['vsmear'][1]:.2f}...")
-            vsmear = gen_vsmear(tracer, self.args[tracer]['vsmear'][0], self.args[tracer]['vsmear'][1], cat_size, dvmode='obs',seed=42,verbose=verbose)
-        else:
-            vsmear = 0
-        return vsmear
+        Statistics reuse this column, including after catalogue selection.
+        Changing a tracer's smearing configuration redraws only that tracer;
+        ``force=True`` explicitly redraws the selected tracers. A supplied
+        error column without HODDIES metadata is reused for enabled models.
+        Disabled settings always produce zero errors.
+        """
+        tracers = self.check_cat_tracers(cat, tracers)
+        has_offsets = 'vsmear' in cat.columns()
+        previous = cat.attrs.get('_hoddies_vsmear')
+        external = has_offsets if previous is None else previous['external']
+        state = {} if previous is None else dict(previous['tracers'])
+        offsets = None
+        for tracer in tracers:
+            spec = self.args.get(tracer, {}).get('vsmear')
+            signature = hashlib.sha256(pickle.dumps(spec, protocol=4)).hexdigest()
+            disabled = (spec is None or (isinstance(spec, numbers.Number) and spec == 0)
+                        or (isinstance(spec, collections.abc.Mapping) and spec.get('dv') == 0))
+            if not force and has_offsets:
+                if state.get(tracer) == signature:
+                    continue
+                if external and tracer not in state and not disabled:
+                    state[tracer] = signature
+                    continue
+            mask = cat['TRACER'] == tracer
+            errors = self.get_vsmear(tracer, int(mask.sum()), verbose=verbose, rng=rng)
+            if offsets is None:
+                offsets = (np.array(cat['vsmear'], dtype=np.float64, copy=True)
+                           if has_offsets else np.zeros(cat.size, dtype=np.float64))
+            offsets[mask] = errors
+            state[tracer] = signature
+        if offsets is not None:
+            cat['vsmear'] = offsets
+        elif not has_offsets:
+            cat['vsmear'] = np.zeros(cat.size, dtype=np.float64)
+        cat.attrs['_hoddies_vsmear'] = {'external': external, 'tracers': state}
+        return cat['vsmear']
+
+    def _tracer_positions(self, cat, tracers, verbose=False):
+        """Return positions for each tracer, sharing stored velocity errors."""
+        use_rsd = self.cosmo is not None and self.args['clustering_settings']['rsd']
+        if use_rsd:
+            self.assign_vsmear(cat, tracers=tracers, verbose=verbose)
+        elif self.args['clustering_settings']['rsd']:
+            self.logger.warning('Cosmology not set, does not apply rsd')
+        positions = {}
+        for tracer in tracers:
+            selected = cat[cat['TRACER'] == tracer]
+            if use_rsd:
+                positions[tracer] = apply_rsd(selected, self.z_simu, self.boxsize, self.cosmo,
+                    self.H_0, self.args['clustering_settings']['los'], selected['vsmear'])
+            else:
+                positions[tracer] = tuple(selected[axis] % self.boxsize for axis in 'xyz')
+        return positions
     
 
     def get_xiells(self, cats, tracers=None, ells=None, R1R2=None, verbose=True):
@@ -910,19 +1014,13 @@ class HOD(BaseLogger):
             smu_settings['edges_smu'] = (r_bins, np.linspace(-smu_settings['mu_max'], smu_settings['mu_max'], smu_settings['n_mu_bins']))
         ells = smu_settings['multipole_index'] if ells is None else ells
         s_all, xi_all = [],[]
+        positions = self._tracer_positions(cats, tracers, verbose=verbose)
         for tr in tracers:
-            mock_cat = cats[cats['TRACER'] == tr]
             if verbose:
                 self.logger.info(f'Compute xi(s,mu) using l={ells} for {tr}...')
                 time1 = time.time() 
 
-            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
-                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
-                pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
-            else:
-                if self.args['clustering_settings']['rsd']:
-                    self.logger.warning('Cosmology not set, does not apply rsd')
-                pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
+            pos = positions[tr]
             
             result = compute_twopoint(pos, 'smu', smu_settings['edges_smu'], self.boxsize, self.args['clustering_settings']['los'], self.nthreads, R1R2=R1R2)
             s,xi = result(return_sep=True, ells=ells)
@@ -997,19 +1095,13 @@ class HOD(BaseLogger):
             rppi_settings['edges_rppi'] = (r_bins, np.linspace(-pimax, pimax, 2*pimax+1))
 
         rp_all, wp_all = [],[]
+        positions = self._tracer_positions(cats, tracers, verbose=verbose)
         for tr in tracers:
-            mock_cat = cats[cats['TRACER'] == tr]
             if verbose:
                 self.logger.info(f'Compute wp for {tr}...')
                 time1 = time.time()
             
-            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
-                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
-                pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
-            else:
-                if self.args['clustering_settings']['rsd']:
-                    self.logger.warning('Cosmology not set, does not apply rsd')
-                pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
+            pos = positions[tr]
                 
             result = compute_twopoint(pos, 'rppi', rppi_settings['edges_rppi'], self.boxsize, self.args['clustering_settings']['los'],  self.nthreads, R1R2=R1R2)
             rp, wp = result(return_sep=True, pimax=pimax)
@@ -1077,19 +1169,13 @@ class HOD(BaseLogger):
 
         k_all, Pk_all = [],[]
         ells = ps_settings['multipole_index'] if ells is None else ells
+        positions = self._tracer_positions(cat, tracers, verbose=verbose)
         for tr in tracers:
-            mock_cat = cat[cat['TRACER'] == tr]
             if verbose:
                 self.logger.info(f'Compute PS for {tr}...')
                 time1 = time.time()
             
-            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
-                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
-                pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
-            else:
-                if self.args['clustering_settings']['rsd']:
-                    self.logger.warning('Cosmology not set, does not apply rsd')
-                pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
+            pos = positions[tr]
                 
             k, Pk = compute_power_spectrum(pos1=pos, nmesh=ps_settings['nmesh'], boxsize=self.boxsize, kedges=ps_settings['k_edges'], ells=ells, los=self.args['clustering_settings']['los'], resampler=ps_settings['resampler'], interlacing=ps_settings['interlacing']).poles(ell=ells, return_k=True, complex=False)
             if verbose:
@@ -1154,6 +1240,7 @@ class HOD(BaseLogger):
         max_count = cic_settings.get('max_count', None) if max_count is None else max_count
         
         counts = []
+<<<<<<< HEAD
 
         for tr in tracers:
             mock_cat = cat[cat['TRACER'] == tr]
@@ -1173,6 +1260,19 @@ class HOD(BaseLogger):
         hists = []
         for tracer_counts in counts:
             hist, _ = np.histogram(tracer_counts, bins=bins)
+=======
+        hists = []
+        positions = self._tracer_positions(cat, tracers, verbose=verbose)
+
+        for tr in tracers:
+            pos = positions[tr]
+            counts += [compute_CIC(pos[0], pos[1], pos[2], self.boxsize, cic_settings['R_max'], cic_settings['L_max'])]
+            if max_count is None:
+                max_count = int(np.nanmax(counts))
+            bins = np.arange(-0.5, max_count + 1.5)
+            hist, edges = np.histogram(counts, bins=bins)
+            cens = 0.5 * (edges[:-1] + edges[1:])
+>>>>>>> c9224bb (modify vsmear implementation)
             if density and hist.sum() > 0:
                 hist = hist / hist.sum()
             hists.append(hist)
@@ -1380,7 +1480,8 @@ class HOD(BaseLogger):
         res = get_cross_wp(cats, tracers=['LRG', 'ELG', 'QSO'])
         """
 
-        results = self.get_cross_twopoint(cats, 'rppi', tracers, R1R2=R1R2, verbose=verbose, pimax=pimax)
+        results = self.get_cross_twopoint(cats, 'rppi', tracers, R1R2=R1R2,
+                                          verbose=verbose, pimax=pimax, return_pycorr_obj=True)
         pimax = self.args['clustering_settings']['xi_rppi']['pimax'] if pimax is None else pimax
         for trs, res in (zip(results.keys(), results.values())):
             results[trs] = res(return_sep=True, pimax=pimax)
@@ -1431,7 +1532,8 @@ class HOD(BaseLogger):
         res = get_cross_xiells(cats, tracers=['LRG', 'ELG', 'QSO'])
         """
         
-        results = self.get_cross_twopoint(cats, 'smu', tracers, R1R2=R1R2, verbose=verbose, ells=ells)
+        results = self.get_cross_twopoint(cats, 'smu', tracers, R1R2=R1R2,
+                                          verbose=verbose, ells=ells, return_pycorr_obj=True)
         ells = self.args['clustering_settings']['xi_smu']['multipole_index'] if ells is None else ells
         for trs, res in (zip(results.keys(), results.values())):
             results[trs] = res(return_sep=True, ells=ells)
@@ -1487,7 +1589,8 @@ class HOD(BaseLogger):
             mode = 'rppi'
             self.check_clustering_settings('xi_rppi')
             settings = self.args['clustering_settings'].get('xi_rppi', None)
-            settings['pimax'] = kwargs.get('pimax',  settings['pimax'])
+            if kwargs.get('pimax') is not None:
+                settings['pimax'] = kwargs['pimax']
             if settings['bin_logscale']:
                 r_bins = np.geomspace(settings['rp_min'], settings['rp_max'], settings['n_rp_bins']+1, endpoint=True)
             else:
@@ -1514,24 +1617,17 @@ class HOD(BaseLogger):
                 
         res_dict = {}
         com_tr = self.get_comb_tr_list(tracers)
-        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
+        positions = self._tracer_positions(cats, tracers, verbose=verbose)
         for tr in com_tr:
             if verbose: 
                 self.logger.info(f'Compute xi_{mode} for {tr}...')
                 time1 = time.time()
             
-            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
-                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
-                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_0)
-                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_1)
-            else:
-                if self.args['clustering_settings']['rsd']:
-                    self.logger.warning('Cosmology not set, does not apply rsd')
-                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
-                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
+            pos1, pos2 = positions[tr[0]], positions[tr[1]]
 
-            res = compute_twopoint(pos1, mode, edges, self.boxsize, self.args['clustering_settings']['los'], self.nthreads, pos2=pos2, R1R2=R1R2)
-            res_dict[f'{tr[0]}_{tr[1]}'] = res if return_pycorr_obj else res_dict[f'{tr[0]}_{tr[1]}'](return_sep=True)
+            res = compute_twopoint(pos1, mode, edges, self.boxsize, self.args['clustering_settings']['los'], self.nthreads,
+                                   pos2=None if tr[0] == tr[1] else pos2, R1R2=R1R2)
+            res_dict[f'{tr[0]}_{tr[1]}'] = res if return_pycorr_obj else res(return_sep=True)
 
             if mode == 'xi_ells':
                 res_dict[f'{tr[0]}_{tr[1]}'] = res(return_sep=True, ells=ells) 
@@ -1599,23 +1695,15 @@ class HOD(BaseLogger):
                 
         res_dict = {}
         com_tr = self.get_comb_tr_list(tracers)
-        mask_tr = dict(zip(tracers, [cats['TRACER'] == tr for tr in tracers]))
+        positions = self._tracer_positions(cats, tracers, verbose=verbose)
         for tr in com_tr:
             if verbose: 
                 self.logger.info(f'Compute PS for {tr}...')
                 time1 = time.time()
             
-            if (self.cosmo is not None) & (self.args['clustering_settings']['rsd']):
-                vsmear_0, vsmear_1 = self.get_vsmear(tr[0], mask_tr[tr[0]].sum(), verbose=verbose), self.get_vsmear(tr[1], mask_tr[tr[1]].sum(), verbose=verbose)
-                pos1 = apply_rsd(cats[mask_tr[tr[0]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_0)
-                pos2 = apply_rsd(cats[mask_tr[tr[1]]], self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear_1)
-            else:
-                if self.args['clustering_settings']['rsd']:
-                    self.logger.warning('Cosmology not set, does not apply rsd')
-                pos1 = cats[mask_tr[tr[0]]]['x']%self.boxsize, cats[mask_tr[tr[0]]]['y']%self.boxsize, cats[mask_tr[tr[0]]]['z']%self.boxsize
-                pos2 = cats[mask_tr[tr[1]]]['x']%self.boxsize, cats[mask_tr[tr[1]]]['y']%self.boxsize, cats[mask_tr[tr[1]]]['z']%self.boxsize
+            pos1, pos2 = positions[tr[0]], positions[tr[1]]
 
-            k, Pk = compute_power_spectrum(pos1=pos1, pos2=pos2, nmesh=ps_settings['nmesh'], boxsize=self.boxsize, kedges=ps_settings['k_edges'], ells=ells, los=self.args['clustering_settings']['los'], resampler=ps_settings['resampler'], interlacing=ps_settings['interlacing']).poles(ell=ells, return_k=True, complex=False)
+            k, Pk = compute_power_spectrum(pos1=pos1, pos2=None if tr[0] == tr[1] else pos2, nmesh=ps_settings['nmesh'], boxsize=self.boxsize, kedges=ps_settings['k_edges'], ells=ells, los=self.args['clustering_settings']['los'], resampler=ps_settings['resampler'], interlacing=ps_settings['interlacing']).poles(ell=ells, return_k=True, complex=False)
 
             res_dict[f'{tr[0]}_{tr[1]}'] = k, Pk
 
@@ -1904,6 +1992,36 @@ class HOD(BaseLogger):
         return cat[mask]
     
 
+    def _validate_vsmear_prior(self, tracer):
+        """Reject width priors for samplers whose scale is supplied by calibration."""
+        spec = self.args[tracer].get('vsmear')
+        if spec is None or isinstance(spec, numbers.Real):
+            return
+        if not isinstance(spec, collections.abc.Mapping):
+            raise ValueError('vsmear must be a dictionary, a number (dv), or None')
+        model = spec.get('model', 'gaussian')
+        sampler = (getattr(vsmear_func, model, None)
+                   if isinstance(model, str) and not model.startswith('_') else None)
+        if not callable(sampler):
+            raise ValueError(f'Unknown vsmear model {model!r}; define it in HODDIES/vsmear_func.py')
+        if not getattr(sampler, 'requires_dv', True):
+            raise ValueError(f'Cannot fit vsmear for {tracer}: model {model!r} '
+                             'does not use a fitted dv; remove its vsmear prior')
+
+    def _update_tracer_params(self, tracer, new_params):
+        """Apply fitted parameters, mapping the scalar vsmear parameter to dv."""
+        new_params = dict(new_params)
+        if 'vsmear' in new_params:
+            self._validate_vsmear_prior(tracer)
+            dv = new_params['vsmear']
+            if not isinstance(dv, numbers.Real) or not np.isfinite(dv) or dv < 0:
+                raise ValueError('Fitted vsmear dv must be a finite, nonnegative number in km/s')
+            spec = self.args[tracer].get('vsmear')
+            spec = dict(spec) if isinstance(spec, collections.abc.Mapping) else {'model': 'gaussian'}
+            spec['dv'] = dv
+            new_params['vsmear'] = spec
+        self.args[tracer].update(new_params)
+
     def update_new_param(self, new_params, name_param, verbose=False):
         """
         Helper function to update the parameters in the argument dictionary
@@ -1921,7 +2039,7 @@ class HOD(BaseLogger):
                 idx = np.where([tr in vv for vv in new_p.dtype.names])[0].tolist()
                 tr_par = list(name_param[i] for i in idx)
 
-                self.args[tr].update(dict(zip(name_param_tr[tr], new_p[tr_par][0])))
+                self._update_tracer_params(tr, dict(zip(name_param_tr[tr], new_p[tr_par][0])))
                 if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys():
                     for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
                         self.args[tr]['assembly_bias'][var] = [new_p[f'ab_{var}_cen_{tr}'][0], new_p[f'ab_{var}_sat_{tr}'][0]]
@@ -1939,6 +2057,9 @@ class HOD(BaseLogger):
             self._initialize_fit_params()
         for tr in self._tracer_to_fit:
             priors[tr] = self.args['fit_param']['priors'][tr].copy()
+
+            if 'vsmear' in priors[tr]:
+                self._validate_vsmear_prior(tr)
 
             if 'assembly_bias' in priors[tr].keys():
                 for var in priors[tr]['assembly_bias'].keys():
@@ -2159,7 +2280,7 @@ class HOD(BaseLogger):
                     # var_name_tr = np.array(training_points.dtype.names)[np.array([tr in var for var in training_points.dtype.names])].tolist()
                     idx = np.where([tr in vv for vv in self.name_params])[0].tolist()
                     tr_par = list(self.name_params[i] for i in idx)
-                    self.args[tr].update(dict(zip(name_param_tr[tr], param[tr_par])))
+                    self._update_tracer_params(tr, dict(zip(name_param_tr[tr], param[tr_par])))
                     if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys():
                         for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys():
                             self.args[tr]['assembly_bias'][var] = [param[f'ab_{var}_cen_{tr}'], param[f'ab_{var}_sat_{tr}']]
@@ -2183,8 +2304,16 @@ class HOD(BaseLogger):
             ext += '+exp' if ('exp_frac' in self.args['fit_param']['priors'][tr].keys()) else ''
             ext += '+' + '+'.join([f'ab_{var}' for var in self.args['fit_param']['priors'][tr]['assembly_bias'].keys()]) if 'assembly_bias' in self.args['fit_param']['priors'][tr].keys() else ''
             ext += '+nu' if ('nu' in self.args['fit_param']['priors'][tr].keys()) else ''
-            ext += '+vsmear' if ('vsmear' in self.args['fit_param']['priors'][tr].keys()) else ''
-            ext += '_with_zerr' if  (self.args[tr]['vsmear'] != 0)  else ''
+            spec = self.args[tr].get('vsmear')
+            model = spec.get('model', 'gaussian') if isinstance(spec, collections.abc.Mapping) else 'gaussian'
+            if isinstance(spec, collections.abc.Mapping):
+                dv = spec.get('dv')
+                sampler = getattr(vsmear_func, model, None) if isinstance(model, str) else None
+                enabled = dv != 0 and (dv is not None or not getattr(sampler, 'requires_dv', True))
+            else:
+                enabled = spec is not None and spec != 0
+            ext += f'+vsmear_{model}' if 'vsmear' in self.args['fit_param']['priors'][tr] else ''
+            ext += f'_with_zerr_{model}' if enabled else ''
             fit_model_name += ['{}_{}_{}p'.format(tr, self.args[tr]['HOD_model'] + ext, len(self.name_params))]
         return '_'.join(fit_model_name)
 
@@ -2368,7 +2497,7 @@ class HOD(BaseLogger):
         if 'wp' in self.args['fit_param']["fit_type"]:
             result['wp'] = self.get_cross_wp(cat, tracers=self._tracers(), verbose=verbose)
         if 'xi' in self.args['fit_param']["fit_type"]:
-            result['xi'] = self.get_cross2PCF(cat, tracers=self._tracers(), verbose=verbose)
+            result['xi'] = self.get_cross_xiells(cat, tracers=self._tracers(), verbose=verbose)
 
         
         if hasattr(self, 'data'):
@@ -2379,12 +2508,13 @@ class HOD(BaseLogger):
             result['chi2'] = compute_chi2(res, self.data, inv_Cov2=self.inv_cov2)
         
         if save_bf_cat is not None:
+            columns = cat.columns()
             if self.args['fit_param']['use_vsmear']:
-                cat[f'vsmear'] = np.zeros(cat.size, dtype=np.float32)
-                for tr in self._tracers():
-                    mm = cat['TRACER'] == tr
-                    cat[f'vsmear'][mm] = self.get_vsmear(tr, mm.sum(), verbose=verbose)
-            cat.write(save_bf_cat)
+                self.assign_vsmear(cat, verbose=verbose)
+                columns = cat.columns()
+            else:
+                columns = [name for name in columns if name != 'vsmear']
+            cat.write(save_bf_cat, columns=columns)
             print(f'Save best fit catalog to {save_bf_cat}', flush=True)
 
         return result

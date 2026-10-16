@@ -25,7 +25,10 @@ def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
     los : {'x', 'y', 'z'}, optional
         Line-of-sight axis. Default is 'z'.
     vsmear : float, array-like, optional
-        Add redshift errors in km/s. If vsmear is a number create a normal distribution $\mathcal{N} (0,v_\mathrm{smear)}$. Default is 0.
+        Already sampled line-of-sight velocity errors in km/s, one per galaxy.
+        A scalar is a constant velocity offset; 0 or None adds no error.
+        Sample model dictionaries with HOD.get_vsmear or HOD.assign_vsmear
+        before calling this deterministic position transformation.
 
     Returns
     -------
@@ -33,7 +36,16 @@ def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
         List of arrays containing RSD-applied positions for x, y, and z.
     """
 
-    rsd_factor = 1 / (1 / (1 + z) * H_0 * cosmo.efunc(z))   
+    if los not in 'xyz' or len(los) != 1:
+        raise ValueError('los must be x, y, or z')
+    if isinstance(vsmear, dict):
+        raise ValueError('apply_rsd expects sampled velocity errors, not a vsmear model dictionary')
+    vsmear = np.asarray(0. if vsmear is None else vsmear, dtype=np.float64)
+    if vsmear.ndim > 0 and vsmear.shape != np.shape(cat[los]):
+        raise ValueError('vsmear must be a scalar or contain one velocity error per galaxy')
+    if not np.all(np.isfinite(vsmear)):
+        raise ValueError('vsmear must contain finite velocity errors')
+    rsd_factor = 1 / (1 / (1 + z) * H_0 * cosmo.efunc(z))
     pos_rsd = [cat[p] % boxsize if p !=los else (cat[p] + (cat['v'+p] + vsmear)*rsd_factor) %boxsize for p in 'xyz']    
     return pos_rsd
     
@@ -353,10 +365,10 @@ def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, nu=1, p_ab=None, Nthre
                 elif conformity:
                     proba_sat[i] = np.random.poisson(N_sat*cond_cent[i])
                 else :
-                    if nu == 1:
-                        proba_sat[i] = np.random.poisson(N_sat)
-                    else:
-                        proba_sat[i] = cmp_sample(N_sat, nu)
+                    # if nu == 1:
+                    #     proba_sat[i] = np.random.poisson(N_sat)
+                    # else:
+                    proba_sat[i] = cmp_sample(N_sat, nu)
                 if proba_sat[i] > 0:
                     Nb_sat += proba_sat[i]
                     
@@ -454,7 +466,7 @@ def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None, conformity=Fal
     ngal_sat = np.empty_like(nbinsM, dtype=np.float64)
     mass_b = np.empty_like(nbinsM, dtype=np.float64)
     if p_sat is not None :
-        for i in numba.prange(len(logbinM)):
+        for i in numba.prange(len(nbinsM)):
             LogM = ((logbinM[i]+logbinM[i+1])*0.5)
             Ncent = fun_cHOD(LogM, p_cen)
             if Ncent < 0:
@@ -469,7 +481,7 @@ def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None, conformity=Fal
         ngal_tot = ngal_c.sum()+ngal_sat.sum()
         return ngal_tot, ngal_sat.sum()/ngal_tot, mass_b.sum()/ngal_tot
     else: 
-        for i in numba.prange(len(logbinM)):
+        for i in numba.prange(len(nbinsM)):
             LogM = ((logbinM[i]+logbinM[i+1])*0.5)
             Ncent = fun_cHOD(LogM, p_cen)
             if Ncent < 0:
@@ -898,7 +910,8 @@ def update_dic(d, u):
     import collections.abc
     for k, v in u.items():
         if isinstance(v, collections.abc.Mapping):
-            d[k] = update_dic(d.get(k, {}), v)
+            current = d.get(k, {})
+            d[k] = update_dic(current if isinstance(current, collections.abc.Mapping) else {}, v)
         else:
             d[k] = v
     return d

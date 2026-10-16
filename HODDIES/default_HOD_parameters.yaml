@@ -47,8 +47,20 @@ LRG: # Name of tracer 1
   nfw_rescale: 1  # Rescaling of NFW profile. 
 
   density: 0.0007  # Target galaxy number density
-  vsmear: 0  # Add redshift error by introducing gaussian smearing in km/s (default 0). Indicative values: ELG:10 km/s, LRG: 40km/s, QSO: 100km/s. 
-#              To use DESI redshift error, set a list with [zmin,zmax] to genereate the vsmear distribution for each tracer.
+  vsmear: null  # No redshift errors. Select a sampler in HODDIES/vsmear_func.py.
+  # Gaussian example (dv is the standard deviation in km/s):
+  # vsmear: {model: gaussian, dv: 40.0}
+  # Lorentzian example (dv is the half-width at half-maximum in km/s):
+  # vsmear: {model: lorentzian, dv: 40.0}
+  # DESI example (prepared CDF tables supply the width; omit dv):
+  # vsmear:
+  #   model: desi
+  #   params:
+  #     tracer: LRG
+  #     zmin: 0.4
+  #     zmax: 0.6
+  #     data_dir: /path/to/DESI_CDFs
+  #     dvmode: obs
 
 # HOD parameters for ELGs, similar to LRG with some changes
 ELG: # Name of tracer 2
@@ -78,7 +90,7 @@ ELG: # Name of tracer 2
   exp_scale: 1
   nfw_rescale: 1
   v_infall: 0
-  vsmear: 0
+  vsmear: null
 
 # Halo catalog and simulation settings
 hcat:
