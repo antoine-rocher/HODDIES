@@ -257,7 +257,7 @@ def _tsc_parallel(ppart, starts, dens, box, weights, offset):
             )
 
 
-@numba.njit(parallel=True, fastmath=True, cache=True)
+@numba.njit(parallel=True, fastmath=True)
 def partition_parallel(
     pos,
     npartition,

@@ -3,17 +3,16 @@
 import numba
 import time 
 import os
-from .utils import *
-from .estimators.clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat, compute_CIC, compute_power_spectrum
-from . import HOD_models
+from HODDIES.utils import *
+from HODDIES.estimators.clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat, compute_CIC, compute_power_spectrum
+from HODDIES import HOD_models
 import yaml 
-import glob
 from mpytools import Catalog
 import collections.abc
-from .fit_functions.fits_functions import compute_chi2
+from .fit_functions.fits_functions import compute_chi2, flatten_stats
 import numbers
 import numpy as np
-from .sim_loader import BaseLogger
+from HODDIES.sim_loader import BaseLogger
 
 class HOD(BaseLogger):
 
@@ -35,7 +34,6 @@ class HOD(BaseLogger):
 
         """
         setup_logger=kwargs.get('setup_logger', True)
-        print('setup_logger', setup_logger)
         self.init_logger(setup_logger=kwargs.get('setup_logger', True))
 
         # self.args = yaml.load(open(os.path.join(os.path.dirname(__file__), 'default_HOD_parameters.yaml')), Loader=yaml.FullLoader)
@@ -676,7 +674,7 @@ class HOD(BaseLogger):
 
             ds = self.get_ds_fac(tracer, verbose=verbose)
             if (hod_list_param_cen[0]*ds > 1):
-                self._warn_once(f'Ac={hod_list_param_cen[0]*ds} is > 1, the density is not fixed to {self.args[tracer]["density"]}')
+                self.logger.warning(f'Ac={hod_list_param_cen[0]*ds} is > 1, the density is not fixed to {self.args[tracer]["density"]}')
             else : 
                 hod_list_param_cen[0] *= ds
                 if hod_list_param_sat is not None:
@@ -1119,7 +1117,9 @@ class HOD(BaseLogger):
         return_counts : bool, optional
             If True, returns the counts for each object in the catalog. Defaults to False.
         max_count : int, optional
-            Maximum count to consider for the histogram. If None, it will be determined from the data. Defaults to None.
+            Maximum count to consider for the histogram. If None, use the
+            configured maximum or the largest count across all selected
+            tracers. All tracers share the same histogram bins.
         density : bool, optional
             If True, returns the histogram as a density (normalized). Defaults to True.
         verbose : bool, optional
@@ -1129,10 +1129,12 @@ class HOD(BaseLogger):
         -------
         cens : array
             Bin centers for the counts-in-cylinder histogram.
-        hist : array
-            Histogram of counts-in-cylinder for the specified tracer(s).
-        counts : array
-            Array of counts-in-cylinder for each object in the catalog.
+        hist : array or list of arrays
+            Histogram of counts-in-cylinder, or one histogram per tracer
+            in the requested order when multiple tracers are selected.
+        counts : list of arrays
+            Raw counts for each tracer in the requested order, returned
+            only when return_counts=True and return_dic=False.
         
         Notes
         -----
@@ -1152,7 +1154,6 @@ class HOD(BaseLogger):
         max_count = cic_settings.get('max_count', None) if max_count is None else max_count
         
         counts = []
-        hists = []
 
         for tr in tracers:
             mock_cat = cat[cat['TRACER'] == tr]
@@ -1161,17 +1162,23 @@ class HOD(BaseLogger):
                 pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
             else:
                 pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
-            counts += [compute_CIC(pos[0], pos[1], pos[2], self.boxsize, cic_settings['R_max'], cic_settings['L_max'])]
-            if max_count is None:
-                max_count = int(np.nanmax(counts))
-            bins = np.arange(-0.5, max_count + 1.5)
-            hist, edges = np.histogram(counts, bins=bins)
-            cens = 0.5 * (edges[:-1] + edges[1:])
+            counts.append(compute_CIC(pos[0], pos[1], pos[2], self.boxsize, cic_settings['R_max'], cic_settings['L_max']))
+
+        # Choose common bins after collecting every tracer, so a later
+        # tracer's larger counts are included without combining samples.
+        if max_count is None:
+            max_count = max((int(np.nanmax(cc)) for cc in counts if len(cc)), default=0)
+        bins = np.arange(-0.5, max_count + 1.5)
+        cens = 0.5 * (bins[:-1] + bins[1:])
+        hists = []
+        for tracer_counts in counts:
+            hist, _ = np.histogram(tracer_counts, bins=bins)
             if density and hist.sum() > 0:
                 hist = hist / hist.sum()
-            hists += [hist]
+            hists.append(hist)
         if return_dic:
             return {f'{tr}_{tr}': [cens, hh] for tr, hh in zip(tracers, hists)}
+        hist = hists[0] if len(tracers) == 1 else hists
         if return_counts:
             return cens, hist, counts
         return cens, hist
@@ -1212,7 +1219,7 @@ class HOD(BaseLogger):
             else:
                 ds_settings['edges_rp'] = np.linspace(ds_settings['rp_min'], ds_settings['rp_max'], ds_settings['n_rp_bins']+1)
     
-        if return_dic:
+        if return_dic | len(tracers) > 1:
             res_dict = {}
         for tr in tracers:
     
@@ -1935,6 +1942,8 @@ class HOD(BaseLogger):
 
             if 'assembly_bias' in priors[tr].keys():
                 for var in priors[tr]['assembly_bias'].keys():
+                    if not is_valid_ab_bounds(priors[tr]['assembly_bias'][var]):
+                        raise ValueError("Assembly bias values should be 2D arrays of shape (2, 2) with values in [-1, 1]. Please check the priors for parameter {}.".format(var))
                     priors[tr][f'ab_{var}_cen'] =  priors[tr]['assembly_bias'][var][0]
                     priors[tr][f'ab_{var}_sat'] = priors[tr]['assembly_bias'][var][1]
                 priors[tr].pop('assembly_bias')
@@ -1949,13 +1958,15 @@ class HOD(BaseLogger):
     
     @staticmethod
     def get_comb_tr_list(tracers):
-        """
-        Helper function to return the list of tracer combinations
-        """
+        """Return unique, alphabetically ordered tracer pairs, including auto-pairs."""
+        from itertools import combinations_with_replacement
         if isinstance(tracers, str):
             tracers = [tracers]
-        return np.vstack([np.array(np.meshgrid(tracers,tracers)).T.reshape(-1, len(tracers)).flatten().reshape(len(tracers),len(tracers),2)[i,i:] for i in range(len(tracers))])
-    
+
+        return np.asarray(
+            list(combinations_with_replacement(sorted(set(tracers)), 2)),
+            dtype=str,
+        ).reshape(-1, 2)
 
     def compute_stats(self, cat, stat=None, tracers=None, verbose=False):
         """
@@ -1966,7 +1977,9 @@ class HOD(BaseLogger):
             A dictionary of mock catalogs where each key is a tracer and its corresponding catalog is the value 
             (e.g., 'LRG', 'ELG').
         stat : str or list of str, optional
-            A list of clustering statistics to compute. If None, all available statistics will be computed.
+            A list of clustering statistics to compute. None or 'all' computes
+            all available statistics. 'all' is case-insensitive and may also
+            appear in a sequence, e.g. ['ALL'].
             Available statistics include 'xi_rppi', 'wp', 'xi_smu', 'xi_ells',
             'delta_sigma', 'CIC', and 'power_spectrum'. Individual correlation
             multipoles can be selected with names such as 'xi0', 'xi2', or
@@ -1988,11 +2001,13 @@ class HOD(BaseLogger):
 
         from .plot_utils import _expand_stats, _resolve_name
 
+        available = get_list_stat()
         if stat is None:
-            stat = get_list_stat()
+            stat = available
         elif isinstance(stat, str):
             stat = [stat]
-        available = get_list_stat()
+        stat = [source for name in stat
+                for source in (available if name.lower() == 'all' else [name])]
         resolved, xi_stats, miss_stat = [], [], []
         for name in stat:
             key = _resolve_name(name, available)
@@ -2035,7 +2050,7 @@ class HOD(BaseLogger):
         
         if 'delta_sigma' in stat:
             if self.field_particles is None:
-                self.logger.info('Field particles not set, cannot compute ΔΣ(R)')
+                raise ValueError('Field particles not set, cannot compute ΔΣ(R)')
             else:
                 result['delta_sigma'] = self.get_delta_sigma(cat, tracers=tracers, verbose=verbose, return_dic=True)
 
@@ -2236,8 +2251,8 @@ class HOD(BaseLogger):
             # Generate mock catalogs
             cats = [self.make_mock_cat(self._tracer_to_fit, verbose=False) for jj in range(nmocks_std)]
             result = [self.compute_stats(cats[i], stat=self._stats_to_fit, tracers=self._tracer_to_fit, verbose=False) for i in range(nmocks_std)]
-            std_poisson = np.std([np.hstack([np.hstack([np.hstack(result[i][stat][comb_tr][-1])for stat in self._stats_to_fit]) for comb_tr in self._comb_tr_list]) for i in range(nmocks_std)], axis=0)    
-            # Can also try with cov_poisson = np.cov([np.hstack([np.hstack([np.hstack(result[i][stat][comb_tr][1])for stat in self._stats_to_fit]) for comb_tr in self._comb_tr_list]) for i in range(nmocks_std)], rowvar=False)        
+            std_poisson = np.std([flatten_stats(mock_result, self._stats_to_fit, self._comb_tr_list)
+                                 for mock_result in result], axis=0)
             cov_poisson = np.diag(std_poisson**2)
         else:
             cov_poisson = 0
@@ -2271,7 +2286,7 @@ class HOD(BaseLogger):
         return init_values
     
     
-    def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, **kwargs):
+    def run_minimizer(self, init_params=None, seed=10, mpi_comm=None, return_log10chi2=False, **kwargs):
         """
         Run the minimization procedure to find the best-fit parameters.
 
@@ -2283,6 +2298,8 @@ class HOD(BaseLogger):
             Random seed for reproducibility when generating initial parameters. Default is 10.
         mpi_comm : MPI communicator, optional
             MPI communicator for parallel execution. If None, runs in serial. Default is None.
+        return_log10chi2 : bool, optional
+            If True, return the base-10 logarithm of the chi-squared value. Default is False.
         kwargs : dict
             Additional keyword arguments to update the minimizer settings.
         """
@@ -2317,7 +2334,7 @@ class HOD(BaseLogger):
             options['backend']= 'mpi'
 
         
-        res = minimize(func_stochopy, args=(self, seed),
+        res = minimize(func_stochopy, args=(self, seed, return_log10chi2),
                     bounds=self.priors, x0=init_params,
                     method=self.args['fit_param']['minimizer']['method'], options=options)
         
@@ -2333,7 +2350,6 @@ class HOD(BaseLogger):
 
     def compute_bf_corr(self, bf_file=None, verbose=False, fix_seed=None, save_bf_cat=None, **kwargs):
 
-        from HODDIES.fits_functions_old import compute_chi2
         name_param, priors_array = self.get_param_and_prior()
         if hasattr(self, 'result_fit'):
             self.result_fit = self.result_fit if bf_file is None else np.load(bf_file, allow_pickle=True).item()
@@ -2359,7 +2375,7 @@ class HOD(BaseLogger):
             stats = ['wp', 'xi'] if ('wp' in self.args['fit_param']["fit_type"]) & ('xi' in self.args['fit_param']["fit_type"]) else ['wp'] if ('wp' in self.args['fit_param']["fit_type"]) else ['xi']
             res = {}
             comb_trs = result[stats[0]].keys() 
-            res = np.hstack([np.hstack([np.hstack(result[stat][comb_tr][1])for stat in stats]) for comb_tr in comb_trs])
+            res = flatten_stats(result, stats, comb_trs)
             result['chi2'] = compute_chi2(res, self.data, inv_Cov2=self.inv_cov2)
         
         if save_bf_cat is not None:

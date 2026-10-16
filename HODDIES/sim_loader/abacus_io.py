@@ -11,6 +11,7 @@ import glob
 from pathlib import Path
 from abacusnbody.data.read_abacus import read_asdf
 
+
 class AbacusSummitSim(Base_catalogue):
     """
     Class to load Abacus summit simulation
@@ -24,7 +25,7 @@ class AbacusSummitSim(Base_catalogue):
         self.init_abacus_args(**kwargs)
         self.read_Abacus_hcat()
         if kwargs.get('load_field_particles', False):
-            self.field_particles = self.load_particle_field()
+            self.field_particles = load_abacus_particle_field(self.__path_to_sim, logger=self.logger)
 
 
     def init_abacus_args(self, **kwargs):
@@ -158,120 +159,6 @@ class AbacusSummitSim(Base_catalogue):
         self.logger.info(f"Done took {time.strftime('%H:%M:%S', time.gmtime(time.time() - start))}")
         return hcat
 
-    def load_particle_field(
-        self,
-        subsample="A",
-        fraction=1 / 10,
-        seed=42,
-        load=("pos",),
-        verbose=True,
-    ):
-        """
-        Randomly subsample Abacus snapshot particles, one file at a time.
-
-        Parameters
-        ----------
-        sim_dir : str or Path
-            Snapshot directory, e.g. ".../halos/z0.500".
-        subsample : {"A", "B", "AB", "both"}
-            Particle subsample(s) to read.
-        fraction : float
-            Independent retention probability for each available particle.
-            Relative to the selected A/B particles, not the full simulation.
-        seed : int or None
-            Random seed.
-        load : tuple of str
-            Columns to return: ("pos",), ("vel",), or ("pos", "vel").
-        populations : tuple of str
-            Default ("halo", "field") includes the full matter distribution.
-            Use ("field",) for only particles in the raw field files.
-        verbose : bool
-            Print progress.
-
-        Returns
-        -------
-        particles : dict
-            NumPy arrays with shape (N_selected, 3), keyed by "pos"/"vel".
-        info : dict
-            Particle counts, selection settings, and box size.
-
-        Notes
-        -----
-        Each file is fully read and decoded before subsampling.
-        Memory holds one decoded file plus the accumulated selected particles.
-        """
-
-        from pathlib import Path
-        from abacusnbody.data.read_abacus import read_asdf
-
-        start = time.time()
-        sim_dir = Path(self.__path_to_sim)
-        selection = str(subsample).upper()
-        if selection == "BOTH":
-            selection = "AB"
-        if 'small' in str(sim_dir):
-            selection = "A"
-        if selection not in ("A", "B", "AB"):
-            raise ValueError("subsample must be 'A', 'B', 'AB', or 'both'.")
-
-        fraction = float(fraction)
-        if not np.isfinite(fraction) or not 0 < fraction <= 1:
-            raise ValueError("fraction must satisfy 0 < fraction <= 1.")
-
-        load = (load,) if isinstance(load, str) else tuple(load)
-        if not load or len(set(load)) != len(load) or not set(load) <= {"pos", "vel"}:
-            raise ValueError("load must contain 'pos', 'vel', or both, without duplicates.")
-
-        populations=("halo", "field")
-
-        self.logger.info(f"Load Abacus particles using {fraction:.3%} of the subsample {subsample}...")
-        # Validate all requested directories before starting expensive reads.
-        files = []
-        n_all = 0 
-        for sample in selection:
-            for population in populations:
-                directory = sim_dir / f"{population}_rv_{sample}"
-                matches = sorted(
-                    directory.glob(f"{population}_rv_{sample}_*.asdf")
-                )
-                if not matches:
-                    raise FileNotFoundError(
-                        f"No particle RV files found in {directory}. "
-                        "Check availability for this simulation and redshift."
-                    )
-                files.extend(matches)
-
-        rng = np.random.default_rng(seed)
-        table_all = []
-        for i, filename in enumerate(files):
-            table_tmp = read_asdf(
-                str(filename),
-                load=list(load),
-                dtype=np.float32,
-                verbose=False,
-            )
-
-
-            # A binomial count followed by uniform selection without replacement
-            # is equivalent to independently retaining each particle with
-            # probability `fraction`, without allocating N random floats.
-            n = len(table_tmp)
-            nkeep = int(np.round(n * fraction))
-            indices = rng.choice(n, size=nkeep, replace=False, shuffle=False)
-
-            if verbose:
-                self.logger.info(
-                    f"[{i}/{len(files)}] {filename.name}: "
-                    f"{nkeep:,} / {n:,} particles retained"
-                )
-            n_all += nkeep
-
-            table_all.append(table_tmp[indices])
-            del table_tmp
-
-        self.logger.info(f"Compiled {n_all} particles, took time: {time.time() - start}")
-        return np.concatenate(table_all, axis=0)
-
 
     @staticmethod
     @njit(parallel=True, fastmath=True)
@@ -358,57 +245,13 @@ class AbacusSummitSim(Base_catalogue):
         dic['halo_id'] = np.array(hcat[index], dtype=np.int64)
         if self.halo_lc: 
             dic['redshift_interp'] = np.array(hcat['redshift_interp'], dtype=np.float32)
-       
+
         self.logger.info("Done took {0}".format(time.strftime("%H:%M:%S",time.gmtime(time.time() - start))))
         self.origin = None if not self.halo_lc else np.array(self.__header['LightConeOrigins']).reshape(-1, 3)
         
         self.boxsize = self.__header["BoxSizeHMpc"]
-        self.hcat = Catalog.from_dict(dic)
+        self.hcat = Catalog.from_dict(dic)    
 
-    
-    def get_boxsize(self, sim_name_or_path: str) -> float:
-        """
-        Return the box size (in Mpc/h) given a simulation path or name.
-
-        Parameters
-        ----------
-        sim_name_or_path : str
-            The simulation name or path containing one of the keys.
-
-        Returns
-        -------
-        float
-            Box size in Mpc/h.
-        """
-        sim_name_or_path = sim_name_or_path.lower()
-
-        mapping = {
-            "high": 1000.0,        # 1 Gpc/h
-            "huge": 7500.0,     # ⚠ placeholder, confirm exact value
-            "hugebase": 2.0,    # 2 Gpc/h
-            "fixedbase": 1180.0,  # 1.18 Gpc/h
-            "small": 500.0,       # 0.5 Gpc/h
-            "pngbase": 2000.0,      # 2 Gpc/h
-            "base": 2000.0,        # standard size (2 Gpc/h)
-        }
-
-        # Match key in string
-        for key, size in mapping.items():
-            if key in sim_name_or_path:
-                self.boxsize = size
-
-        raise ValueError(f"Unknown simulation type in: {sim_name_or_path}")
-
-    @property
-    def __particles_snap_available(self):
-        """
-        Return the list of available redshifts for which particle snapshots are available in AbacusSummit simulations.
-        """
-        
-        available_part_redshifts = [3.0, 2.5, 2.0, 1.7, 1.4, 1.1, 0.8, 0.5, 0.4, 0.3, 0.2, 0.1]
-        
-        return available_part_redshifts
-       
 
     def check_redshift_available(self):
         """
@@ -433,6 +276,7 @@ class AbacusSummitSim(Base_catalogue):
 
         cell_size = kwargs.get('cell_size', 5)
         R = kwargs.get('R', 1.5)
+
         dir_to_save_env_mesh = kwargs.get('dir_to_save_env_mesh', '/tmp')
         path_to_save = os.path.join(
             dir_to_save_env_mesh,
@@ -442,17 +286,18 @@ class AbacusSummitSim(Base_catalogue):
         if dir_to_save_env_mesh and os.path.isdir(dir_to_save_env_mesh):
             if os.path.exists(path_to_save):
                 self.logger.info(f'Load precomputed density and shear mesh for {self.sim_name} at {path_to_save}...')
-                env_prop = Catalog.read(path_to_save)
-                self.density_mesh, self.shear_mesh = env_prop['density'], env_prop['shear']
+                with h5py.File(path_to_save, "r") as f:
+                    self.density_mesh = f["density"][()]
+                    self.shear_mesh = f["shear"][()]
                 return
         else:
             self.logger.info(f'Precomputed density and shear mesh not found. Create directory {os.path.join(dir_to_save_env_mesh)} to save density and shear mesh')
             os.makedirs(dir_to_save_env_mesh, exist_ok=True)
         
-        if self.z_simu not in self.__particles_snap_available:
+        if self.z_simu not in Abacus_particles_snap_available():
             import warnings
             warnings.warn(
-                f"Redshift snapshot {self.z_simu:.3f} does not have particle outputs. Assembly bias properties cannot be computed for env and shear properties. Available redshifts with particles are: {self.__particles_snap_available}")
+                f"Redshift snapshot {self.z_simu:.3f} does not have particle outputs. Assembly bias properties cannot be computed for env and shear properties. Available redshifts with particles are: {Abacus_particles_snap_available()}")
             self.density_mesh = None
             self.shear_mesh = None
             return
@@ -460,16 +305,16 @@ class AbacusSummitSim(Base_catalogue):
         path = os.path.join(self._root_dir_sim, self.sim_name, 'halos', f'z{self.z_simu:.3f}')
         if not os.path.exists(path):
             raise NameError(f'Wrong simulation path: {path}')
-        if self.z_simu not in self.__particles_snap_available:
+        if self.z_simu not in Abacus_particles_snap_available():
             import warnings
             warnings.warn(
-            f"Particles are not available at redshift z={self.z_simu}. Assembly bias properties cannot be computed for env and shear properties. Available redshifts with particles are: {self.__particles_snap_available}")
+            f"Particles are not available at redshift z={self.z_simu}. Assembly bias properties cannot be computed for env and shear properties. Available redshifts with particles are: {Abacus_particles_snap_available()}")
             self.density_mesh = None
             self.shear_mesh = None 
             return
         if getattr(self, "field_particles", None) is None:
             self.logger.info('Particles are not loaded. Load Abacus particles to compute density and shear mesh')
-            self.field_particles = self.load_particle_field(subsample="A", fraction=1/10, seed=42, load=("pos",))
+            self.field_particles = load_abacus_particle_field(self.__path_to_sim, logger=self.logger)
 
         dsmo = calc_env(self.field_particles['pos'], self.boxsize, cell_size=cell_size, R=R) 
         shear = calc_shear_from_dsmo(dsmo, self.boxsize, cell_size=cell_size, R=R, workers=-1) 
@@ -613,3 +458,225 @@ def _compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, npout, npstart, nb_
                     vy_sat[satellite_index] = vyp[particle_index]
                     vz_sat[satellite_index] = vzp[particle_index]
     return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw
+
+
+def load_abacus_particle_field(
+        sim_dir,
+        subsample="A",
+        fraction=1 / 10,
+        seed=42,
+        load=("pos",),
+        logger=None,
+        verbose=False,
+    ):
+        """
+        Randomly subsample Abacus snapshot particles, one file at a time.
+
+        Parameters
+        ----------
+        sim_dir : str or Path
+            Snapshot directory, e.g. ".../halos/z0.500".
+        subsample : {"A", "B", "AB", "both"}
+            Particle subsample(s) to read.
+        fraction : float
+            Independent retention probability for each available particle.
+            Relative to the selected A/B particles, not the full simulation.
+        seed : int or None
+            Random seed.
+        load : tuple of str
+            Columns to return: ("pos",), ("vel",), or ("pos", "vel").
+        populations : tuple of str
+            Populations to include in the selection.
+            Default ("halo", "field") includes the full matter distribution.
+            Use ("field",) for only particles in the raw field files.
+        verbose : bool
+            Print progress.
+
+        Returns
+        -------
+        particles : dict
+            NumPy arrays with shape (N_selected, 3), keyed by "pos"/"vel".
+        info : dict
+            Particle counts, selection settings, and box size.
+
+        Notes
+        -----
+        Each file is fully read and decoded before subsampling.
+        Memory holds one decoded file plus the accumulated selected particles.
+        """
+
+        from pathlib import Path
+
+        start = time.time()
+        sim_dir = Path(sim_dir)
+        selection = str(subsample).upper()
+        if selection == "BOTH":
+            selection = "AB"
+        if 'small' in str(sim_dir):
+            selection = "A"
+        if selection not in ("A", "B", "AB"):
+            raise ValueError("subsample must be 'A', 'B', 'AB', or 'both'.")
+
+        fraction = float(fraction)
+        if not np.isfinite(fraction) or not 0 < fraction <= 1:
+            raise ValueError("fraction must satisfy 0 < fraction <= 1.")
+
+        load = (load,) if isinstance(load, str) else tuple(load)
+        if not load or len(set(load)) != len(load) or not set(load) <= {"pos", "vel"}:
+            raise ValueError("load must contain 'pos', 'vel', or both, without duplicates.")
+
+        populations=("halo", "field")
+
+        if logger:
+            logger.info(f"Load Abacus particles using {fraction:.3%} of the subsample {subsample}...")
+        if verbose:
+            print(f"Load Abacus particles using {fraction:.3%} of the subsample {subsample}...", flush=True)
+        # Validate all requested directories before starting expensive reads.
+        files = []
+        n_all = 0 
+        for sample in selection:
+            for population in populations:
+                directory = sim_dir / f"{population}_rv_{sample}"
+                matches = sorted(
+                    directory.glob(f"{population}_rv_{sample}_*.asdf")
+                )
+                if not matches:
+                    raise FileNotFoundError(
+                        f"No particle RV files found in {directory}. "
+                        "Check availability for this simulation and redshift."
+                    )
+                files.extend(matches)
+
+        rng = np.random.default_rng(seed)
+        table_all = []
+        for i, filename in enumerate(files):
+            table_tmp = read_asdf(
+                str(filename),
+                load=list(load),
+                dtype=np.float32,
+                verbose=False,
+            )
+
+            # A binomial count followed by uniform selection without replacement
+            # is equivalent to independently retaining each particle with
+            # probability `fraction`, without allocating N random floats.
+            n = len(table_tmp)
+            nkeep = int(np.round(n * fraction))
+            indices = rng.choice(n, size=nkeep, replace=False, shuffle=False)
+
+            if logger:
+                logger.info(
+                    f"[{i}/{len(files)}] {filename.name}: "
+                    f"{nkeep:,} / {n:,} particles retained"
+                )
+            if verbose:
+                print(
+                    f"[{i}/{len(files)}] {filename.name}: "
+                    f"{nkeep:,} / {n:,} particles retained"
+                , flush=True)
+            n_all += nkeep
+
+            table_all.append(table_tmp[indices])
+            del table_tmp
+
+        if logger:
+            logger.info(f"Compiled {n_all} particles, took time: {time.time() - start}")
+        if verbose:
+            print(f"Compiled {n_all} particles, took time: {time.time() - start}", flush=True)
+        return np.concatenate(table_all, axis=0)
+
+def get_abacus_boxsize(sim_name_or_path: str) -> float:
+        """
+        Return the box size (in Mpc/h) given a simulation path or name.
+
+        Parameters
+        ----------
+        sim_name_or_path : str
+            The simulation name or path containing one of the keys.
+
+        Returns
+        -------
+        float
+            Box size in Mpc/h.
+        """
+        sim_name_or_path = sim_name_or_path.lower()
+
+        mapping = {
+            "high": 1000.0,        # 1 Gpc/h
+            "huge": 7500.0,     # ⚠ placeholder, confirm exact value
+            "hugebase": 2.0,    # 2 Gpc/h
+            "fixedbase": 1180.0,  # 1.18 Gpc/h
+            "small": 500.0,       # 0.5 Gpc/h
+            "pngbase": 2000.0,      # 2 Gpc/h
+            "base": 2000.0,        # standard size (2 Gpc/h)
+        }
+
+        # Match key in string
+        for key, size in mapping.items():
+            if key in sim_name_or_path:
+                return size
+
+        raise ValueError(f"Unknown simulation type in: {sim_name_or_path}")
+
+def check_abacus_redshift_available(z_simu):
+        """
+            Check if the requested redshift is available for AbacusSummit snapshots.
+        """
+        available_z = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.575, 0.65, 0.725, 0.8, 0.875, 0.95, 1.025, 1.1, 1.175, 1.25, 1.325, 1.4, 1.475, 1.55, 1.625, 1.7, 1.85, 2.0, 2.25, 2.5, 2.75, 3.0, 5.0, 8.0]
+        if z_simu in available_z:
+            pass
+        else:  
+            raise ValueError(f"Redshift z={z_simu} not available for AbacusSummit. Available redshifts are: {available_z}")
+
+def Abacus_particles_snap_available():
+    """
+    Return the list of available redshifts for which particle snapshots are available in AbacusSummit simulations.
+    """
+    
+    available_part_redshifts = [3.0, 2.5, 2.0, 1.7, 1.4, 1.1, 0.8, 0.5, 0.4, 0.3, 0.2, 0.1]
+    
+    return available_part_redshifts
+
+
+def check_abacus_redshift_particle_available(z_simu):
+    """
+        Check if the requested redshift has particles data available for AbacusSummit snapshots.
+    """
+
+    if z_simu in Abacus_particles_snap_available():
+        pass
+    else:  
+        raise ValueError(f"Redshift z={z_simu} not available for AbacusSummit. Available redshifts are: {Abacus_particles_snap_available()}")
+
+import json
+import re
+from functools import lru_cache
+from urllib.request import urlopen
+
+
+@lru_cache(maxsize=1)
+def get_abacus_sim_names(SIM_LIST_URL = (
+    "https://raw.githubusercontent.com/abacusorg/"
+    "abacussummit-data-portal/main/"
+    "web/portal/static/data/simulations.json"
+)):
+    """Download the portal's simulation list once per Python session."""
+    with urlopen(SIM_LIST_URL, timeout=30) as response:
+        catalogue = json.load(response)
+
+    names = frozenset(row["name"] for row in catalogue["data"])
+    if not names:
+        raise RuntimeError("The online simulation list is empty.")
+
+    return names
+
+
+def check_abacus_sim_name(name):
+    """True if the name has the correct format and is listed online."""
+    SIM_PATTERN = re.compile(
+    r"AbacusSummit_[a-z][a-z0-9]*_c[0-9]{3}_ph[0-9]{3,4}")
+
+    if not isinstance(name, str) or SIM_PATTERN.fullmatch(name) is None:
+        return False
+
+    return name in get_abacus_sim_names()

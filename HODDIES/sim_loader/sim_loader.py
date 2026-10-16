@@ -225,8 +225,9 @@ class Base_catalogue(BaseLogger):
         
         self.boxsize = kwargs.get('boxsize', None)
         self.mass_cut = kwargs.get('mass_cut', None)
-        self.nthreads = min(numba.get_num_threads()-1, kwargs.get('nthreads', 32))
+        self.nthreads = min(numba.get_num_threads(), kwargs.get('nthreads', 32))
         numba.set_num_threads(self.nthreads)
+        self.logger.info(f"Using {self.nthreads} threads.")
         self._init_halo_cols=['x', 'y', 'z', 'vx', 'vy', 'vz','Mh', 'Rh', 'c', 'Vrms', 'halo_id']
         self._init_part_cols = ['x', 'y', 'z', 'vx', 'vy', 'vz', 'halo_id']
         self.z_simu = kwargs.get('z_simu', None)
@@ -452,7 +453,6 @@ class Base_catalogue(BaseLogger):
                 continue
 
             self.logger.info(f'Set value for assembly bias according to {col}...')
-            print(self.hcat['log10_Mh'], self.hcat[col])
             self.hcat[f'ab_{col}'] = initialize_assembly_bias_value(self.hcat['log10_Mh'], self.hcat[col], bins=bins)
             self.logger.info(f'Done !')
         return col_to_remove

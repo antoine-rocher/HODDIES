@@ -214,7 +214,7 @@ def cmp_pmf_vec(x, lam, nu, logZ=None, max_x=1000):
     log_p = x * np.log(lam) - nu * log_factorial(x) - logZ
     return np.exp(log_p)
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def get_max_x(lam):
     if lam < 15:
         return 50
@@ -227,7 +227,7 @@ def get_max_x(lam):
     else:
         return int(lam*1.1)
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def cmp_lambda_small_mu(mu, nu):
     """
     Inverse of small-lambda CMP mean expansion
@@ -249,13 +249,13 @@ def cmp_lambda_small_mu(mu, nu):
         + (-5*A**3 + 5*A*B - C)*mu**4
     )
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def cmp_lambda_from_mean(mu, nu):
     """Rescale λ so CMP mean ≈ mu (Poisson mean)."""
     return (mu + (nu - 1) / (2 * nu)) ** nu
 
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def cmp_lambda_from_mu_allscale(mu, nu, sig=0.1):
     """Use small-lambda approximation for small mu, otherwise use large-lambda."""
     # The Poisson limit is exact, including below the blending threshold.
@@ -363,7 +363,7 @@ def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, nu=1, p_ab=None, Nthre
     return cond_cent, proba_sat, Nb_sat
 
 
-@njit(fastmath=True, cache=True)
+@njit(fastmath=True)
 def _f_nfw(x):
     """
     NFW profile helper function.
@@ -381,7 +381,7 @@ def _f_nfw(x):
 
 
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def getPointsOnSphere_jit(nPoints, Nthread=32, seed=None):
     """
     Generate random points on a sphere surface using numba jit.
@@ -422,7 +422,7 @@ def getPointsOnSphere_jit(nPoints, Nthread=32, seed=None):
 
 
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None, conformity=False, link_sat_to_central=False):
     """
     Compute total number of galaxies and satellite fraction from a given HOD parameter set.
@@ -658,7 +658,7 @@ def plot_HOD(p_cen, p_sat, fun_cHOD, fun_sHOD, logM = np.linspace(10.8,15,100), 
 
 import time
 from numba import objmode
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
     """
     Build a CSR-style index mapping each halo_id to all corresponding particle indices. (AI based code)
@@ -990,3 +990,19 @@ def initialize_assembly_bias_value(logMh, col, bins=50):
     _assign_bin_values(bin_idx, col, bins, out)
 
     return out
+
+
+from numbers import Real
+
+def is_valid_ab_bounds(x):
+    return (
+        isinstance(x, list)
+        and len(x) == 2
+        and all(
+            isinstance(row, list)
+            and len(row) == 2
+            and all(isinstance(v, Real) and not isinstance(v, bool) for v in row)
+            and -1 <= row[0] <= row[1] <= 1
+            for row in x
+        )
+    )
