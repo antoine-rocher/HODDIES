@@ -11,6 +11,59 @@ import os
 from .sim_loader import Base_catalogue
 
 
+def _read_chunk_2gpc(chunks, filename, group='main', mass_cut=None):
+    """Read a preprocessed chunk with explicit, process-local configuration."""
+    start, end = chunks
+    with h5py.File(filename, 'r') as handle:
+        datasets = handle[group]
+        dtype = [(name, datasets[name].dtype) for name in datasets]
+        data = np.empty(end - start, dtype=dtype)
+        for name in datasets:
+            data[name] = datasets[name][start:end]
+        if mass_cut is not None:
+            data = data[data['log10_Mh'] > mass_cut]
+    return data
+
+
+def _read_chunk_dde(chunk, filename, mass_cut=None):
+    """Read main hosts, allocating output only for rows passing the selection.
+
+    Slice columns contiguously before filtering in NumPy. Preserve the original
+    float32 mass selection, derived properties, row order, and int64 IDs.
+    DDE subhalo loading remains unsupported.
+    """
+    start, end = chunk
+    names = ['x', 'y', 'z', 'vx', 'vy', 'vz', 'Rs', 'Rh', 'c', 'Mh',
+             'log10_Mh', 'Vrms', 'halo_id']
+    dtype = [(name, np.int64 if name == 'halo_id' else np.float32) for name in names]
+    mapping = {'x': 'X', 'y': 'Y', 'z': 'Z', 'vx': 'VX', 'vy': 'VY', 'vz': 'VZ',
+               'Rs': 'Rs', 'Rh': 'Rvir', 'Vrms': 'Vrms', 'halo_id': 'ID'}
+    with h5py.File(filename, 'r') as handle:
+        keys = {name.lower(): name for name in handle}
+        required = [*mapping.values(), 'Mvir', 'PID']
+        resolved = {}
+        for name in required:
+            if name.lower() not in keys:
+                raise KeyError(f'Column {name} not found in file keys {list(handle.keys())}')
+            resolved[name] = keys[name.lower()]
+
+        # The old reader converted Mvir to float32 before applying mass_cut.
+        mass = handle[resolved['Mvir']][start:end].astype(np.float32)
+        keep = handle[resolved['PID']][start:end] == -1
+        if mass_cut is not None:
+            keep &= mass > 10**mass_cut
+        data = np.empty(np.count_nonzero(keep), dtype=dtype)
+        if not len(data):
+            return data, None
+        data['Mh'] = mass[keep]
+        for output, source in mapping.items():
+            data[output] = handle[resolved[source]][start:end][keep]
+
+    data['log10_Mh'] = np.log10(data['Mh'])
+    data['c'] = data['Rh'] / data['Rs']
+    return data, None
+
+
 class UchuuSim(Base_catalogue):
     
     def __init__(self, **kwargs):
@@ -21,7 +74,6 @@ class UchuuSim(Base_catalogue):
             raise ValueError('Redshift is not provided, please provide z_simu.')
         self.read_Uchuu()
 
-    @classmethod
     def init_uchuu_args(self, **kwargs):
         """
         Check if all parameter are correctly defined for.
@@ -64,100 +116,13 @@ class UchuuSim(Base_catalogue):
             return None
 
 
-    @classmethod
     def read_chuncks_2gpc(self, chunks, filename, group='main'):
-        start, end = chunks
-        with h5py.File(filename, 'r') as f:
-            dtype = [(col, f[group][col].dtype) for col in f[group].keys()]
-            data = np.zeros(end - start, dtype=dtype)
-            for col in f[group].keys():
-                data[col] = f[group][col][start:end]
-            if self.mass_cut is not None:
-                return data[data['log10_Mh'] > self.mass_cut]
-        return data
+        """Read a preprocessed chunk using this simulation's mass cut."""
+        return _read_chunk_2gpc(chunks, filename, group=group, mass_cut=self.mass_cut)
 
-    @classmethod
     def read_chunk_DDE(self, chunk, filename):
-        """
-        Read a chunk of the Uchuu DDE simulation data from the specified HDF5 file. The method reads the data in parallel using multiprocessing, applies a mass cut if specified, and returns the resulting halo and subhalo catalogs."""
-
-        start, end = chunk
-        
-        # Standardized output column names
-        col_output = [
-            'x', 'y', 'z', 'vx', 'vy', 'vz',
-            'Rs', 'Rh', 'c', 'Mh', 'log10_Mh',
-            'Vrms', 'halo_id'
-        ]
-        
-        # Expected input names (but case-insensitive except Mvir, Rvir)
-        col_input_names = [
-            'X', 'Y', 'Z', 'VX', 'VY', 'VZ',
-            'Rs', 'Mvir', 'Rvir', 'Vrms',
-            'ID', 'PID'
-        ]
-
-        
-        # Open once to inspect keys
-        with h5py.File(filename, 'r') as f:
-            # Build lowercase lookup: lowercase -> actual key
-            key_map = {k.lower(): k for k in f.keys()}
-            
-            # Resolve actual names (case-insensitive)
-            resolved = {}
-            for name in col_input_names:
-                if name.lower() in key_map:
-                    resolved[name] = key_map[name.lower()]
-                else:
-                    raise KeyError(f"Column {name} not found in file keys {list(f.keys())}")
-            
-            # Special names for convenience
-            pid_name = resolved['PID']
-        
-        # Define dtypes: float32 for all, except halo_id as int64
-        dtype = []
-        for name in col_output:
-            if name == 'halo_id':
-                dtype.append((name, np.int64))
-            else:
-                dtype.append((name, np.float32))
-        
-        # Initialize data array
-        data = np.zeros(end - start, dtype=dtype)
-        
-        # Read the actual data
-        with h5py.File(filename, 'r') as f:
-            
-            data['x']  = f[resolved['X']][start:end]
-            data['y']  = f[resolved['Y']][start:end]
-            data['z']  = f[resolved['Z']][start:end]
-            data['vx'] = f[resolved['VX']][start:end]
-            data['vy'] = f[resolved['VY']][start:end]
-            data['vz'] = f[resolved['VZ']][start:end]
-            data['Rs'] = f[resolved['Rs']][start:end]
-            data['Mh'] = f[resolved['Mvir']][start:end]
-            data['Rh'] = f[resolved['Rvir']][start:end]
-            data['Vrms'] = f[resolved['Vrms']][start:end]
-            data['halo_id'] = f[resolved['ID']][start:end]
-
-            # if self.use_particles: upid_col = f[resolved['UPID']][start:end]
-            # Masks
-            mask_mass = np.ones(data['Mh'].size, dtype=bool) if self.mass_cut is None else (data['Mh'] > 10**self.mass_cut)
-            mask_pid = f[pid_name][start:end] == -1
-            mask_halo = mask_pid & mask_mass
-        
-        # Derived columns
-        data['log10_Mh'] = np.log10(data['Mh'])
-        data['c'] = data['Rh'] / data['Rs']
-        # if self.use_particles:
-        #     mask_subhalo = (~mask_pid) & (mask_mass)
-        #     data_sub = np.zeros(mask_subhalo.sum(), dtype=dtype+[('halo_id', np.int64)])
-            
-        #     for col in data.dtype.names:
-        #         data_sub[col] = data[col][mask_subhalo]
-        #     data_sub['halo_id'] = upid_col[mask_subhalo]
-        #     return data[mask_halo], data_sub
-        return data[mask_halo], None
+        """Read main hosts from a Rockstar chunk using this simulation's mass cut."""
+        return _read_chunk_dde(chunk, filename, mass_cut=self.mass_cut)
 
 
     def read_Uchuu(self, nchuncks=32):
@@ -167,7 +132,8 @@ class UchuuSim(Base_catalogue):
         Parameters
         ----------
         nchuncks : int, optional    
-        Number of chunks to split the data for parallel reading. Default is 32.
+        Number of chunks to split each file into. Default is 32. The number
+        of reader processes is limited by both this value and ``nthreads``.
 
         Raises
         ------
@@ -180,7 +146,10 @@ class UchuuSim(Base_catalogue):
         """
 
         opt_ch = 128 if self.sim_name=='Uchuu2Gpc' else 32
+        if nchuncks < 1:
+            raise ValueError('nchuncks must be positive.')
         nchuncks = min(nchuncks, opt_ch)
+        nreaders = max(1, min(self.nthreads, nchuncks))
         self.boxsize = boxsize_Uchuu(self.sim_name)
         DDE_sims = ['Planck18', 'Planck18_DDE', 'DESIY1_DDE', 'Uchuu2Gpc']
         if self.sim_name not in DDE_sims:
@@ -197,42 +166,42 @@ class UchuuSim(Base_catalogue):
         self.logger.info(f'Load Uchuu {self.sim_name} simulation at z={self.z_simu:.3f} {subh}')
         filenames = glob.glob(dirname_hcat)
         self.logger.info(f'Reading {filenames}')
+        if not filenames:
+            raise FileNotFoundError(f'No Uchuu catalogues match {dirname_hcat}')
+        self.logger.info(f'Use {nreaders} reader processes and {nchuncks} chunks per file')
         st = time.time()
-        with multiprocessing.Pool(nchuncks) as p:
-            uchuu_halo, uchuu_subhalo = [], []
+        uchuu_halo, uchuu_subhalo = [], []
+        with multiprocessing.Pool(nreaders) as pool:
             for fn in filenames:
-                if self.sim_name=='Uchuu2Gpc':
-                    cat = Catalog.read(fn, group='main')
-                    chunk = np.linspace(0, cat.csize, nchuncks, dtype=int)
-                    chunks = list(zip(chunk[:-1], chunk[1:]))
-                    res = p.map(partial(self.read_chuncks_2gpc, filename=fn, group='main'), chunks)
-                    uchuu_halo += [np.concatenate(res)]
-                    if self.use_particles:
-                        cat = Catalog.read(fn, group='sub')
-                        chunk = np.linspace(0, cat.csize, nchuncks, dtype=int)
-                        chunks = list(zip(chunk[:-1], chunk[1:]))
-                        res_sub = p.map(partial(self.read_chuncks_2gpc, filename=fn, group='sub'), chunks)
-                        uchuu_subhalo += [np.concatenate(res_sub)]
+                if self.sim_name == 'Uchuu2Gpc':
+                    groups = ['main', 'sub'] if self.use_particles else ['main']
+                    for group in groups:
+                        # Only inspect the dataset shape; do not construct a catalogue.
+                        with h5py.File(fn, 'r') as handle:
+                            size = next(iter(handle[group].values())).shape[0]
+                        edges = np.linspace(0, size, nchuncks + 1, dtype=int)
+                        chunks = [(a, b) for a, b in zip(edges[:-1], edges[1:]) if b > a]
+                        if not chunks:
+                            chunks = [(0, 0)]
+                        reader = partial(_read_chunk_2gpc, filename=fn, group=group,
+                                         mass_cut=self.mass_cut)
+                        result = pool.map(reader, chunks)
+                        (uchuu_halo if group == 'main' else uchuu_subhalo).extend(result)
                 else:
-                    cat = h5py.File(fn, 'r')    
-                    chunk = np.linspace(0, cat[list(cat.keys())[0]].size, nchuncks, dtype=int)
-                    chunks = list(zip(chunk[:-1], chunk[1:]))
-                    cat.close()
-                    res = p.map(partial(self.read_chunk_DDE, filename=fn), chunks)
-            p.close()
+                    with h5py.File(fn, 'r') as handle:
+                        size = handle[next(iter(handle))].size
+                    edges = np.linspace(0, size, nchuncks + 1, dtype=int)
+                    chunks = [(a, b) for a, b in zip(edges[:-1], edges[1:]) if b > a]
+                    if not chunks:
+                        chunks = [(0, 0)]
+                    reader = partial(_read_chunk_dde, filename=fn, mass_cut=self.mass_cut)
+                    result = pool.map(reader, chunks)
+                    uchuu_halo.extend(halos for halos, _ in result)
 
-        if self.sim_name=='Uchuu2Gpc':
-            self.hcat = Catalog.from_array(np.concatenate(uchuu_halo))
-            if self.use_particles:
-                self.part_subsamples = Catalog.from_array(np.concatenate(uchuu_subhalo))
-            else:
-                self.part_subsamples = None
-        else:
-            self.hcat = Catalog.from_array(np.hstack([res[i][0] for i in range(len(res))]))
-            if self.use_particles:
-                self.part_subsamples = Catalog.from_array(np.hstack([res[i][1] for i in range(len(res))]))
-            else:
-                self.part_subsamples=None
+        # Concatenate once after reading all files, preserving input row order.
+        self.hcat = Catalog.from_array(np.concatenate(uchuu_halo))
+        self.part_subsamples = (Catalog.from_array(np.concatenate(uchuu_subhalo))
+                                if self.use_particles else None)
         self.logger.info(f'Uchuu catalogue read in {time.time()-st:.2f} seconds')
 
 
