@@ -1240,27 +1240,6 @@ class HOD(BaseLogger):
         max_count = cic_settings.get('max_count', None) if max_count is None else max_count
         
         counts = []
-<<<<<<< HEAD
-
-        for tr in tracers:
-            mock_cat = cat[cat['TRACER'] == tr]
-            if self.args['clustering_settings']['rsd']:
-                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
-                pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
-            else:
-                pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
-            counts.append(compute_CIC(pos[0], pos[1], pos[2], self.boxsize, cic_settings['R_max'], cic_settings['L_max']))
-
-        # Choose common bins after collecting every tracer, so a later
-        # tracer's larger counts are included without combining samples.
-        if max_count is None:
-            max_count = max((int(np.nanmax(cc)) for cc in counts if len(cc)), default=0)
-        bins = np.arange(-0.5, max_count + 1.5)
-        cens = 0.5 * (bins[:-1] + bins[1:])
-        hists = []
-        for tracer_counts in counts:
-            hist, _ = np.histogram(tracer_counts, bins=bins)
-=======
         hists = []
         positions = self._tracer_positions(cat, tracers, verbose=verbose)
 
@@ -1272,7 +1251,6 @@ class HOD(BaseLogger):
             bins = np.arange(-0.5, max_count + 1.5)
             hist, edges = np.histogram(counts, bins=bins)
             cens = 0.5 * (edges[:-1] + edges[1:])
->>>>>>> c9224bb (modify vsmear implementation)
             if density and hist.sum() > 0:
                 hist = hist / hist.sum()
             hists.append(hist)
