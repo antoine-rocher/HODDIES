@@ -28,7 +28,8 @@ priors:
 minimizer:
   maxiter: 5  # Maximum number of iterations for the minimizer
   popsize: 10  # Population size for the minimizer
-  xtol: 1e-6  # Tolerance for convergence
+  xtol: 1  # Tolerance for convergence
+  ftol: 1  # Tolerance for convergence
   method: cmaes  # Minimization method to use (e.g., cmaes, nelder-mead, etc.)
   save_fn: null  # File name to save the best fit result. If None, default is 'best_fit_result_model_name.npy' in the output directory. If a string is provided, it will be used as the file name.
 
