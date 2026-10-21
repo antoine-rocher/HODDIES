@@ -148,7 +148,8 @@ def test_cross_correlation_wrappers_reuse_errors_and_project_estimators(monkeypa
     hod, cat, draws, calls = make_hod(monkeypatch)
     for method in (hod.get_cross_wp, hod.get_cross_xiells):
         result = method(cat, tracers=['LRG', 'ELG'], verbose=False)
-        assert set(result) == {'LRG_LRG', 'LRG_ELG', 'ELG_ELG'}
+        # Cross-pair keys follow HOD.get_comb_tr_list's alphabetical ordering.
+        assert set(result) == {'ELG_ELG', 'ELG_LRG', 'LRG_LRG'}
         for separation, statistic in result.values():
             assert separation.shape == (3,)
             assert statistic.shape[-1] == 3
