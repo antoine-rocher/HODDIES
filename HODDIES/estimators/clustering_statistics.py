@@ -149,7 +149,7 @@ def compute_twopoint(pos1, mode, edges, boxsize=None, los='z', nthreads=32, R1R2
 
 def compute_delta_sigma(gal_pos, part_pos, boxsize, rbins, rho_m,
                        pimax=None, dpi=1., los='z', nthreads=64,
-                       rp_min_int=1e-3, n_int=200):
+                       rp_min_int=1e-3, n_int=200, rp_eval=None):
     """
     Compute excess surface density ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2] via the galaxy-matter cross-correlation.
     
@@ -175,12 +175,22 @@ def compute_delta_sigma(gal_pos, part_pos, boxsize, rbins, rho_m,
         simulation softening; everything below is handled analytically.
     n_int : int
         Number of internal rp bins.
+    rp_eval : array, optional
+        Radii in Mpc/h at which to evaluate the internal fine-grid model.
+        Must lie within rbins. Defaults to the geometric bin centres.
 
     Returns
     -------
     rp, delta_sigma
-        rp and delta_sigma on the output binning.
+        rp and delta_sigma at rp_eval, or at the geometric output bin centres.
     """
+    if rp_eval is None:
+        rp = np.sqrt(np.asarray(rbins[:-1]) * np.asarray(rbins[1:]))
+    else:
+        rp = np.asarray(rp_eval, dtype=float)
+        if (rp.ndim != 1 or not rp.size or not np.isfinite(rp).all()
+                or np.any(np.diff(rp) <= 0) or np.any(rp < rbins[0]) or np.any(rp > rbins[-1])):
+            raise ValueError('rp_eval must be finite, increasing radii within rbins.')
     if pimax is None:
         pimax = boxsize / 2.
 
@@ -220,7 +230,6 @@ def compute_delta_sigma(gal_pos, part_pos, boxsize, rbins, rho_m,
 
     ds_int = rho_m * (wp_bar - wp) / 1e12       # -> h Msun / pc^2
 
-    rp = np.sqrt(rbins[:-1] * rbins[1:])
     return rp, np.interp(rp, rp_c, ds_int) 
 
 
