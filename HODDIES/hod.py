@@ -3,25 +3,15 @@
 import numba
 import time 
 import os
-<<<<<<< HEAD
-from HODDIES.utils import *
-from HODDIES.estimators.clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat, compute_CIC, compute_power_spectrum
-from HODDIES import HOD_models
-=======
 from .utils import *
 from .estimators.clustering_statistics import compute_twopoint, compute_delta_sigma, get_list_stat, compute_CIC, compute_power_spectrum
 from . import HOD_models, vsmear_func
->>>>>>> c9224bb (modify vsmear implementation)
 import yaml 
 from mpytools import Catalog
 import collections.abc
-<<<<<<< HEAD
-from .fit_functions.fits_functions import compute_chi2, flatten_stats
-=======
 import hashlib
 import pickle
-from .fit_functions.fits_functions import compute_chi2
->>>>>>> c9224bb (modify vsmear implementation)
+from .fit_functions.fits_functions import compute_chi2, flatten_stats
 import numbers
 import numpy as np
 from HODDIES.sim_loader import BaseLogger
@@ -938,7 +928,7 @@ class HOD(BaseLogger):
 
     def _tracer_positions(self, cat, tracers, verbose=False):
         """Return positions for each tracer, sharing stored velocity errors."""
-        use_rsd = self.cosmo is not None and self.args['clustering_settings']['rsd']
+        use_rsd = self.args['clustering_settings']['rsd'] and getattr(self, 'cosmo', None) is not None
         if use_rsd:
             self.assign_vsmear(cat, tracers=tracers, verbose=verbose)
         elif self.args['clustering_settings']['rsd']:
@@ -1240,15 +1230,9 @@ class HOD(BaseLogger):
         max_count = cic_settings.get('max_count', None) if max_count is None else max_count
         
         counts = []
-<<<<<<< HEAD
-
+        positions = self._tracer_positions(cat, tracers, verbose=verbose)
         for tr in tracers:
-            mock_cat = cat[cat['TRACER'] == tr]
-            if self.args['clustering_settings']['rsd']:
-                vsmear = self.get_vsmear(tr, mock_cat.size, verbose=verbose)
-                pos = apply_rsd(mock_cat, self.z_simu, self.boxsize, self.cosmo, self.H_0, self.args['clustering_settings']['los'], vsmear)
-            else:
-                pos = mock_cat['x']%self.boxsize, mock_cat['y']%self.boxsize, mock_cat['z']%self.boxsize
+            pos = positions[tr]
             counts.append(compute_CIC(pos[0], pos[1], pos[2], self.boxsize, cic_settings['R_max'], cic_settings['L_max']))
 
         # Choose common bins after collecting every tracer, so a later
@@ -1260,19 +1244,6 @@ class HOD(BaseLogger):
         hists = []
         for tracer_counts in counts:
             hist, _ = np.histogram(tracer_counts, bins=bins)
-=======
-        hists = []
-        positions = self._tracer_positions(cat, tracers, verbose=verbose)
-
-        for tr in tracers:
-            pos = positions[tr]
-            counts += [compute_CIC(pos[0], pos[1], pos[2], self.boxsize, cic_settings['R_max'], cic_settings['L_max'])]
-            if max_count is None:
-                max_count = int(np.nanmax(counts))
-            bins = np.arange(-0.5, max_count + 1.5)
-            hist, edges = np.histogram(counts, bins=bins)
-            cens = 0.5 * (edges[:-1] + edges[1:])
->>>>>>> c9224bb (modify vsmear implementation)
             if density and hist.sum() > 0:
                 hist = hist / hist.sum()
             hists.append(hist)
@@ -1296,6 +1267,8 @@ class HOD(BaseLogger):
         tracers : list or str, optional
             Which tracers to compute ΔΣ for. If None, use all tracers.
         verbose : bool, optional
+        return_dic : bool, optional
+            Return an auto-pair dictionary, including for a single tracer.
     
         Returns
         -------
@@ -1303,6 +1276,8 @@ class HOD(BaseLogger):
             rp midpoints for ΔΣ(R).
         ds_all : list or array
             ΔΣ(R) in units of 1e12[Msun/h / (Mpc/h)^2]  for each tracer.
+            With one tracer and return_dic=False, returns (rp, ds). Otherwise
+            returns {tracer_auto_pair: (rp, ds)} for all selected tracers.
         """
 
 
@@ -1319,8 +1294,7 @@ class HOD(BaseLogger):
             else:
                 ds_settings['edges_rp'] = np.linspace(ds_settings['rp_min'], ds_settings['rp_max'], ds_settings['n_rp_bins']+1)
     
-        if return_dic | len(tracers) > 1:
-            res_dict = {}
+        res_dict = {}
         for tr in tracers:
     
             if verbose:
@@ -1341,18 +1315,18 @@ class HOD(BaseLogger):
                 pos_lens,
                 self.field_particles['pos'][::100]%self.boxsize,
                 rbins=ds_settings['edges_rp'],
+                rp_eval=ds_settings.get('rp_eval'),
                 boxsize=self.boxsize,
                 rho_m=self.cosmo.rho_m(0.5) * 1e10,
                 los=self.args['clustering_settings'].get('los', 'z'),
                 pimax=ds_settings['pimax'],
                 nthreads=self.nthreads,
             )
-            if return_dic:
-                res_dict[f'{tr}_{tr}'] = rp, ds
+            res_dict[f'{tr}_{tr}'] = rp, ds
             if verbose:
                 self.logger.info(f'Done in {time.time() - t0:.3f} s')
 
-        if (len(tracers) == 1) & ~return_dic:
+        if len(tracers) == 1 and not return_dic:
             return rp, ds
         return res_dict
     
@@ -2453,7 +2427,7 @@ class HOD(BaseLogger):
         self.logger.info('First point: '+(', ').join([f'{nn}: {val}' for nn, val in zip(self.name_params, init_params)]))
 
         options = {}
-        for key in ['maxiter', 'popsize', 'xtol']:
+        for key in ['maxiter', 'popsize', 'xtol', 'ftol']:
             options[key] = self.args['fit_param']['minimizer'][key]
         if mpi_comm is None:
             mpi_rank = 0

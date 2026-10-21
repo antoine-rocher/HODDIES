@@ -718,8 +718,8 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
     Nh = len(halo_id_list)
 
     # === Phase 2: identify group boundaries for unique halo IDs
-    with objmode(st='f8'):
-        st = time.perf_counter()
+    # with objmode(st='f8'):
+    #     st = time.perf_counter()
     uniq_hid = []
     start_pos = []
     last_val = sorted_hid[0]
@@ -736,12 +736,12 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
     uniq_hid = np.array(uniq_hid, dtype=np.int64)
     start_pos = np.array(start_pos, dtype=np.int64)
     Nuniq = len(uniq_hid)
-    with objmode():
-        print('Grouping time (s):', time.perf_counter()-st, flush=True)
+    # with objmode():
+    #     print('Grouping time (s):', time.perf_counter()-st, flush=True)
 
     # === Phase 3: binary search each target halo_id in uniq_hid
-    with objmode(st='f8'):
-        st = time.perf_counter()
+    # with objmode(st='f8'):
+    #     st = time.perf_counter()
     start_match = np.full(Nh, -1, dtype=np.int64)
     end_match = np.full(Nh, -1, dtype=np.int64)
 
@@ -762,11 +762,11 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
         if found != -1:
             start_match[i] = start_pos[found]
             end_match[i] = start_pos[found + 1]
-    with objmode():
-        print('Matching time (s):', time.perf_counter()-st, flush=True)
+    # with objmode():
+    #     print('Matching time (s):', time.perf_counter()-st, flush=True)
     # === Phase 4: compute offsets (CSR)
-    with objmode(st='f8'):
-        st = time.perf_counter()
+    # with objmode(st='f8'):
+    #     st = time.perf_counter()
     offsets = np.empty(Nh + 1, dtype=np.int64)
     offsets[0] = 0
     for i in range(Nh):
@@ -775,12 +775,12 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
         else:
             count = 0
         offsets[i + 1] = offsets[i] + count
-    with objmode():
-        print('Offsets time (s):', time.perf_counter()-st, flush=True)
+    # with objmode():
+    #     print('Offsets time (s):', time.perf_counter()-st, flush=True)
     # === Phase 5: fill flat array
 
-    with objmode(st='f8'):
-        st = time.perf_counter()
+    # with objmode(st='f8'):
+    #     st = time.perf_counter()
     flat = np.empty(offsets[-1], dtype=np.int64)
     for i in numba.prange(Nh):
         if start_match[i] != -1:
@@ -789,8 +789,8 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
             out_start = offsets[i]
             out_end = offsets[i + 1]
             flat[out_start:out_end] = order_idx[start:end]
-    with objmode():
-        print('Filling time (s):', time.perf_counter()-st, flush=True)
+    # with objmode():
+    #     print('Filling time (s):', time.perf_counter()-st, flush=True)
     return flat, offsets
 
 

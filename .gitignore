@@ -55,7 +55,15 @@ setup_test.py
 # *test*.ipynb
 # *test*.py
 HODDIES_paper/
-checks_pipeline/
+# Keep benchmark source/report files; generated measurements remain ignored.
+checks_pipeline/*
+!checks_pipeline/.gitignore
+!checks_pipeline/benchmark_hod_pipeline.py
+!checks_pipeline/run_hod_benchmark.sh
+!checks_pipeline/HOD_PIPELINE_BENCHMARK.md
+!checks_pipeline/benchmark/
+checks_pipeline/benchmark/*
+!checks_pipeline/benchmark/plot_benchmark_results.ipynb
 *tmp/
 /HODDIES/test_hcat.hdf5
 /HODDIES/test_particles_cat.hdf5

@@ -2,6 +2,8 @@ import numpy as np
 from numba import njit, numba
 import os
 import scipy
+from scipy.special import gammaln  # log(n!)
+import math 
 
 def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
 
@@ -23,7 +25,10 @@ def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
     los : {'x', 'y', 'z'}, optional
         Line-of-sight axis. Default is 'z'.
     vsmear : float, array-like, optional
-        Add redshift errors in km/s. If vsmear is a number create a normal distribution $\mathcal{N} (0,v_\mathrm{smear)}$. Default is 0.
+        Already sampled line-of-sight velocity errors in km/s, one per galaxy.
+        A scalar is a constant velocity offset; 0 or None adds no error.
+        Sample model dictionaries with HOD.get_vsmear or HOD.assign_vsmear
+        before calling this deterministic position transformation.
 
     Returns
     -------
@@ -31,7 +36,16 @@ def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
         List of arrays containing RSD-applied positions for x, y, and z.
     """
 
-    rsd_factor = 1 / (1 / (1 + z) * H_0 * cosmo.efunc(z))   
+    if los not in 'xyz' or len(los) != 1:
+        raise ValueError('los must be x, y, or z')
+    if isinstance(vsmear, dict):
+        raise ValueError('apply_rsd expects sampled velocity errors, not a vsmear model dictionary')
+    vsmear = np.asarray(0. if vsmear is None else vsmear, dtype=np.float64)
+    if vsmear.ndim > 0 and vsmear.shape != np.shape(cat[los]):
+        raise ValueError('vsmear must be a scalar or contain one velocity error per galaxy')
+    if not np.all(np.isfinite(vsmear)):
+        raise ValueError('vsmear must contain finite velocity errors')
+    rsd_factor = 1 / (1 / (1 + z) * H_0 * cosmo.efunc(z))
     pos_rsd = [cat[p] % boxsize if p !=los else (cat[p] + (cat['v'+p] + vsmear)*rsd_factor) %boxsize for p in 'xyz']    
     return pos_rsd
     
@@ -188,8 +202,106 @@ def apply_rsd(cat, z, boxsize, cosmo, H_0=100, los='z', vsmear=0):
 
 
 
+
+TAB_GAMMA_LN = scipy.special.gammaln(np.arange(1000001, dtype=np.float64))
+
+@njit(fastmath=True)
+def log_factorial(x):
+    return TAB_GAMMA_LN[x + 1]
+
+
+@njit(fastmath=True)
+def cmp_logZ(lam, nu, max_x=1000):
+    x = np.arange(max_x + 1)
+    log_terms = x * np.log(lam) - nu * log_factorial(x)
+    m = np.max(log_terms)          # log-sum-exp trick
+    return m + np.log(np.sum(np.exp(log_terms - m)))
+
+@njit(fastmath=True)
+def cmp_pmf_vec(x, lam, nu, logZ=None, max_x=1000):
+    x = np.asarray(x)
+    if logZ is None:
+        logZ = cmp_logZ(lam, nu, max_x)
+
+    log_p = x * np.log(lam) - nu * log_factorial(x) - logZ
+    return np.exp(log_p)
+
+@njit(fastmath=True)
+def get_max_x(lam):
+    if lam < 15:
+        return 50
+    elif lam < 100:
+        return 200
+    elif lam < 700:
+        return 1000
+    elif lam < 4000:
+        return 5000
+    else:
+        return int(lam*1.1)
+
+@njit(fastmath=True)
+def cmp_lambda_small_mu(mu, nu):
+    """
+    Inverse of small-lambda CMP mean expansion
+    up to O(mu^4).
+    """
+
+    a2 = 2.0**(-nu)
+    a3 = 6.0**(-nu) 
+    a4 = 24.0**(-nu)
+
+    A = 2*a2 - 1
+    B = 3*a3 - 3*a2 + 1
+    C = 4*a4 - 4*a3 - 2*a2*a2 + 4*a2 - 1
+
+    return (
+        mu
+        - A*mu**2
+        + (2*A*A - B)*mu**3
+        + (-5*A**3 + 5*A*B - C)*mu**4
+    )
+
+@njit(fastmath=True)
+def cmp_lambda_from_mean(mu, nu):
+    """Rescale λ so CMP mean ≈ mu (Poisson mean)."""
+    return (mu + (nu - 1) / (2 * nu)) ** nu
+
+
+@njit(fastmath=True)
+def cmp_lambda_from_mu_allscale(mu, nu, sig=0.1):
+    """Use small-lambda approximation for small mu, otherwise use large-lambda."""
+    # The Poisson limit is exact, including below the blending threshold.
+    if nu == 1.0:
+        return mu
+    # Threshold for switching between approximations
+    threshold = 0.9  # Adjust this value as needed
+
+    #  ---------- Adaptive blending ----------
+    w = 0.5*(math.erf((mu - threshold)/sig)+1)
+    mu_small = cmp_lambda_small_mu(mu, nu)
+    mu_large = cmp_lambda_from_mean(mu, nu) if mu > 0.5 else 0 #np.nan_to_num does not work in numba!
+    mu = (1-w)*mu_small + w*mu_large
+    return mu
+
+
+@njit(fastmath=True)
+def cmp_sample(N_sat, nu): 
+    """Draw by inverse CDF; even at nu=1 this uses a different RNG stream
+    from np.random.poisson, so equal seeds do not imply equal catalogues.
+    """
+    lam_cmp = cmp_lambda_from_mu_allscale(N_sat, nu)
+    max_x = get_max_x(N_sat)
+    x = np.arange(max_x + 1) 
+    logZ = cmp_logZ(lam_cmp, nu, max_x=max(300, int(max_x*1.1))) 
+    pmf = cmp_pmf_vec(x, lam_cmp, nu, logZ) 
+    cdf = np.cumsum(pmf) 
+    cdf /= cdf[-1] 
+    u = np.random.rand() 
+    return (cdf < u).sum()
+
+
 @njit(parallel=True, fastmath=True)
-def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32, ab_arr=None, conformity=False, link_sat_to_central=False, seed=None):
+def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, nu=1, p_ab=None, Nthread=32, ab_arr=None, weight=None, conformity=False, link_sat_to_central=False, seed=None):
     """
     Compute the number of central and satellite galaxies in a halo using a HOD (Halo Occupation Distribution) model.
 
@@ -226,11 +338,10 @@ def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32,
             Sampled number of satellites per halo.
     """
 
-    
-    numba.set_num_threads(Nthread)
     # starting index of each thread
+    # numba.set_num_threads(Nthread)
     hstart = np.rint(np.linspace(0, len(log10_Mh), Nthread + 1))
-    cond_cent = np.zeros(log10_Mh.size, dtype=np.bool)
+    cond_cent = np.zeros(log10_Mh.size, dtype=np.bool_)
     proba_sat = np.empty_like(log10_Mh, dtype=np.int64)
     Nb_sat = 0
 
@@ -239,21 +350,12 @@ def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32,
         if seed is not None:
             np.random.seed(seed[tid])
         for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-            M_0 = p_sat[1]
             Ncent = fun_cHOD(log10_Mh[i], p_cen)
             if p_ab is not None:
                 Ncent *= (1 + np.sum(p_ab[0] * ab_arr[i])*(1-Ncent))
-            cond_cent[i] = Ncent - np.random.uniform(0, 1) > 0
+            cond_cent[i] = Ncent * weight[i] - np.random.uniform(0, 1) > 0
             if p_sat is not None :
-                M_0 = p_sat[1]
-                if log10_Mh[i] <= M_0:
-                    N_sat = 0
-                elif np.abs(log10_Mh[i]- M_0) < -0.001:
-                    p_sat[1] += 0.001
-                    N_sat = fun_sHOD(log10_Mh[i], p_sat)
-                    p_sat[1] -= 0.001
-                else:
-                    N_sat = fun_sHOD(log10_Mh[i], p_sat)
+                N_sat = fun_sHOD(log10_Mh[i], p_sat)
                 if link_sat_to_central:
                     N_sat *= Ncent
                 if p_ab is not None:
@@ -263,7 +365,10 @@ def compute_N(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat, p_ab=None, Nthread=32,
                 elif conformity:
                     proba_sat[i] = np.random.poisson(N_sat*cond_cent[i])
                 else :
-                    proba_sat[i] = np.random.poisson(N_sat)
+                    # if nu == 1:
+                    #     proba_sat[i] = np.random.poisson(N_sat)
+                    # else:
+                    proba_sat[i] = cmp_sample(N_sat, nu)
                 if proba_sat[i] > 0:
                     Nb_sat += proba_sat[i]
                     
@@ -306,7 +411,7 @@ def getPointsOnSphere_jit(nPoints, Nthread=32, seed=None):
             Array of shape (nPoints, 3) with unit vectors uniformly distributed on a sphere.
     """
 
-    numba.set_num_threads(Nthread)
+    # numba.set_num_threads(Nthread)
     ind = min(Nthread, nPoints)
     # starting index of each thread
     hstart = np.rint(np.linspace(0, nPoints, ind+1))
@@ -329,73 +434,8 @@ def getPointsOnSphere_jit(nPoints, Nthread=32, seed=None):
 
 
 
-def rd_draw_NFW(nPoints, burn_in=100000):
-    """
-    Draw random samples from a 3D NFW profile using the Metropolis-Hastings algorithm.
-
-    Parameters:
-        nPoints : int
-            Total number of samples to generate.
-        nPoints : int, optional
-            Number of point to remove from the Metropolis-Hastings algorithm. Default is 100000.
-
-    Returns:
-        ndarray
-            Random samples from the NFW profile.
-    """
-
-    
-    if nPoints <= burn_in:
-        raise ValueError (f'Error : NPoints must be above {burn_in}')
-    epsilon = 0.3
-    previousX = 0.3
-
-    def NFWprofile(x):
-        # multiply by x^2 to get P(r) and not rho(r)
-        return 1./(x*(1+x)**2)
-    previousP = NFWprofile(previousX)
-    data = np.zeros(nPoints)
-    i = 0
-    for step in np.arange(nPoints)+1:
-        evalX = previousX+2.*(np.random.uniform()-0.5)*epsilon
-        evalP = NFWprofile(evalX)
-        if evalX < 0.:
-            evalP = 0.
-        elif evalX < 0.01:
-            evalP = NFWprofile(0.01)
-        else:
-            pass
-        R = evalP/previousP
-        if R >= 1:
-            previousX = evalX*1.
-            previousP = evalP*1.
-        else:
-            if np.random.uniform() < R:
-                previousX = evalX*1.
-                previousP = evalP*1.
-        data[i] = previousX*1.
-        i += 1
-        # if step%100000==0 and step>1000 :
-        #     print (step)
-        #     print (np.max(data))
-        #     x=np.linspace(0.,40.,1000)
-        #     h,e=np.histogram(data[data>0],bins=1000,range=(0.,40.))
-        #     plt.plot(x,h)
-        #     x=np.linspace(0.,40.,1000)
-        #     plt.plot(x,21000.*4.*NFWprofile(x))       #Normalisation a revoir mais profile OK
-        #     plt.xscale('log')
-        #     plt.yscale('log')
-        #     plt.show()
-    dataPruned = data[burn_in:]
-    np.random.shuffle(dataPruned)
-    os.makedirs('data', exist_ok=True)
-    np.save('data/nfw.npy', dataPruned)
-    return dataPruned
-
-
-
 @njit(parallel=True, fastmath=True)
-def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, conformity=False, link_sat_to_central=False):
+def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, p_cen, p_sat=None, conformity=False, link_sat_to_central=False):
     """
     Compute total number of galaxies and satellite fraction from a given HOD parameter set.
 
@@ -416,15 +456,17 @@ def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, confo
             Use conformity when calculating satellites. Default is False.
 
     Returns:
-        tuple(float, float)
-            Total number of galaxies, and satellite fraction.
+        tuple(float, float, float)
+            Total number of galaxies, satellite fraction, and mean halo mass of the sample.
     """
 
+    # numba.set_num_threads(Nthread)
     nbinsM, logbinM = np.histogram(log10_Mh, bins=100)[:2]
-    ngal_c = 0
-    ngal_sat = 0 
+    ngal_c = np.empty_like(nbinsM, dtype=np.float64)
+    ngal_sat = np.empty_like(nbinsM, dtype=np.float64)
+    mass_b = np.empty_like(nbinsM, dtype=np.float64)
     if p_sat is not None :
-        for i in numba.prange(len(logbinM)):
+        for i in numba.prange(len(nbinsM)):
             LogM = ((logbinM[i]+logbinM[i+1])*0.5)
             Ncent = fun_cHOD(LogM, p_cen)
             if Ncent < 0:
@@ -433,24 +475,25 @@ def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, confo
                 N_sat = 0
             else:
                 N_sat = fun_sHOD(LogM, p_sat)
-            ngal_c += (nbinsM[i] * Ncent)
-            ngal_sat += (nbinsM[i]* Ncent*N_sat) if conformity | link_sat_to_central else (nbinsM[i] * N_sat)
-        ngal_tot = ngal_c+ngal_sat
-        return ngal_tot, ngal_sat/ngal_tot
+            ngal_c[i] = (nbinsM[i] * Ncent)
+            ngal_sat[i] = (nbinsM[i]* Ncent*N_sat) if conformity | link_sat_to_central else (nbinsM[i] * N_sat)
+            mass_b[i] = (ngal_c[i]+ngal_sat[i])*10**LogM
+        ngal_tot = ngal_c.sum()+ngal_sat.sum()
+        return ngal_tot, ngal_sat.sum()/ngal_tot, mass_b.sum()/ngal_tot
     else: 
-        for i in numba.prange(len(logbinM)):
+        for i in numba.prange(len(nbinsM)):
             LogM = ((logbinM[i]+logbinM[i+1])*0.5)
             Ncent = fun_cHOD(LogM, p_cen)
             if Ncent < 0:
                 Ncent = 0
-            ngal_c += (nbinsM[i] * Ncent)
-        
-        return ngal_c, 0
-    
+            ngal_c[i] = (nbinsM[i] * Ncent)
+            mass_b[i] = (ngal_c[i]*10**LogM)
+        return ngal_c.sum(), 0, mass_b.sum()/(ngal_c.sum())
+
 """Interpolation of lambertW function for NFW computation"""
 xt = np.linspace(-1,0,1000000)
 ft = np.real(scipy.special.lambertw(xt, k=0))
-interp_lambertw= njit(parallel=True, fastmath=True)(lambda x: np.interp(x, xt, ft))
+interp_lambertw= njit(fastmath=True)(lambda x: np.interp(x, xt, ft))
 
 @njit(fastmath=True)
 def get_etavir_nfw(c): 
@@ -513,9 +556,11 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
     """
 
     
-    numba.set_num_threads(Nthread)
+    # numba.set_num_threads(Nthread)
     G = 4.302e-6  # in kpc/Msol (km.s)^2
-    # figuring out the number of halos kept for each thread
+    # Validate vel_sat once, before the prange loop. Keeping the raise inside the
+    # loop gives it a second exit path, which prevents Numba from parallelizing it.
+    
     x_sat = np.empty_like(x_h)
     y_sat = np.empty_like(y_h)
     z_sat = np.empty_like(z_h)
@@ -550,17 +595,13 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
                 vx_sat[i] = np.random.normal(loc=vx_h[i], scale=sig)
                 vy_sat[i] = np.random.normal(loc=vy_h[i], scale=sig)
                 vz_sat[i] = np.random.normal(loc=vz_h[i], scale=sig)
-            elif vel_sat=='infall':
+            else:  # vel_sat == 'infall' (validated before the loop)
                 sig = vrms_h[i]*0.577
                 norm = np.sqrt((x_h[i] - x_sat[i])**2 + (y_h[i] - y_sat[i])**2 + (z_h[i] -z_sat[i])**2)
                 v_r = np.random.normal(loc=v_infall, scale=sig)
                 vx_sat[i] = np.random.normal(loc=vx_h[i], scale=sig) + ((x_h[i] - x_sat[i])/norm * v_r)
                 vy_sat[i] = np.random.normal(loc=vy_h[i], scale=sig) + ((y_h[i] - y_sat[i])/norm * v_r)
                 vz_sat[i] = np.random.normal(loc=vz_h[i], scale=sig) + ((z_h[i] - z_sat[i])/norm * v_r)
-
-            else:
-                raise ValueError(
-                    'Wrong vel_sat argument only "rd_normal", "infall", "NFW"')
     return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat
 
 
@@ -632,7 +673,7 @@ from numba import objmode
 @njit(parallel=True, fastmath=True)
 def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
     """
-    Build a CSR-style index mapping each halo_id to all corresponding particle indices.
+    Build a CSR-style index mapping each halo_id to all corresponding particle indices. (AI based code)
 
     Parameters
     ----------
@@ -672,13 +713,13 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
     >>> # indices for first halo
     >>> flat[offsets[0]:offsets[1]]
     """
-    numba.set_num_threads(Nthread)
+    # numba.set_num_threads(Nthread)
     Np = len(sorted_hid)
     Nh = len(halo_id_list)
 
     # === Phase 2: identify group boundaries for unique halo IDs
-    with objmode(st='f8'):
-        st = time.perf_counter()
+    # with objmode(st='f8'):
+    #     st = time.perf_counter()
     uniq_hid = []
     start_pos = []
     last_val = sorted_hid[0]
@@ -695,12 +736,12 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
     uniq_hid = np.array(uniq_hid, dtype=np.int64)
     start_pos = np.array(start_pos, dtype=np.int64)
     Nuniq = len(uniq_hid)
-    with objmode():
-        print('Grouping time (s):', time.perf_counter()-st, flush=True)
+    # with objmode():
+    #     print('Grouping time (s):', time.perf_counter()-st, flush=True)
 
     # === Phase 3: binary search each target halo_id in uniq_hid
-    with objmode(st='f8'):
-        st = time.perf_counter()
+    # with objmode(st='f8'):
+    #     st = time.perf_counter()
     start_match = np.full(Nh, -1, dtype=np.int64)
     end_match = np.full(Nh, -1, dtype=np.int64)
 
@@ -721,11 +762,11 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
         if found != -1:
             start_match[i] = start_pos[found]
             end_match[i] = start_pos[found + 1]
-    with objmode():
-        print('Matching time (s):', time.perf_counter()-st, flush=True)
+    # with objmode():
+    #     print('Matching time (s):', time.perf_counter()-st, flush=True)
     # === Phase 4: compute offsets (CSR)
-    with objmode(st='f8'):
-        st = time.perf_counter()
+    # with objmode(st='f8'):
+    #     st = time.perf_counter()
     offsets = np.empty(Nh + 1, dtype=np.int64)
     offsets[0] = 0
     for i in range(Nh):
@@ -734,12 +775,12 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
         else:
             count = 0
         offsets[i + 1] = offsets[i] + count
-    with objmode():
-        print('Offsets time (s):', time.perf_counter()-st, flush=True)
+    # with objmode():
+    #     print('Offsets time (s):', time.perf_counter()-st, flush=True)
     # === Phase 5: fill flat array
 
-    with objmode(st='f8'):
-        st = time.perf_counter()
+    # with objmode(st='f8'):
+    #     st = time.perf_counter()
     flat = np.empty(offsets[-1], dtype=np.int64)
     for i in numba.prange(Nh):
         if start_match[i] != -1:
@@ -748,25 +789,25 @@ def halo_to_particle_indices(sorted_hid, order_idx, halo_id_list, Nthread=32):
             out_start = offsets[i]
             out_end = offsets[i + 1]
             flat[out_start:out_end] = order_idx[start:end]
-    with objmode():
-        print('Filling time (s):', time.perf_counter()-st, flush=True)
+    # with objmode():
+    #     print('Filling time (s):', time.perf_counter()-st, flush=True)
     return flat, offsets
 
 
 @njit(fastmath=True, parallel=True)
-def sample_satellites_from_particles(x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, 
-                                     xp, yp, zp, vxp, vyp, vzp,
+def sample_satellites_from_particles(xp, yp, zp, vxp, vyp, vzp,
                                      flat, offsets,
-                                     nb_sat, Nthread, seed=None):
+                                     nb_sat, seed=None, vx_h=None, vy_h=None,
+                                     vz_h=None, f_sigv=1.0):
     """
     Randomly sample satellite positions and velocities from particle data
     using precomputed CSR-style halo-to-particle mapping.
 
     Parameters
     ----------
-    xp, yp, zp : ndarray[float64]
+    xp, yp, zp : ndarray
         Particle positions.
-    vxp, vyp, vzp : ndarray[float64]
+    vxp, vyp, vzp : ndarray
         Particle velocities.
     flat, offsets : ndarray[int64]
         CSR structure giving the indices of particles per halo.
@@ -774,11 +815,16 @@ def sample_satellites_from_particles(x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat
     nb_sat : ndarray[int64]
         Number of satellites to draw per halo.
     seed : ndarray[int64], optional
-        Global random seed for reproducibility.
+        One random seed per host halo for reproducibility.
+    vx_h, vy_h, vz_h : ndarray, optional
+        Host halo velocities in CSR halo order; required for f_sigv other than one.
+    f_sigv : float, optional
+        Apply v_sat = v_halo + f_sigv * (v_part - v_halo) in each component.
+        One preserves the particle velocities.
 
     Returns
     -------
-    x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat : ndarray[float64]
+    x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat : ndarray[float32]
         Positions and velocities of all selected satellites (flattened).
         Length = sum(nb_sat)
     mask_missing : ndarray[bool]
@@ -793,11 +839,19 @@ def sample_satellites_from_particles(x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat
     - Designed for 100M+ particles and 10M+ halos.
     """
 
-    numba.set_num_threads(Nthread)
+    # numba.set_num_threads(Nthread)
     Nh = len(nb_sat)
     Nsat_total = np.sum(nb_sat)
+    if f_sigv != 1.0 and (vx_h is None or vy_h is None or vz_h is None):
+        raise ValueError('Host halo velocities are required for particle velocity bias.')
 
     mask_nfw = np.zeros(Nsat_total, dtype=np.bool_)
+    x_sat = np.empty(Nsat_total, dtype=np.float32)
+    y_sat = np.empty(Nsat_total, dtype=np.float32)
+    z_sat = np.empty(Nsat_total, dtype=np.float32)
+    vx_sat = np.empty(Nsat_total, dtype=np.float32)
+    vy_sat = np.empty(Nsat_total, dtype=np.float32)
+    vz_sat = np.empty(Nsat_total, dtype=np.float32)
 
     # Build cumulative sum to know where to write per halo
     cum_sum = np.zeros(Nh + 1, dtype=np.int64)
@@ -830,84 +884,37 @@ def sample_satellites_from_particles(x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat
 
         # Fill in selected satellites
         n_fill = min(n_p, n_s)
-        x_sat[out_start:out_start + n_fill] = xp[indices[:n_fill]]
-        y_sat[out_start:out_start + n_fill] = yp[indices[:n_fill]]
-        z_sat[out_start:out_start + n_fill] = zp[indices[:n_fill]]
-        vx_sat[out_start:out_start + n_fill] = vxp[indices[:n_fill]]
-        vy_sat[out_start:out_start + n_fill] = vyp[indices[:n_fill]]
-        vz_sat[out_start:out_start + n_fill] = vzp[indices[:n_fill]]
-
-    return mask_nfw
-
-
-
-@njit(parallel=True, fastmath=True)
-def compute_sat_from_abacus_part(xp, yp, zp, vxp, vyp, vzp, x_sat, y_sat, z_sat, 
-                                 vx_sat, vy_sat, vz_sat, npout, npstart, nb_sat, 
-                                 cum_sum_sat, Nthread, seed=None):
-    
-    """
-    Sample satellite galaxy positions and velocities from Abacus particle subsamples.
-
-    Parameters
-    ----------
-    xp, yp, zp : arrays
-        Particle positions in each axis.
-    vxp, vyp, vzp : arrays
-        Particle velocities in each axis.
-    x_sat, y_sat, z_sat : arrays
-        Host halo positions in each axis.
-    vx_sat, vy_sat, vz_sat : arrays
-        Host halo velocities in each axis.
-    npout : array
-        Number of available particles for each halo.
-    npstart : array
-        Starting index in the global particle array for each halo.
-    nb_sat : array
-        Number of satellites to assign per halo.
-    cum_sum_sat : array
-        Cumulative sum array to locate output indices.
-    Nthread : int
-        Number of threads to use in parallel loop.
-    seed : array, optional
-        Array of seeds for reproducible random sampling across threads.
-
-    Returns
-    -------
-    mask_nfw : array
-        Boolean mask identifying entries with no enough particles (to be filled using NFW).
-    """
-
-    numba.set_num_threads(Nthread)
-    mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
-    hstart = np.rint(np.linspace(0, npout.size, Nthread + 1))
-    for tid in numba.prange(Nthread):
-        if seed is not None:
-            np.random.seed(seed[tid])
-
-        for i in range(int(hstart[tid]), int(hstart[tid + 1])):
-            if nb_sat[i] < npout[i]:
-                tt = np.random.choice(npout[i], nb_sat[i], replace=False) + npstart[i]
-                x_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = xp[tt]
-                y_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = yp[tt]
-                z_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = zp[tt]
-                vx_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vxp[tt]
-                vy_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vyp[tt]
-                vz_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = vzp[tt]
-                #id_parts[cum_sum_sat[i]: cum_sum_sat[i+1]] = tt + npstart[i]            
+        for j in range(n_fill):
+            particle_index = indices[j]
+            satellite_index = out_start + j
+            x_sat[satellite_index] = xp[particle_index]
+            y_sat[satellite_index] = yp[particle_index]
+            z_sat[satellite_index] = zp[particle_index]
+            if vx_h is not None and vy_h is not None and vz_h is not None:
+                vx_sat[satellite_index] = vx_h[i] + f_sigv * (vxp[particle_index] - vx_h[i])
+                vy_sat[satellite_index] = vy_h[i] + f_sigv * (vyp[particle_index] - vy_h[i])
+                vz_sat[satellite_index] = vz_h[i] + f_sigv * (vzp[particle_index] - vz_h[i])
             else:
-                if npout[i] > 0:
-                    tt = np.arange(npout[i]) + npstart[i]
-                    x_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = xp[tt]
-                    y_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = yp[tt]
-                    z_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = zp[tt]
-                    vx_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vxp[tt]
-                    vy_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vyp[tt]
-                    vz_sat[cum_sum_sat[i]: cum_sum_sat[i] + npout[i]] = vzp[tt]
-                
-                mask_nfw[cum_sum_sat[i]+npout[i]: cum_sum_sat[i+1]] = True
-    return mask_nfw
+                vx_sat[satellite_index] = vxp[particle_index]
+                vy_sat[satellite_index] = vyp[particle_index]
+                vz_sat[satellite_index] = vzp[particle_index]
 
+    return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat, mask_nfw
+
+
+
+def update_dic(d, u):
+    """
+    Update a nested dictionary `d` with another dictionary `u`, merging values recursively.
+    """
+    import collections.abc
+    for k, v in u.items():
+        if isinstance(v, collections.abc.Mapping):
+            current = d.get(k, {})
+            d[k] = update_dic(current if isinstance(current, collections.abc.Mapping) else {}, v)
+        else:
+            d[k] = v
+    return d
 
 @njit(parallel=True)
 def _assign_bin_values(bin_idx, col, bins, out):
@@ -996,3 +1003,19 @@ def initialize_assembly_bias_value(logMh, col, bins=50):
     _assign_bin_values(bin_idx, col, bins, out)
 
     return out
+
+
+from numbers import Real
+
+def is_valid_ab_bounds(x):
+    return (
+        isinstance(x, list)
+        and len(x) == 2
+        and all(
+            isinstance(row, list)
+            and len(row) == 2
+            and all(isinstance(v, Real) and not isinstance(v, bool) for v in row)
+            and -1 <= row[0] <= row[1] <= 1
+            for row in x
+        )
+    )
