@@ -74,5 +74,3 @@ if mpi_rank==0:
 
 
     print(res, MPI.Wtime()/60, flush=True)
-
-    # data = {'wp': {'x': rp, 'y': wp, 'err': sigma_wp}}

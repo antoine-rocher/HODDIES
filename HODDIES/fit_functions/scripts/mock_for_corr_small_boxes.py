@@ -73,9 +73,10 @@ for sim_name in sim_names:
     HOD_obj = HOD(base_catalog=sim_abacus, **param)
 
     stats= ['rppi', 'smu', 'delta_sigma']
-    
+    stats = ['delta_sigma']
     HOD_obj.args['clustering_settings']['xi_rppi']['edges_rppi'] = rppi.edges
     HOD_obj.args['clustering_settings']['xi_smu']['edges_smu'] = smu.edges
+    HOD_obj.args['clustering_settings']['delta_sigma']['edges_rp'] = np.logspace(-1, 1.6, 13)
 
     path_to_save = os.path.join(args.dir_to_save, 'z{:.3f}'.format(args.zsim), '{}', 'allcounts_{{}}_{}.npy'.format(sim_name))
 
