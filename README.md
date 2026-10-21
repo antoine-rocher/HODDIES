@@ -57,6 +57,64 @@ HOD_obj.plot_HMF(mock_cat, show_sat=True)
 Example notebooks are provided in directory [nb/](https://github.com/antoine-rocher/HODDIES/tree/main/nb).
 
 
+### Saved mock-data fits
+
+From the repository root in the cosmodesi environment, use
+`HODDIES/fit_functions/scripts/run_mock_minimizer.py` to fit the bundled test
+measurements. The original `run_minimizer_test.py` remains available.
+
+```bash
+# Validate data and covariance without loading halos.
+python HODDIES/fit_functions/scripts/run_mock_minimizer.py --tracers LRG --statistics wp xi_ells --check-data
+# Fit selected statistics; xi_ells expands to xi0 and xi2.
+python HODDIES/fit_functions/scripts/run_mock_minimizer.py --tracers LRG --statistics wp xi2
+# Refresh the report, including any additional output directory.
+python HODDIES/fit_functions/scripts/summarize_mock_fits.py --root /path/to/fits
+```
+
+Statistics are `wp`, `xi_ells`, `xi0`, `xi2`, and `delta_sigma`; tracers are
+`LRG`, `ELG`, or both. Each fit automatically updates
+[MOCK_FIT_RESULTS.md](MOCK_FIT_RESULTS.md) with parameters, chi-square,
+optimizer diagnostics, and comparison plots. Results default to separate run
+directories under `tmp/mock_fits/`. MPI is enabled with `--mpi` when launched
+through `srun` or `mpiexec`.
+
+The default covariance filename follows the selected statistic families and
+tracers: `wp` uses `Mcov_small_box_z0.5_wp_<tracers>.txt`, `wp xi_ells` uses
+`Mcov_small_box_z0.5_wp+xi_<tracers>.txt`, and adding `delta_sigma` uses
+`Mcov_small_box_z0.5_wp+xi+delta_sigma_<tracers>.txt`. Families appear in
+`wp`, `xi`, `delta_sigma` order. Individual `xi0`/`xi2` selections use the `xi`
+matrix and select the matching multipole blocks. A missing matching file must
+be supplied; the runner does not silently use a matrix with extra families.
+Use `--covariance-file` to override the filename. For a different source layout,
+also set `--covariance-tracers` and `--covariance-statistics`; the runner selects
+and reorders the matching rows and columns. `--help` lists all options.
+
+### DESI Y1 LRG clustering and lensing
+
+The DESI runner can add the supplied LRG1 HSC lensing measurements:
+
+```bash
+python HODDIES/fit_functions/scripts/run_desi_y1_minimizer.py --tracers LRG --with-delta-sigma --check-data
+sbatch HODDIES/fit_functions/scripts/run_desi_y1_minimizer_debug.sh --tracers LRG --with-delta-sigma
+```
+
+`--with-delta-sigma` uses z=0.5 halos and LRG clustering at `0.4 < z < 0.6`.
+It reads `rp`, `ds_obs_lrg1`, and `ds_err_lrg1` from
+`../tmp/bgs2_bgs3_lrg1_lrg2_best_fit_hsc.csv`; override this with
+`--delta-sigma-file`. The final missing CSV measurement is excluded. Radial
+edges are fixed to `np.logspace(-1, 1.6, 13)`, in Mpc/h. The estimator evaluates
+its internal fine-grid model at the CSV's 13 valid `rp` centres so the model
+and measurements remain aligned. DeltaSigma
+values and errors retain the CSV units, h Msun/pc², matching the model output.
+
+The lensing covariance uses the squared CSV errors on its diagonal; the
+clustering-lensing cross covariance is assumed zero. The finite-mock correction
+applies only to the clustering precision. Field particles load only for lensing
+fits. Saved inputs and the DESI results report include the lensing bins,
+covariance assumptions, parameters, and plots. Lensing is restricted to this
+LRG bin; the default clustering-only fit remains at z=0.95.
+
 ## Requirements
 
 Strict requirements are:
