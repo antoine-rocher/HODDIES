@@ -412,7 +412,7 @@ def compute_ngal(log10_Mh, fun_cHOD, fun_sHOD, Nthread, p_cen, p_sat=None, confo
 """Interpolation of lambertw function for NFW computation"""
 xt = np.linspace(-1,0,1000000)
 ft = np.real(scipy.special.lambertw(xt, k=0))
-interp_lambertw= njit(parallel=True, fastmath=True)(lambda x: np.interp(x, xt, ft))
+interp_lambertw= njit(fastmath=True)(lambda x: np.interp(x, xt, ft))
 
 @njit(fastmath=True)
 def get_etavir_nfw(c): 
@@ -477,6 +477,15 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
     
     numba.set_num_threads(Nthread)
     G = 4.302e-6  # in kpc/Msol (km.s)^2
+
+    ##### check vel_sat first
+    if vel_sat not in ('NFW', 'rd_normal', 'infall'):
+        raise ValueError('Wrong vel_sat argument: only "rd_normal", "infall", "NFW"')
+    if vel_sat in ('rd_normal', 'infall') and vrms_h is None:
+        raise ValueError("vrms_h must be provided when vel_sat is 'rd_normal' or 'infall'")
+    if vel_sat == 'infall' and v_infall is None:
+        raise ValueError("v_infall must be provided when vel_sat is 'infall'")
+    
     # figuring out the number of halos kept for each thread
     x_sat = np.empty_like(x_h)
     y_sat = np.empty_like(y_h)
@@ -522,9 +531,6 @@ def compute_fast_NFW(x_h, y_h, z_h, vx_h, vy_h, vz_h, c, M, Rvir, rd_pos, rd_vel
                     vx_sat[i] += (x_h[i] - x_sat[i])/norm * v_r
                     vy_sat[i] += (y_h[i] - y_sat[i])/norm * v_r
                     vz_sat[i] += (z_h[i] - z_sat[i])/norm * v_r
-            else:
-                raise ValueError(
-                    'Wrong vel_sat argument only "rd_normal", "infall", "NFW"')
     return x_sat, y_sat, z_sat, vx_sat, vy_sat, vz_sat
 
 
@@ -634,48 +640,45 @@ def compute_power_spectrum(pos1, boxsize, kedges, pos2=None, los='z', nmesh=256,
     return result.poles
 
 
-@njit(parallel=True)
 def find_indices(part_id, sat_id, Nthread):
-    numba.set_num_threads(Nthread)
-    n = len(part_id)
-    m = len(sat_id)
+    """Group particle indices by halo id (CSR layout).
 
-    # Phase 1 — index inverse (hash simplifié pour matching rapide)
-    val_map = dict()
-    for i in range(m):
-        val_map[sat_id[i]] = i
-    val_index = np.full(np.max(part_id) + 1, -1, dtype=np.int64)
-    for i in range(m):
-        val_index[sat_id[i]] = i
+    Parameters
+    ----------
+    part_id : ndarray
+        Halo id of each particle.
+    sat_id : ndarray
+        Halo ids to group particles for, one entry per halo.
+    Nthread : int
+        Kept for API compatibility; the grouping is deterministic and serial.
 
-    # Phase 2 — compteur par valeur
-    counts = np.zeros(m, dtype=np.int64)
-    for i in numba.prange(n):
-        v = part_id[i]
-        if v < val_index.size:
-            j = val_index[v]
-            if j != -1:
-                counts[j] += 1
+    Returns
+    -------
+    flat : ndarray
+        Particle indices ordered by ``sat_id``; the particles of halo ``i``
+        occupy ``flat[offsets[i]:offsets[i + 1]]``.
+    offsets : ndarray
+        CSR offsets of length ``len(sat_id) + 1``.
+    """
+    part_id = np.asarray(part_id)
+    sat_id = np.asarray(sat_id)
+    order = np.argsort(part_id, kind="stable")
+    sorted_id = part_id[order]
+    left = np.searchsorted(sorted_id, sat_id, side="left")
+    right = np.searchsorted(sorted_id, sat_id, side="right")
+    counts = right - left
 
-    # Phase 3 — calcul des offsets (CSR-style)
-    offsets = np.zeros(m + 1, dtype=np.int64)
-    for i in range(m):
-        offsets[i + 1] = offsets[i] + counts[i]
+    offsets = np.zeros(sat_id.size + 1, dtype=np.int64)
+    np.cumsum(counts, out=offsets[1:])
+    total = int(offsets[-1])
+    if total == 0:
+        return np.empty(0, dtype=np.int64), offsets
 
-    # Phase 4 — allocation et remplissage
-    flat = np.empty(offsets[-1], dtype=np.int64)
-    current = offsets[:-1].copy()
-
-    for i in numba.prange(n):
-        v = part_id[i]
-        if v < val_index.size:
-            j = val_index[v]
-            if j != -1:
-                idx = current[j]
-                flat[idx] = i
-                current[j] += 1
-
-    return flat, offsets
+    # For each output entry, locate its source position in the sorted order.
+    starts = np.repeat(left, counts)
+    segment_starts = np.repeat(offsets[:-1], counts)
+    source = starts + (np.arange(total) - segment_starts)
+    return order[source].astype(np.int64), offsets
 
 
 
@@ -690,14 +693,14 @@ def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
 
     numba.set_num_threads(Nthread)
     mask_nfw = np.zeros(nb_sat.sum(), dtype='bool')
-    hstart = np.rint(np.linspace(0, nb_sat.sum(), Nthread + 1))
+    # Loop over halos (one entry per halo in indexes_p, nb_sat and cum_sum_sat).
+    hstart = np.rint(np.linspace(0, nb_sat.size, Nthread + 1))
     x_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
     y_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
     z_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
     vx_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
     vy_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
     vz_sat = np.zeros(nb_sat.sum(), dtype=np.float32)
-    print('ok', vz_sat.size)
     for tid in numba.prange(Nthread):
         if seed is not None:
             np.random.seed(seed[tid])
@@ -707,7 +710,7 @@ def compute_sat_from_part(xp, yp, zp, vxp, vyp, vzp,
             if nb_sub==0:
                 mask_nfw[cum_sum_sat[i]: cum_sum_sat[i+1]] = True
 
-            elif nb_sat[i] <= nb_sub:
+            elif nb_sat[i] < nb_sub:
                 index = np.random.choice(indexes_p[i], nb_sat[i], replace=False)
                 x_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = xp[index]
                 y_sat[cum_sum_sat[i]: cum_sum_sat[i+1]] = yp[index]

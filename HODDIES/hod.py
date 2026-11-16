@@ -368,6 +368,7 @@ class HOD:
                 cosmo_= [UchuuPlanck2018, UchuuPlanck2018DDE, UchuuDESIY1DDE, UchuuPlanck2018]
                 self.cosmo =  dict(zip(DDE_sims, cosmo_))[self.args['hcat']['sim_name']](engine=self.args['cosmo']['engine'])
             else:
+                from cosmoprimo import Cosmology
                 print('Initialize custom cosmology from the "cosmo" parameters', flush=True)
                 self.cosmo = Cosmology(**{k: v for k, v in self.args['cosmo'].items() if v is not None})
         except ImportError:
@@ -945,18 +946,14 @@ class HOD:
 
                     elif self.part_subsamples is not None:
                         if fix_seed is not None:
-                            seed = rng.randint(0, 4294967295, sat_cat.size)
+                            seed = rng.randint(0, 4294967295, self.args['nthreads'])
                         else:
                             seed = None
-                        uniq_sat_id = sat_cat['halo_id']
-                        flat, offsets = find_indices(self.part_subsamples['halo_id'], uniq_sat_id, self.args['nthreads'])
-                        result = [flat[offsets[i]:offsets[i+1]] for i in range(len(uniq_sat_id))]
-                        print('indexes done')
-                        flat, offsets = find_indices(self.part_subsamples['halo_id'], uniq_sat_id, self.args['nthreads'])
-                        result = [flat[offsets[i]:offsets[i+1]] for i in range(len(uniq_sat_id))]
-                        print('indexes done')
-                        sat_cat = sat_cat[sat_cat['halo_id'].argsort()]
-                        print(sat_cat.size)
+                        # One halo id per halo (not per satellite slot); this must
+                        # match the ordering of list_nsat / cum_sum_sat below.
+                        sat_halo_id = self.hcat['halo_id'][mask_sat]
+                        flat, offsets = find_indices(self.part_subsamples['halo_id'], sat_halo_id, self.args['nthreads'])
+                        result = [flat[offsets[i]:offsets[i+1]] for i in range(len(sat_halo_id))]
                         sat_cat['x'], sat_cat['y'], sat_cat['z'], \
                         sat_cat['vx'], sat_cat['vy'], sat_cat['vz'], mask_nfw = compute_sat_from_part(self.part_subsamples['x'], self.part_subsamples['y'], self.part_subsamples['z'],
                                                          self.part_subsamples['vx'], self.part_subsamples['vy'], self.part_subsamples['vz'],
